@@ -263,24 +263,30 @@ export class Isolation {
     return this.ctx;
   }
 
+  /**
+   * Claims the writer branch for `spec.key` without opening a worktree. The runtime calls this for a
+   * writer served from the journal, so a later sibling with the same label cannot `-B`-reset the
+   * cached writer's branch. Returns the branch and whether this call made a new claim.
+   */
+  claim(spec: OpenSpec): { branch: string; claimed: boolean } {
+    const branch = branchNameFor(this.opts.runId, spec.label, spec.hash, spec.n);
+    const owner = this.claims.get(claimKey(branch));
+    if (owner !== undefined && owner.key !== spec.key) {
+      throw new MaestroError(
+        `writer branch ${branch} collides with ${owner.branch} claimed by ${owner.key}; give writers distinct labels`,
+        'duplicate_writer_branch',
+      );
+    }
+    if (owner !== undefined) return { branch, claimed: false };
+    this.claims.set(claimKey(branch), { key: spec.key, branch });
+    return { branch, claimed: true };
+  }
+
   async open(spec: OpenSpec): Promise<WorktreeLease> {
     // Claim synchronously, before any await, so concurrent siblings cannot both pass.
     let branch: string | undefined;
     let claimed = false;
-    if (spec.writer) {
-      branch = branchNameFor(this.opts.runId, spec.label, spec.hash, spec.n);
-      const owner = this.claims.get(claimKey(branch));
-      if (owner !== undefined && owner.key !== spec.key) {
-        throw new MaestroError(
-          `writer branch ${branch} collides with ${owner.branch} claimed by ${owner.key}; give writers distinct labels`,
-          'duplicate_writer_branch',
-        );
-      }
-      if (owner === undefined) {
-        this.claims.set(claimKey(branch), { key: spec.key, branch });
-        claimed = true;
-      }
-    }
+    if (spec.writer) ({ branch, claimed } = this.claim(spec));
     try {
       const ctx = await this.context();
       const baseSha = (await git(this.opts.repoDir, ['rev-parse', 'HEAD'])).trim();

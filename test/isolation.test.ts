@@ -405,3 +405,15 @@ describe('gc', () => {
     expect(sh(repo, 'branch', '--list', 'feature')).toContain('feature');
   });
 });
+
+describe('Isolation.claim (cached writer hits)', () => {
+  it('a claimed branch blocks a different key and lets the same key re-claim', () => {
+    const iso = new Isolation({ repoDir: process.cwd(), runId: 'claimrun' });
+    const a = iso.claim({ key: 'h1:0', label: 'w', hash: 'h1', n: 0, writer: true });
+    expect(a).toEqual({ branch: 'wf/claimrun/w', claimed: true });
+    expect(iso.claim({ key: 'h1:0', label: 'w', hash: 'h1', n: 0, writer: true }).claimed).toBe(false);
+    expect(() => iso.claim({ key: 'h2:0', label: 'w', hash: 'h2', n: 0, writer: true })).toThrow(
+      /duplicate|collides/,
+    );
+  });
+});
