@@ -5,7 +5,9 @@
 import { realpathSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
+import type { Readable, Writable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { parseBudgetDirective } from './budget.js';
 import { gc } from './isolation.js';
 import { serveMcp } from './mcp.js';
@@ -22,12 +24,16 @@ export const USAGE = `usage:
   maestro gc [--delete] [--force] [--cwd <dir>]
   maestro mcp [--cwd <dir>] [--state-dir <dir>] [--budget <500k>] [--concurrency <n>] [--model <model>] [--dry-run]
                                              serve the Workflow tool over stdio as an MCP server
+                                             (--budget is one pool for the whole session; exits 0 when stdin ends)
 
   --dry-run   run every agent with an in-memory fake runner (schema stubs, no network)
   gc          lists dirty worktrees and merged / unmerged wf/* branches; deletes only with --delete
               (--force also deletes unmerged branches)`;
 
 export interface CliIO {
+  /** MCP channel input for `maestro mcp` (default process.stdin); the server ends when it ends. */
+  stdin: Readable;
+  /** `maestro mcp` writes JSON-RPC here, so it must then be a real Writable (default process.stdout). */
   stdout: { write(chunk: string): unknown };
   stderr: ProgressStream;
   env: Record<string, string | undefined>;
@@ -91,6 +97,7 @@ function str(p: Parsed, name: string): string | undefined {
 
 export async function main(argv: string[], ioOverrides: Partial<CliIO> = {}): Promise<number> {
   const io: CliIO = {
+    stdin: process.stdin,
     stdout: process.stdout,
     stderr: process.stderr,
     env: process.env,
@@ -248,16 +255,30 @@ async function mcpCommand(p: Parsed, io: CliIO): Promise<number> {
   }
   const cwd = path.resolve(io.cwd, str(p, 'cwd') ?? '.');
   const stateDir = str(p, 'state-dir');
-  const server = await serveMcp({
-    runner: dryRun ? new FakeRunner() : new AnthropicRunner(),
-    cwd,
-    budget,
-    ...(stateDir !== undefined ? { stateDir: path.resolve(io.cwd, stateDir) } : {}),
-    ...(concurrency !== undefined ? { concurrency } : {}),
-    ...(str(p, 'model') !== undefined ? { model: str(p, 'model') } : {}),
-  });
+  // A numeric budget becomes one Budget shared by every run of this server (createMcpServer).
+  const server = await serveMcp(
+    {
+      runner: dryRun ? new FakeRunner() : new AnthropicRunner(),
+      cwd,
+      budget,
+      ...(stateDir !== undefined ? { stateDir: path.resolve(io.cwd, stateDir) } : {}),
+      ...(concurrency !== undefined ? { concurrency } : {}),
+      ...(str(p, 'model') !== undefined ? { model: str(p, 'model') } : {}),
+    },
+    new StdioServerTransport(io.stdin, io.stdout as Writable),
+  );
+  // StdioServerTransport never closes on stdin EOF: the client disconnecting must end the command,
+  // or the bin's top-level await never settles.
   await new Promise<void>((resolve) => {
-    server.onclose = () => resolve();
+    const stopRuns = server.onclose;
+    server.onclose = () => {
+      stopRuns?.();
+      resolve();
+    };
+    const close = () => void server.close();
+    io.stdin.once('end', close);
+    io.stdin.once('close', close);
+    if (io.stdin.readableEnded || io.stdin.destroyed) close();
   });
   return 0;
 }

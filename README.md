@@ -121,11 +121,28 @@ const res = await handleWorkflowToolCall(toolUse.input, {
 messages.push({ role: 'user', content: [toToolResultBlock(toolUse.id, res)] });
 ```
 
-Girdide `script`, `scriptPath` veya `name` alanlarından tam biri verilir. `name`, `.maestro/workflows/<name>.js` dosyasına çözülür. `resumeFromRunId` ile düzenlenmiş script cache'ten devam eder. Strict şema keyfi JSON değeri ifade edemediği için `args` JSON-string olarak gönderilir. Geçersiz girdi, eksik veya saf olmayan `meta` ve syntax hatası throw etmez; `{ is_error: true, content }` döner.
+Girdide `script`, `scriptPath` veya `name` alanlarından tam biri verilir. `name`, `.maestro/workflows/<name>.js` dosyasına çözülür. `resumeFromRunId` ile düzenlenmiş script cache'ten devam eder; script verilmezse run dizinindeki `script.js` ve `args.json` yeniden kullanılır. Strict şema keyfi JSON değeri ifade edemediği için `args` JSON-string olarak gönderilir. Geçersiz girdi, eksik veya saf olmayan `meta`, syntax hatası ve var olmayan (ya da `script.js`'i olmayan) bir run'ı resume etme throw etmez; hemen `{ is_error: true, content }` döner.
+
+Tool ile başlatılan run'lar runId ile kontrol edilir (spec Seviye 1, null/throw tablosundaki kullanıcı satırları):
+
+```ts
+import { liveWorkflowAgents, skipWorkflowAgent, stopWorkflowRun } from 'maestro-orchestrator';
+
+liveWorkflowAgents(runId);       // [{ id, label, phase, group }]: canlı ajanlar; run bittiyse null
+skipWorkflowAgent(runId, id);    // agent() null döner, journal satırı 'skipped', run devam eder
+stopWorkflowRun(runId, 'yeter'); // canlı ajanlar 'skipped' yazılır, onComplete ok:false (run_stopped)
+```
+
+Üçü de bilinmeyen ya da bitmiş run için `false`/`null` döner. Ana döngüyle tüm workflow'ların aynı bütçe havuzunu paylaşması için (spec 3.5) `budget` olarak sayı yerine tek bir `new Budget({ total })` örneği verilir ve her çağrıda aynısı geçirilir.
 
 ## Claude Code'a bağlama
 
-Aynı Workflow aracı stdio üzerinden bir MCP sunucusu olarak açılır. MCP'de push olmadığı için ikinci bir araç vardır: `WorkflowResult({ runId })` sonucu ya da `running` döner.
+Aynı Workflow aracı stdio üzerinden bir MCP sunucusu olarak açılır ve `tools/list` dört araç döner:
+
+- `Workflow`: run'ı başlatır, hemen `{ runId, scriptPath, status: 'started' }` döner.
+- `WorkflowResult({ runId })`: MCP'de push olmadığı için sonuç yoklanır. Run sürerken `{ status: 'running', liveAgents }`, sonra `done` ya da `failed` döner.
+- `WorkflowStop({ runId })`: run'ı durdurur. Script `run_stopped` ile reddeder, journal kalır ve run sonradan `resumeFromRunId` ile sürdürülebilir.
+- `WorkflowSkip({ runId, agentId })`: `liveAgents` içindeki bir ajanı atlar; o `agent()` çağrısı `null` döner.
 
 ```bash
 claude mcp add maestro -- npx maestro mcp
@@ -137,7 +154,7 @@ Script yazma rehberini skill olarak ekle:
 mkdir -p .claude/skills/maestro-workflow-authoring && cp skill/SKILL.md .claude/skills/maestro-workflow-authoring/SKILL.md
 ```
 
-`maestro mcp` sunucusu `--cwd`, `--state-dir`, `--budget`, `--concurrency`, `--model` ve `--dry-run` seçeneklerini alır. stdout MCP kanalıdır, tanılar stderr'e gider.
+`maestro mcp` sunucusu `--cwd`, `--state-dir`, `--budget`, `--concurrency`, `--model` ve `--dry-run` seçeneklerini alır. `--budget` oturumun tamamı için tek havuzdur: sunucunun başlattığı bütün run'lar aynı `Budget` örneğinden harcar. stdout MCP kanalıdır, tanılar stderr'e gider. İstemci bağlantıyı kapatınca (stdin biter) sunucu kapanır, süren run'lar durdurulur (journal'ları resume için kalır) ve komut 0 ile çıkar.
 
 ## CLI
 
@@ -147,6 +164,8 @@ maestro run <script.js> [--args <json>] [--args-file f] [--resume <runId>] [--bu
 maestro gc [--delete] [--force] [--cwd d]
 maestro mcp [--cwd d] [--state-dir d] [--budget 500k] [--concurrency n] [--model m] [--dry-run]
 ```
+
+`maestro run` sonucu stdout'a JSON olarak yazar, ilerleme stderr'e gider; Ctrl-C run'ı durdurur ve resume komutunu gösterir. `maestro mcp`, stdin bitince 0 ile çıkar; `--budget` orada her run için değil, oturum boyunca paylaşılan tek havuz içindir.
 
 `maestro gc` kirli worktree'leri ve `wf/*` branch'lerini listeler; birleşmiş sayılan branch'ler, HEAD'in atası olanlar ya da tüm commit'leri cherry-pick ile alınmış olanlardır. `--delete` kirli worktree'leri ve birleşmiş branch'leri siler. Birleşmemiş branch'ler yalnızca `--force` ile silinir.
 

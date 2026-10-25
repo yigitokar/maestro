@@ -2,11 +2,12 @@
 // plus the handler that starts a run and reports completion out of band. Policy (when to use the
 // tool) lives in the description text; capability lives in the engine (spec Seviye 2, Policy row).
 
-import { promises as fs } from 'node:fs';
+import { existsSync, promises as fs } from 'node:fs';
 import path from 'node:path';
 import type Anthropic from '@anthropic-ai/sdk';
 import { parseScript } from './runtime.js';
-import { type RunOptions, run } from './workflow.js';
+import type { WorkflowEvent } from './types.js';
+import { type RunHandle, type RunOptions, run } from './workflow.js';
 
 export const WORKFLOW_TOOL_NAME = 'Workflow';
 
@@ -42,6 +43,41 @@ export interface WorkflowToolContext
 export type WorkflowToolResult =
   | { runId: string; scriptPath: string; status: 'started' }
   | { is_error: true; content: string };
+
+/** A live agent of a tool-started run, as WorkflowSkip needs it (id from the agent_start event). */
+export interface LiveWorkflowAgent {
+  id: number;
+  label?: string;
+  phase?: string;
+  group?: string;
+}
+
+// runId → handle of every tool-started run that has not settled yet, so a harness (or the MCP
+// server) can produce the user rows of the spec Seviye 1 null/throw table: skip a live agent
+// (agent() → null, row 'skipped') and stop the run (the script rejects, the journal stays).
+const liveRuns = new Map<string, { handle: RunHandle; agents: Map<number, LiveWorkflowAgent> }>();
+
+/** Stops a run started through handleWorkflowToolCall; false when the runId is unknown or settled. */
+export function stopWorkflowRun(runId: string, reason?: string): boolean {
+  const entry = liveRuns.get(runId);
+  if (!entry) return false;
+  entry.handle.stop(reason ?? 'stopped by user');
+  return true;
+}
+
+/** Skips one live agent of a tool-started run; false when the run or the live agent is unknown. */
+export function skipWorkflowAgent(runId: string, agentId: number): boolean {
+  return liveRuns.get(runId)?.handle.skip(agentId) ?? false;
+}
+
+/** Live (started, not yet ended) agents of a tool-started run; null when the run is unknown or settled. */
+export function liveWorkflowAgents(runId: string): LiveWorkflowAgent[] | null {
+  const entry = liveRuns.get(runId);
+  return entry ? [...entry.agents.values()] : null;
+}
+
+// Same rule as run(): a runId names a directory under <stateDir>/runs, never a path.
+const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 const nullableString = (description: string) => ({ type: ['string', 'null'], description });
 
@@ -124,6 +160,29 @@ export async function handleWorkflowToolCall(
   } catch (err) {
     return fail(`cannot read workflow script: ${errorText(err)}`);
   }
+  // A resume of a run that does not exist is input the handler can see now: is_error, not a
+  // 'started' result whose scriptPath does not exist (spec Seviye 2 tool surface).
+  if (resume !== undefined) {
+    if (!SAFE_RUN_ID.test(resume)) return fail(`invalid resumeFromRunId "${resume}"`);
+    const runsDir = path.join(stateDir, 'runs');
+    const storedScript = path.join(runsDir, resume, 'script.js');
+    if (!existsSync(path.join(runsDir, resume))) return fail(`no run ${resume} under ${runsDir}`);
+    if (liveRuns.has(resume)) return fail(`run ${resume} is still running; stop it before resuming`);
+    if (script === undefined) {
+      // Validated here, not passed on: run() rereads the stored script.js itself (decision 10).
+      let stored: string;
+      try {
+        stored = await fs.readFile(storedScript, 'utf8');
+      } catch (err) {
+        return fail(`run ${resume} has no stored script.js to resume: ${errorText(err)}`);
+      }
+      try {
+        parseScript(stored);
+      } catch (err) {
+        return fail(`invalid stored workflow script: ${errorText(err)}`);
+      }
+    }
+  }
   if (script !== undefined) {
     try {
       parseScript(script);
@@ -139,9 +198,23 @@ export async function handleWorkflowToolCall(
   } catch (err) {
     return fail(errorText(err));
   }
+  const agents = new Map<number, LiveWorkflowAgent>();
+  liveRuns.set(handle.runId, { handle, agents });
+  handle.events.on('event', (e: WorkflowEvent) => {
+    if (e.type === 'agent_start')
+      agents.set(e.id, { id: e.id, label: e.label, phase: e.phase, group: e.group });
+    else if (e.type === 'agent_end') agents.delete(e.id);
+  });
+  // Unregistered before onComplete, so a stop from inside onComplete sees a settled run.
   handle.promise.then(
-    (result) => onComplete?.(handle.runId, { ok: true, result }),
-    (err) => onComplete?.(handle.runId, { ok: false, error: errorText(err) }),
+    (result) => {
+      liveRuns.delete(handle.runId);
+      onComplete?.(handle.runId, { ok: true, result });
+    },
+    (err) => {
+      liveRuns.delete(handle.runId);
+      onComplete?.(handle.runId, { ok: false, error: errorText(err) });
+    },
   );
   return { runId: handle.runId, scriptPath: path.join(handle.runDir, 'script.js'), status: 'started' };
 }

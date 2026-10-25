@@ -13,7 +13,13 @@ export type {
 } from './isolation.js';
 export { branchNameFor, gc, Isolation } from './isolation.js';
 export { canonicalJSON, hashCall, Journal, makeKey, Occurrences } from './journal.js';
-export { createMcpServer, serveMcp, WORKFLOW_RESULT_TOOL_NAME } from './mcp.js';
+export {
+  createMcpServer,
+  serveMcp,
+  WORKFLOW_RESULT_TOOL_NAME,
+  WORKFLOW_SKIP_TOOL_NAME,
+  WORKFLOW_STOP_TOOL_NAME,
+} from './mcp.js';
 export type { ProgressStream, ProgressTreeOptions } from './progress.js';
 export { attachTerminalProgress, formatEventLine, GLYPHS, ProgressTree } from './progress.js';
 export type { AnthropicRunnerOptions } from './runner.js';
@@ -24,10 +30,19 @@ export { defaultConcurrency, Scheduler } from './scheduler.js';
 export { assertSatisfiableSchema, validateAgainstSchema } from './schema.js';
 export type { FakeHandler, FakeResponse, FakeRule } from './testing/fake-runner.js';
 export { abortableSleep, FakeRunner, stubFromSchema } from './testing/fake-runner.js';
-export type { WorkflowOutcome, WorkflowToolContext, WorkflowToolInput, WorkflowToolResult } from './tool.js';
+export type {
+  LiveWorkflowAgent,
+  WorkflowOutcome,
+  WorkflowToolContext,
+  WorkflowToolInput,
+  WorkflowToolResult,
+} from './tool.js';
 export {
   handleWorkflowToolCall,
+  liveWorkflowAgents,
   maestroToolDefinition,
+  skipWorkflowAgent,
+  stopWorkflowRun,
   toToolResultBlock,
   WORKFLOW_TOOL_DESCRIPTION,
   WORKFLOW_TOOL_NAME,

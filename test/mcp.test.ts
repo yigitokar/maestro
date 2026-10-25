@@ -1,4 +1,5 @@
-// `maestro mcp`: the Workflow tool over the stdio transport, driven by a real MCP client in-process.
+// `maestro mcp`: the Workflow tool over the stdio transport, driven by a real MCP client in-process:
+// Workflow + WorkflowResult, the WorkflowStop / WorkflowSkip controls, one budget pool per server.
 
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -7,15 +8,21 @@ import { PassThrough } from 'node:stream';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { afterEach, describe, expect, it } from 'vitest';
-import { serveMcp, WORKFLOW_RESULT_TOOL_NAME } from '../src/mcp.js';
-import { FakeRunner } from '../src/testing/fake-runner.js';
+import {
+  serveMcp,
+  WORKFLOW_RESULT_TOOL_NAME,
+  WORKFLOW_SKIP_TOOL_NAME,
+  WORKFLOW_STOP_TOOL_NAME,
+} from '../src/mcp.js';
+import { type FakeHandler, FakeRunner } from '../src/testing/fake-runner.js';
+import { liveWorkflowAgents } from '../src/tool.js';
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
   for (const c of cleanups.splice(0)) await c();
 });
 
-async function connect() {
+async function connect(opts: { handler?: FakeHandler; budget?: number } = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'maestro-mcp-'));
   // Two pipes: client → server (server stdin) and server → client (server stdout). The client side
   // reuses the line-delimited JSON-RPC stdio transport on the opposite ends.
@@ -25,8 +32,9 @@ async function connect() {
     {
       cwd: dir,
       stateDir: path.join(dir, 'state'),
-      runner: new FakeRunner(() => ({ delayMs: 20 })),
+      runner: new FakeRunner(opts.handler ?? (() => ({ delayMs: 20 }))),
       concurrency: 2,
+      ...(opts.budget !== undefined ? { budget: opts.budget } : {}),
     },
     new StdioServerTransport(toServer, toClient),
   );
@@ -37,18 +45,136 @@ async function connect() {
     await server.close();
     await rm(dir, { recursive: true, force: true });
   });
-  return { client };
+  return { client, server };
 }
 
 const textOf = (res: any): string => res.content[0].text;
 
+async function startWorkflow(client: Client, script: string): Promise<string> {
+  const res = await client.callTool({ name: 'Workflow', arguments: { script } });
+  expect(res.isError, textOf(res)).toBeFalsy();
+  return JSON.parse(textOf(res)).runId;
+}
+
+async function resultOf(client: Client, runId: string): Promise<any> {
+  return JSON.parse(textOf(await client.callTool({ name: WORKFLOW_RESULT_TOOL_NAME, arguments: { runId } })));
+}
+
+/** Polls WorkflowResult until the run settles (or `until` holds on a running result). */
+async function poll(
+  client: Client,
+  runId: string,
+  until: (r: any) => boolean = (r) => r.status !== 'running',
+) {
+  let last = await resultOf(client, runId);
+  for (let i = 0; i < 200 && !until(last); i++) {
+    await new Promise((r) => setTimeout(r, 10));
+    last = await resultOf(client, runId);
+  }
+  expect(until(last), JSON.stringify(last)).toBe(true);
+  return last;
+}
+
 describe('maestro mcp', () => {
-  it('tools/list returns Workflow and WorkflowResult', async () => {
+  it('tools/list returns Workflow, WorkflowResult and the WorkflowStop / WorkflowSkip controls', async () => {
     const { client } = await connect();
     const { tools } = await client.listTools();
-    expect(tools.map((t) => t.name).sort()).toEqual(['Workflow', WORKFLOW_RESULT_TOOL_NAME].sort());
-    const wf = tools.find((t) => t.name === 'Workflow')!;
-    expect((wf.inputSchema as any).additionalProperties).toBe(false);
+    expect(tools.map((t) => t.name).sort()).toEqual(
+      ['Workflow', WORKFLOW_RESULT_TOOL_NAME, WORKFLOW_STOP_TOOL_NAME, WORKFLOW_SKIP_TOOL_NAME].sort(),
+    );
+    for (const t of tools) expect((t.inputSchema as any).additionalProperties, t.name).toBe(false);
+    const skip = tools.find((t) => t.name === WORKFLOW_SKIP_TOOL_NAME)!;
+    expect((skip.inputSchema as any).required).toEqual(['runId', 'agentId']);
+  });
+
+  it('WorkflowStop stops a running run: WorkflowResult then reports failed with run_stopped', async () => {
+    const { client } = await connect({ handler: () => ({ delayMs: 5_000 }) });
+    const runId = await startWorkflow(
+      client,
+      `export const meta = { name: 'm', description: 'd' };\nreturn await agent('long');`,
+    );
+    await poll(client, runId, (r) => r.status === 'running' && r.liveAgents.length === 1);
+    const stop = await client.callTool({ name: WORKFLOW_STOP_TOOL_NAME, arguments: { runId } });
+    expect(stop.isError).toBeFalsy();
+    expect(JSON.parse(textOf(stop))).toEqual({ runId, status: 'stopping' });
+    const last = await poll(client, runId);
+    expect(last).toMatchObject({ runId, status: 'failed', error: expect.stringMatching(/stopped by user/) });
+    // A settled or unknown run cannot be stopped.
+    const again = await client.callTool({ name: WORKFLOW_STOP_TOOL_NAME, arguments: { runId } });
+    expect(again.isError).toBe(true);
+    const unknown = await client.callTool({ name: WORKFLOW_STOP_TOOL_NAME, arguments: { runId: 'nope' } });
+    expect(unknown.isError).toBe(true);
+  });
+
+  it('WorkflowSkip skips a live agent listed by WorkflowResult: agent() returns null, the run finishes', async () => {
+    const { client } = await connect({
+      handler: (req) => (req.prompt === 'slow' ? { delayMs: 5_000 } : { delayMs: 20 }),
+    });
+    const runId = await startWorkflow(
+      client,
+      `export const meta = { name: 'm', description: 'd' };
+const [slow, fast] = await parallel([() => agent('slow', { label: 'slow' }), () => agent('fast')]);
+return { slow, fast };`,
+    );
+    const running = await poll(
+      client,
+      runId,
+      (r) => r.status === 'running' && r.liveAgents.some((a: any) => a.label === 'slow'),
+    );
+    const slow = running.liveAgents.find((a: any) => a.label === 'slow');
+    const skip = await client.callTool({
+      name: WORKFLOW_SKIP_TOOL_NAME,
+      arguments: { runId, agentId: slow.id },
+    });
+    expect(skip.isError, textOf(skip)).toBeFalsy();
+    const last = await poll(client, runId);
+    expect(last).toMatchObject({ status: 'done', result: { slow: null, fast: expect.any(String) } });
+    const stale = await client.callTool({
+      name: WORKFLOW_SKIP_TOOL_NAME,
+      arguments: { runId, agentId: slow.id },
+    });
+    expect(stale.isError).toBe(true);
+  });
+
+  it('every run of one server draws on one budget pool (spec 3.5 tek havuz)', async () => {
+    const { client } = await connect({ handler: () => ({ outputTokensPerTurn: 4_000 }), budget: 6_000 });
+    const script = `export const meta = { name: 'b', description: 'd' };
+const before = budget.spent();
+await agent('spend ' + before);
+return { before, after: budget.spent(), total: budget.total };`;
+    const first = await poll(client, await startWorkflow(client, script));
+    expect(first).toMatchObject({ status: 'done', result: { before: 0, after: 4_000, total: 6_000 } });
+    // A later run's budget.spent() already holds the first run's spend: one pool, not one per run.
+    const peek = await poll(
+      client,
+      await startWorkflow(
+        client,
+        `export const meta = { name: 'p', description: 'd' };\nreturn budget.spent();`,
+      ),
+    );
+    expect(peek).toMatchObject({ status: 'done', result: 4_000 });
+    // The second run sees the first run's spend: 4000 + reserve 5000 > 6000, so its agent is refused.
+    // With a fresh pool per run it would have succeeded.
+    const second = await poll(client, await startWorkflow(client, script));
+    expect(second).toMatchObject({
+      status: 'failed',
+      error: expect.stringMatching(/budget exceeded/),
+    });
+  });
+
+  it('closing the server stops its live runs', async () => {
+    const { client, server } = await connect({ handler: () => ({ delayMs: 5_000 }) });
+    const runId = await startWorkflow(
+      client,
+      `export const meta = { name: 'm', description: 'd' };\nreturn await agent('long');`,
+    );
+    await poll(client, runId, (r) => r.status === 'running' && r.liveAgents.length === 1);
+    expect(liveWorkflowAgents(runId)).toHaveLength(1);
+    await server.close();
+    // The run settles (stopped) long before its 5 s agent would have finished; its journal stays.
+    for (let i = 0; i < 100 && liveWorkflowAgents(runId) !== null; i++)
+      await new Promise((r) => setTimeout(r, 10));
+    expect(liveWorkflowAgents(runId)).toBeNull();
   });
 
   it('a Workflow call returns a runId; WorkflowResult reports running, then done', async () => {

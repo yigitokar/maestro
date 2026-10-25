@@ -1,10 +1,13 @@
-// CLI (bin "maestro") tested in-process through main(argv, io): dry runs, resume, gc, usage errors.
+// CLI (bin "maestro") tested in-process through main(argv, io): dry runs, resume, gc, mcp, usage errors.
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { main } from '../src/cli.js';
 
@@ -160,6 +163,95 @@ describe('maestro gc', () => {
     expect(del.stdout).toContain('wf/r1/merged');
     // Unmerged branches survive without --force.
     expect(git(repo, 'branch', '--list', 'wf/*', '--format=%(refname:short)')).toBe('wf/r1/open');
+  });
+});
+
+/** `maestro mcp` in-process: stdin/stdout are pipes a real MCP client talks over. */
+function mcpCli(argv: string[], cwd: string, env: Record<string, string | undefined> = {}) {
+  const toServer = new PassThrough();
+  const toClient = new PassThrough();
+  let stderr = '';
+  const code = main(['mcp', ...argv], {
+    cwd,
+    env,
+    stdin: toServer,
+    stdout: toClient,
+    stderr: { write: (s: string) => (stderr += s), isTTY: false },
+  });
+  return { code, toServer, toClient, stderr: () => stderr };
+}
+
+describe('maestro mcp', () => {
+  it('serves the Workflow tools over stdin/stdout and exits 0 when stdin ends', async () => {
+    const dir = await tmp();
+    const m = mcpCli(['--dry-run', '--budget', '50k', '--concurrency', '2'], dir);
+    const client = new Client({ name: 'test', version: '0.0.0' });
+    await client.connect(new StdioServerTransport(m.toClient, m.toServer));
+    const { tools } = await client.listTools();
+    expect(tools.map((t) => t.name).sort()).toEqual(
+      ['Workflow', 'WorkflowResult', 'WorkflowSkip', 'WorkflowStop'].sort(),
+    );
+    const started = await client.callTool({
+      name: 'Workflow',
+      arguments: { script: SCRIPT, args: '{"topic":"mcp"}' },
+    });
+    const { runId } = JSON.parse((started.content as any)[0].text);
+    let last: any;
+    for (let i = 0; i < 200; i++) {
+      const res = await client.callTool({ name: 'WorkflowResult', arguments: { runId } });
+      last = JSON.parse((res.content as any)[0].text);
+      if (last.status !== 'running') break;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    expect(last).toMatchObject({ status: 'done', result: { topic: 'mcp' } });
+    // Runs land under --cwd's .maestro; the dry run never needs a key, so nothing is warned.
+    expect(readFileSync(path.join(dir, '.maestro', 'runs', runId, 'script.js'), 'utf8')).toBe(SCRIPT);
+    expect(m.stderr()).toBe('');
+
+    // The client disconnecting (stdin EOF) ends the command: the bin's top-level await settles.
+    m.toServer.end();
+    expect(await m.code).toBe(0);
+  });
+
+  it('without ANTHROPIC_API_KEY it warns on stderr and still starts; nothing goes to stdout', async () => {
+    const dir = await tmp();
+    const m = mcpCli([], dir, {});
+    let stdout = '';
+    m.toClient.on('data', (c) => (stdout += c));
+    m.toServer.end();
+    expect(await m.code).toBe(0);
+    expect(m.stderr()).toMatch(/ANTHROPIC_API_KEY is not set; Workflow runs will fail/);
+    expect(stdout).toBe('');
+  });
+
+  it('a stdin that already ended does not hang the command', async () => {
+    const dir = await tmp();
+    const stdin = new PassThrough();
+    stdin.end();
+    stdin.resume();
+    await new Promise((r) => stdin.once('end', r));
+    const code = await main(['mcp', '--dry-run'], {
+      cwd: dir,
+      env: {},
+      stdin,
+      stdout: new PassThrough(),
+      stderr: { write: () => true, isTTY: false },
+    });
+    expect(code).toBe(0);
+  });
+
+  it('bad flags exit 1 with usage before anything is served', async () => {
+    const dir = await tmp();
+    for (const argv of [
+      ['mcp', '--budget', 'lots', '--dry-run'],
+      ['mcp', '--concurrency', '0', '--dry-run'],
+      ['mcp', 'extra', '--dry-run'],
+      ['mcp', '--frobnicate'],
+    ]) {
+      const res = await cli(argv, dir);
+      expect(res.code, argv.join(' ')).toBe(1);
+      expect(res.stderr).toContain('usage:');
+    }
   });
 });
 

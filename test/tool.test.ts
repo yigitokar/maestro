@@ -1,13 +1,16 @@
 // Tool adapter: strict tool definition, exactly-one source rule, errors as is_error content, background run.
 
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { FakeRunner } from '../src/testing/fake-runner.js';
 import {
   handleWorkflowToolCall,
+  liveWorkflowAgents,
   maestroToolDefinition,
+  skipWorkflowAgent,
+  stopWorkflowRun,
   toToolResultBlock,
   type WorkflowOutcome,
   type WorkflowToolContext,
@@ -28,22 +31,39 @@ const SCRIPT = `export const meta = { name: 't', description: 'd' };
 const r = await agent('hello ' + args.who);
 return { r, who: args.who };`;
 
-function ctx(dir: string, onComplete?: WorkflowToolContext['onComplete']): WorkflowToolContext {
+function ctx(
+  dir: string,
+  onComplete?: WorkflowToolContext['onComplete'],
+  runner: FakeRunner = new FakeRunner(),
+): WorkflowToolContext {
   return {
     cwd: dir,
     stateDir: path.join(dir, 'state'),
-    runner: new FakeRunner(),
+    runner,
     concurrency: 2,
     onComplete,
   };
 }
 
-function completion(dir: string) {
+function completion(dir: string, runner?: FakeRunner) {
   let resolve!: (v: { runId: string; outcome: WorkflowOutcome }) => void;
   const done = new Promise<{ runId: string; outcome: WorkflowOutcome }>((r) => {
     resolve = r;
   });
-  return { done, ctx: ctx(dir, (runId, outcome) => resolve({ runId, outcome })) };
+  return { done, ctx: ctx(dir, (runId, outcome) => resolve({ runId, outcome }), runner) };
+}
+
+async function until(cond: () => boolean): Promise<void> {
+  for (let i = 0; i < 200 && !cond(); i++) await new Promise((r) => setTimeout(r, 5));
+  expect(cond()).toBe(true);
+}
+
+async function journalRows(dir: string, runId: string): Promise<any[]> {
+  const raw = await readFile(path.join(dir, 'state', 'runs', runId, 'journal.jsonl'), 'utf8');
+  return raw
+    .split('\n')
+    .filter((l) => l.trim() !== '')
+    .map((l) => JSON.parse(l));
 }
 
 /** Every object node is strict: additionalProperties false and required listing every property. */
@@ -143,6 +163,111 @@ describe('handleWorkflowToolCall', () => {
     expect(res).toMatchObject({ status: 'started' });
     const { outcome } = await done;
     expect(outcome).toEqual({ ok: false, error: expect.stringMatching(/boom/) });
+  });
+
+  it('resume with the stored script reuses script.js and args.json; journaled agents are cached', async () => {
+    const dir = await tmp();
+    const runner = new FakeRunner();
+    const first = completion(dir, runner);
+    const res = await handleWorkflowToolCall({ script: SCRIPT, args: '{"who":"a"}' }, first.ctx);
+    if ('is_error' in res) throw new Error(res.content);
+    const one = await first.done;
+    expect(one.outcome.ok).toBe(true);
+    expect(runner.liveCalls).toBe(1);
+
+    const again = completion(dir, runner);
+    const resumed = await handleWorkflowToolCall(
+      { script: null, scriptPath: null, name: null, args: null, resumeFromRunId: res.runId },
+      again.ctx,
+    );
+    expect(resumed).toEqual({ runId: res.runId, scriptPath: res.scriptPath, status: 'started' });
+    const two = await again.done;
+    expect(two).toEqual(one);
+    expect(runner.liveCalls).toBe(1);
+  });
+
+  it('resume with an edited script: unchanged agent() calls are cached, the edited one runs live', async () => {
+    const dir = await tmp();
+    const runner = new FakeRunner();
+    const first = completion(dir, runner);
+    const res = await handleWorkflowToolCall({ script: SCRIPT, args: '{"who":"a"}' }, first.ctx);
+    if ('is_error' in res) throw new Error(res.content);
+    await first.done;
+
+    const edited = `${SCRIPT.replace(/return .*$/m, '')}const extra = await agent('second ' + args.who);
+return { r, extra, edited: true };`;
+    const again = completion(dir, runner);
+    const resumed = await handleWorkflowToolCall({ script: edited, resumeFromRunId: res.runId }, again.ctx);
+    expect(resumed).toMatchObject({ runId: res.runId, status: 'started' });
+    const { outcome } = await again.done;
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.result).toMatchObject({ edited: true, extra: expect.any(String) });
+    // 'hello a' came from the journal, only 'second a' hit the runner.
+    expect(runner.calls.map((c) => c.prompt)).toEqual(['hello a', 'second a']);
+    expect(await readFile(res.scriptPath, 'utf8')).toBe(edited);
+  });
+
+  it('resume of an unknown, unsafe or script-less runId is is_error at once (no started result)', async () => {
+    const dir = await tmp();
+    let completed = false;
+    const c = ctx(dir, () => {
+      completed = true;
+    });
+    const unknown = await handleWorkflowToolCall({ resumeFromRunId: 'nope-123' }, c);
+    expect(unknown).toMatchObject({ is_error: true, content: expect.stringMatching(/no run nope-123/) });
+    const withScript = await handleWorkflowToolCall({ script: SCRIPT, resumeFromRunId: 'nope-123' }, c);
+    expect(withScript).toMatchObject({ is_error: true, content: expect.stringMatching(/no run nope-123/) });
+    const unsafe = await handleWorkflowToolCall({ resumeFromRunId: '../state' }, c);
+    expect(unsafe).toMatchObject({
+      is_error: true,
+      content: expect.stringMatching(/invalid resumeFromRunId/),
+    });
+    await mkdir(path.join(dir, 'state', 'runs', 'empty-1'), { recursive: true });
+    const bare = await handleWorkflowToolCall({ resumeFromRunId: 'empty-1' }, c);
+    expect(bare).toMatchObject({ is_error: true, content: expect.stringMatching(/no stored script\.js/) });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(completed).toBe(false);
+  });
+
+  it('stopWorkflowRun stops a tool-started run: the script rejects with run_stopped, the journal stays', async () => {
+    const dir = await tmp();
+    const { done, ctx: c } = completion(dir, new FakeRunner(() => ({ delayMs: 5_000 })));
+    const res = await handleWorkflowToolCall({ script: SCRIPT, args: '{"who":"a"}' }, c);
+    if ('is_error' in res) throw new Error(res.content);
+    await until(() => (liveWorkflowAgents(res.runId) ?? []).length === 1);
+    expect(stopWorkflowRun(res.runId, 'enough')).toBe(true);
+    const { outcome } = await done;
+    expect(outcome).toEqual({ ok: false, error: expect.stringMatching(/stopped: enough/) });
+    expect((await journalRows(dir, res.runId)).map((r) => r.status)).toEqual(['skipped']);
+    // Settled runs leave the registry.
+    expect(stopWorkflowRun(res.runId)).toBe(false);
+    expect(liveWorkflowAgents(res.runId)).toBeNull();
+    expect(stopWorkflowRun('never-started')).toBe(false);
+  });
+
+  it('skipWorkflowAgent skips one live agent: agent() returns null, its row is skipped, the run goes on', async () => {
+    const dir = await tmp();
+    const runner = new FakeRunner((req) => (req.prompt === 'slow' ? { delayMs: 5_000 } : {}));
+    const { done, ctx: c } = completion(dir, runner);
+    const res = await handleWorkflowToolCall(
+      {
+        script: `export const meta = { name: 's', description: 'd' };
+const [slow, fast] = await parallel([() => agent('slow', { label: 'slow' }), () => agent('fast')]);
+return { slow, fast };`,
+      },
+      c,
+    );
+    if ('is_error' in res) throw new Error(res.content);
+    await until(() => (liveWorkflowAgents(res.runId) ?? []).some((a) => a.label === 'slow'));
+    const slow = liveWorkflowAgents(res.runId)!.find((a) => a.label === 'slow')!;
+    expect(skipWorkflowAgent(res.runId, slow.id)).toBe(true);
+    expect(skipWorkflowAgent(res.runId, 999)).toBe(false);
+    const { outcome } = await done;
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.result).toEqual({ slow: null, fast: expect.any(String) });
+    const rows = await journalRows(dir, res.runId);
+    expect(rows.map((r) => r.status).sort()).toEqual(['ok', 'skipped']);
+    expect(skipWorkflowAgent('never-started', 0)).toBe(false);
   });
 
   it('toToolResultBlock maps errors to is_error tool_result blocks', () => {
