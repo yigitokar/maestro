@@ -1,0 +1,230 @@
+# Maestro
+
+Çok-ajanlı orkestrasyon katmanı. Kontrol akışı kodda, muhakeme ajanda: deterministik bir JavaScript script'i, her biri temiz context'le başlayan Claude ajanlarını çağırır, sonuçlarını birleştirir, oylatır ve tekrar dağıtır. Script'i ana ajan yazar, çalıştıran LLM değil düz bir runtime'dır.
+
+Tasarım ve sözleşmeler [docs/spec.md](docs/spec.md) içinde (v0.3.1). Spec'in açık bıraktığı noktalarda alınan kararlar [docs/decisions.md](docs/decisions.md) içinde. Script yazmayı modele öğreten skill [skill/SKILL.md](skill/SKILL.md) içinde.
+
+## Kurulum
+
+Node 22 veya üstü gerekir.
+
+```bash
+npm install
+```
+
+```bash
+npm run build
+```
+
+Paket ESM'dir ve tek bağımlılık katmanı Anthropic TypeScript SDK'sıdır (`@anthropic-ai/sdk`), yanında `zod`, `acorn` ve MCP sunucusu için `@modelcontextprotocol/sdk` gelir. Gerçek ajanlar için `ANTHROPIC_API_KEY` ortam değişkeni gerekir; testler ve `--dry-run` ağa hiç çıkmaz.
+
+Run'lar çalışılan dizinde `.maestro/` altında tutulur (`runs/<runId>/`, `worktrees/`, `workflows/`). Bu dizini kendi reponda `.gitignore`'a ekle.
+
+## İlk script
+
+`review.js`:
+
+```js
+export const meta = {
+  name: 'quick-review',
+  description: "Diff'i iki boyutta incele, her bulguyu iki skeptikle oyla",
+  phases: [{ title: 'Find' }, { title: 'Verify' }],
+  maxAgents: 40,
+}
+
+const FINDINGS = { type: 'object', required: ['findings'], properties: { findings: { type: 'array', items: {
+  type: 'object', required: ['file', 'claim'], properties: { file: { type: 'string' }, claim: { type: 'string' } } } } } }
+const VERDICT = { type: 'object', required: ['refuted'], properties: { refuted: { type: 'boolean' } } }
+
+const perDim = await pipeline(
+  ['correctness', 'security'],
+  d => agent(`git diff ${args.diffRef} değişikliğinde yalnızca ${d} sorunlarını ara.`,
+    { label: `find:${d}`, phase: 'Find', schema: FINDINGS }),
+  async (found, d) => {
+    if (!found) { log(`${d}: bulucu null`); return [] }
+    return parallel(found.findings.map(f => async () => {
+      const votes = await parallel([0, 1].map(i => () =>
+        agent(`Bu iddiayı çürütmeye çalış: ${f.claim} (${f.file}). Emin değilsen refuted=true. Bakış ${i}.`,
+          { label: `verify:${f.file}#${i}`, phase: 'Verify', schema: VERDICT, effort: 'high' })))
+      return votes.filter(Boolean).every(v => !v.refuted) ? { ...f, dimension: d } : null
+    }))
+  })
+
+const confirmed = perDim.flat().filter(Boolean)
+log(`${confirmed.length} bulgu doğrulandı`)
+return confirmed
+```
+
+Çalıştır:
+
+```bash
+npx maestro run review.js --args '{"diffRef":"main...HEAD"}' --budget 300k
+```
+
+Ağa çıkmadan akışı görmek için `--dry-run` ekle; her ajan şemadan üretilmiş sahte bir cevap döner. Script'i düzenleyip ucuza tekrar koşmak için:
+
+```bash
+npx maestro run review.js --resume <runId>
+```
+
+Değişmeyen her `agent()` çağrısı journal'dan gelir; yalnızca değişen çağrı ve onun sonucundan türeyenler canlı koşar.
+
+Kütüphane olarak:
+
+```ts
+import { run, AnthropicRunner, attachTerminalProgress } from 'maestro-orchestrator';
+
+const handle = run({ scriptPath: 'review.js', args: { diffRef: 'main...HEAD' }, budget: 300_000 });
+const detach = attachTerminalProgress(handle);       // stderr'e ilerleme ağacı
+const result = await handle.promise;                 // script'in dönüş değeri
+detach();
+```
+
+`run()` hemen `{ runId, runDir, promise, events, stop, skip }` döner. `events` üzerinden `agent_start`, `agent_end`, `phase`, `log` ve `budget_tick` olayları akar.
+
+## Host API
+
+Script'in gördüğü yüzey (spec Seviye 1). Bunların dışında yalnızca JS builtin'leri vardır; `process`, `require`, `fetch`, `console`, `setTimeout` tanımlı değildir.
+
+| API | Döner | Null ve throw |
+|---|---|---|
+| `agent(prompt, opts?)` | `schema` varsa doğrulanmış obje, yoksa final metin | Terminal API hatası, ajanın atlanması (`handle.skip(id)`) ve koşarken bütçe aşımı **null** döner. Geçersiz schema, girişte bütçe rezervasyonunun yetmemesi, `meta.maxAgents` tavanı ve izolasyonsuz yazma aracı **throw** eder. |
+| `parallel(thunks)` | Sonuç dizisi (bariyer) | Asla reject etmez. Throw eden thunk'ın slotu null olur ve log'a yazılır. 4096 öğe üstü throw eder. |
+| `pipeline(items, ...stages)` | Öğe başına son aşamanın sonucu | Aşamalar arasında bariyer yoktur. Aşama `(prev, item, index)` alır, ilk aşamada `prev === item`. Throw eden aşama öğeyi null yapar ve kalan aşamaları atlar. Null **dönen** aşama normal değerdir. |
+| `phase(title)` | | `meta.phases` tanımlıysa başka başlık throw eder. |
+| `log(message)` | | |
+| `args` | Tool çağrısının `args` değeri, aynen | |
+| `budget` | `{ total, spent(), remaining() }` | `total` yoksa null ve `remaining()` Infinity. |
+| `workflow(nameOrRef, args?)` | Alt workflow'un dönüş değeri | Yalnızca bir seviye iç içe; çocuğun içinde throw eder. Aynı semafor, sayaç ve bütçe paylaşılır. |
+
+`agent` opts: `label`, `phase`, `schema`, `model`, `effort` (`low` … `max`), `isolation: 'worktree'`, `tools`. Varsayılan araçlar salt-okurdur: `read_file`, `grep`, `glob` ve izin listeli `bash` (ls, cat, git log/diff/status/show, rg, find). `write_file`, `edit_file`, `shell` ve `git_commit` yalnızca `isolation: 'worktree'` ile verilir. Yazan ajan, runtime'ın açtığı `wf/<runId>/<label>` branch'ine commit eder; çıkışta branch, temiz status ve en az bir commit Git'ten doğrulanır ve sonuca `branchName` eklenir.
+
+Determinizm: script içinde `Date.now()`, `Math.random()` ve argümansız `new Date()` throw eder, çünkü resume cache anahtarı `sha256(prompt + opts)` ve aynı içeriğin kaçıncı çağrısı olduğundan türer. Zaman damgası `args` ile verilir (`new Date(args.ts)` çalışır).
+
+## Kendi harness'ine bağlama
+
+`maestroToolDefinition()` ana ajana verilecek Anthropic tool tanımını üretir (`name: "Workflow"`, `strict: true`). Açıklama metni opt-in politikasını taşır: ne zaman kullanılır, ne zaman kullanılmaz. `handleWorkflowToolCall()` çağrıyı doğrular, run'ı arka planda başlatır ve hemen döner. Sonuç `onComplete` ile gelir.
+
+```ts
+import Anthropic from '@anthropic-ai/sdk';
+import { handleWorkflowToolCall, maestroToolDefinition, toToolResultBlock } from 'maestro-orchestrator';
+
+const client = new Anthropic();
+const tools = [maestroToolDefinition(), /* kendi araçların */];
+
+// Model Workflow aracını çağırdığında:
+const res = await handleWorkflowToolCall(toolUse.input, {
+  cwd: repoDir,
+  budget: 500_000,
+  onComplete: (runId, outcome) => queueForModel(runId, outcome),   // sonucu sonraki turda modele ver
+});
+messages.push({ role: 'user', content: [toToolResultBlock(toolUse.id, res)] });
+```
+
+Girdide `script`, `scriptPath` veya `name` alanlarından tam biri verilir. `name`, `.maestro/workflows/<name>.js` dosyasına çözülür. `resumeFromRunId` ile düzenlenmiş script cache'ten devam eder. Strict şema keyfi JSON değeri ifade edemediği için `args` JSON-string olarak gönderilir. Geçersiz girdi, eksik veya saf olmayan `meta` ve syntax hatası throw etmez; `{ is_error: true, content }` döner.
+
+## Claude Code'a bağlama
+
+Aynı Workflow aracı stdio üzerinden bir MCP sunucusu olarak açılır. MCP'de push olmadığı için ikinci bir araç vardır: `WorkflowResult({ runId })` sonucu ya da `running` döner.
+
+```bash
+claude mcp add maestro -- npx maestro mcp
+```
+
+Script yazma rehberini skill olarak ekle:
+
+```bash
+mkdir -p .claude/skills/maestro-workflow-authoring && cp skill/SKILL.md .claude/skills/maestro-workflow-authoring/SKILL.md
+```
+
+`maestro mcp` sunucusu `--cwd`, `--state-dir`, `--budget`, `--concurrency`, `--model` ve `--dry-run` seçeneklerini alır. stdout MCP kanalıdır, tanılar stderr'e gider.
+
+## CLI
+
+```text
+maestro run <script.js> [--args <json>] [--args-file f] [--resume <runId>] [--budget 500k]
+                        [--dry-run] [--cwd d] [--state-dir d] [--concurrency n] [--model m]
+maestro gc [--delete] [--force] [--cwd d]
+maestro mcp [--cwd d] [--state-dir d] [--budget 500k] [--concurrency n] [--model m] [--dry-run]
+```
+
+`maestro gc` kirli worktree'leri ve `wf/*` branch'lerini listeler; birleşmiş sayılan branch'ler, HEAD'in atası olanlar ya da tüm commit'leri cherry-pick ile alınmış olanlardır. `--delete` kirli worktree'leri ve birleşmiş branch'leri siler. Birleşmemiş branch'ler yalnızca `--force` ile silinir.
+
+## Run dizini ve resume
+
+`.maestro/runs/<runId>/` dizininde `script.js`, `args.json`, `journal.jsonl` ve `blobs/` bulunur. Journal satır başına bir `agent()` çağrısı tutar (`key = sha256(prompt + "\n" + canonicalJSON(opts \ {label, phase})) + ":" + n`). Yalnızca `status: 'ok'` satırlar cache isabetidir. `null` (API hatası) ve `skipped` (bütçe, atlama, durdurma) satırları resume'da tekrar koşar. Böylece bütçeyi artırıp resume etmek yarım kalan ajanları canlandırır. 64 KB üstü sonuçlar `blobs/<key>.json` dosyasına yazılır.
+
+## Örnekler
+
+```bash
+npm run build
+```
+
+```bash
+node examples/review-changes.js --dry-run
+```
+
+```bash
+node examples/find-edge-cases.js --dry-run
+```
+
+```bash
+node examples/fanout-writers.js --dry-run
+```
+
+- `review-changes`: spec Seviye 4 Örnek 1, bul → üç skeptikle oyla → sentezle.
+- `find-edge-cases`: spec Seviye 4 Örnek 2, loop-until-dry.
+- `fanout-writers`: izole yazan ajanlar paralel commit eder, tek bir koordinatör branch'leri cherry-pick eder. Dry run geçici bir git reposu kurar; worktree, commit ve çıkış doğrulaması gerçekten çalışır.
+
+Workflow script'leri `examples/workflows/` altındadır. `examples/<ad>.js` dosyaları onları `run()` ile koşturan ince çalıştırıcılardır. `--dry-run` olmadan gerçek API kullanılır, `ANTHROPIC_API_KEY` yoksa açıklayıp çıkar.
+
+Gerçek API ile kısa bir duman testi, varsayılan test koşusunun dışında:
+
+```bash
+npm run smoke
+```
+
+## Geliştirme
+
+```bash
+npm test
+```
+
+```bash
+npm run lint
+```
+
+```bash
+npm run build
+```
+
+Testler Vitest'tir ve ağa çıkmaz. Runner testleri gerçek SDK `toolRunner` ve `parse` kodunu sahte bir `fetch` üstünde koşturur. İzolasyon testleri geçici git repolarında gerçek worktree açar. Diğer her şey `FakeRunner` (`src/testing/fake-runner.ts`) ile koşar.
+
+| Bileşen | Kaynak | Spec |
+|---|---|---|
+| Journal | `src/journal.ts` | 3.1 |
+| Agent runner, araçlar | `src/runner.ts`, `src/tools.ts` | 3.2 |
+| Script runtime, schema | `src/runtime.ts`, `src/schema.ts` | 3.3 |
+| Scheduler | `src/scheduler.ts` | 3.4 |
+| Budget | `src/budget.ts` | 3.5 |
+| Isolation | `src/isolation.ts` | 3.6 |
+| Observability | `src/progress.ts` | 3.7 |
+| Tool yüzeyi | `src/workflow.ts`, `src/tool.ts`, `src/mcp.ts`, `src/cli.ts` | Seviye 2 |
+
+## Spec'ten sapmalar
+
+Spec'ten koda birebir geçmeyen maddeler ve gerekçeleri aşağıdadır. Spec'in açık bıraktığı ve sapma sayılmayan seçimler [docs/decisions.md](docs/decisions.md) içindedir.
+
+- **`betaZodTool` ve `zodOutputFormat` yerine JSON Schema yardımcıları (3.2).** Script'ler şemayı JSON Schema olarak verir, araçlar da JSON Schema ile tanımlıdır. Runner araçları `strict: true` olan `BetaRunnableTool` nesneleri olarak `toolRunner`'a verir. Final aşamasında `betaJSONSchemaOutputFormat` ve yerel bir strict dönüşümü kullanır. JSON Schema'yı zod'a çevirip geri JSON Schema'ya çevirmek bilgi kaybettirirdi. SDK'nın kendi dönüşümü, `type: ['object','null']` düğümlerinin `properties`'ini düşürüyor. Sonuç ayrıca script'in özgün şemasına karşı doğrulanır.
+- **`toolRunner` `thread: false` ile koşar (3.2).** SDK 1.3.0 varsayılan olarak sunucu tarafı thread kullanır. Runner-seviyesi retry, tek `max_tokens` devamı ve "aynı transcript üstünde" parse için transcript yerelde tutulur.
+- **Strict tool şemasında `args` bir JSON-string'dir (kapsam eki, `src/tool.ts`).** Strict mod her objede `additionalProperties: false` ister ve tipsiz şemayı desteklemez. Bu yüzden `args?: any` olarak ifade edilemez. Handler string'i parse eder, gerçek bir değeri de kabul eder. Tüm alanlar `required` listesinde, `string | null` tipindedir.
+- **Kirli yazan ajanın yolu dönüş değerine yazılmaz (3.6).** Spec bir yerde yolun ve `git diff --stat` özetinin "dönüş değerine ve log'a" yazılacağını söyler. Başka bir yerde ise commit etmeyen ajanın gc lane'ine düştüğünü ve koordinatöre girmediğini söyler. Kirli ajan null döner; yol ve diff özeti journal satırının `worktree` alanına ve log'a yazılır.
+- **Semafor slotu ajanın tüm canlı koşusu boyunca tutulur (3.4).** Slot yalnızca HTTP isteği sırasında değil, araç yürütmeleri dahil `runner.run` boyunca tutulur. Worktree kurulumu, journal yazımı, script kodu, `parallel`/`pipeline` beklemeleri ve `workflow()` slot tutmaz. Bu, "aynı anda en fazla N canlı ajan" anlamını korur.
+- **Örnek script'ler çalıştırıcı + script olarak ikiye ayrıldı (Seviye 4).** Spec script'i (`export const meta` + en üstte `return`) ne geçerli bir ES modülüdür ne de CommonJS script'i. Bu yüzden `node examples/<ad>.js` dosyası, `examples/workflows/<ad>.js` script'ini `run()` ile koşturan bir çalıştırıcıdır.
+- **`fanout-writers` örneği hiç branch gelmezse koordinatörü çağırmaz (Seviye 4).** Spec parçacığı koordinatörü boş listeyle çağırırdı. O çağrı commit edecek bir şey bulamaz ve "no handoff" ile null döner.
+- **`workflow gc` komutu `maestro gc` adını taşır (3.6).** Ayrıca "birleşmiş" tespiti ata ilişkisinin yanında `git cherry` ile patch-eşdeğerliğine de bakar, çünkü koordinatör kalıbı cherry-pick kullanır ve `git branch --merged` cherry-pick'lenmiş branch'leri birleşmemiş gösterir.
+- **`/workflows` paneli yok (3.7).** Yalnızca terminal ilerleme ağacı (`src/progress.ts`) ve olay akışı (`handle.events`) vardır. Panel host'un arayüzüdür.
+- **Policy bileşeni ayrı bir modül değil (Seviye 2).** Opt-in kuralı metin olarak Workflow tool açıklamasında (`WORKFLOW_TOOL_DESCRIPTION`) ve skill'de yaşar. Sayısal sınırlar koddadır (`meta.maxAgents`, global tavan, bütçe).
+- **İç içe workflow'da çocuğun `meta.maxAgents` değeri uygulanmaz (3.4).** Sayaç paylaşıldığı için üst run'ın tavanı geçerlidir; çocuğun değeri log'a yazılır.
+- **Determinizm ezmesi saldırgana dayanıklı değildir (3.3).** `Object.getPrototypeOf(Date)` hâlâ özgün `Date`'e ulaşır. Spec'in de söylediği gibi `vm` bir güvenlik sınırı değildir. Buna karşılık saati okuyan argümansız `Intl.DateTimeFormat#format` da ezilmiştir.
+- **Agent SDK binding'i ve tek aşamalı runner yok (Açık soru 1 ve 2).** Spec bunları v2'ye ve sonraki bir optimizasyona bırakır.
