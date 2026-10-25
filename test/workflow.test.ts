@@ -6,6 +6,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { AnthropicRunner } from '../src/runner.js';
 import { FakeRunner } from '../src/testing/fake-runner.js';
 import type { Entry, WorkflowEvent } from '../src/types.js';
 import { type RunHandle, type RunOptions, run } from '../src/workflow.js';
@@ -457,5 +458,26 @@ describe('run dir and resume inputs', () => {
     const { handle } = start(dir, { runner: new FakeRunner(), name: 'hello', workflowsDir: wfDir });
     expect(await handle.promise).toBe('hi');
     expect(handle.runId).toMatch(/^\d{8}-\d{6}-[0-9a-f]{6}$/);
+  });
+});
+
+describe('overrun ceiling log (spec 3.5 aşım payı)', () => {
+  it("uses the runner's largest max_tokens: total + concurrency × runner.maxRequestTokens", async () => {
+    const dir = await tmp();
+    // No agent runs, so the runner's client is never built (never the network).
+    const runner = new AnthropicRunner({ maxTokens: 10_000 });
+    const { handle, events } = start(dir, { runner, budget: 50_000, script: `${META()}return 1;` });
+    expect(await handle.promise).toBe(1);
+    expect(runner.maxRequestTokens).toBe(20_000);
+    expect(logs(events)).toContain(`budget: total 50000, overrun ceiling ${50_000 + 4 * 20_000}`);
+  });
+
+  it('the default runner logs total + concurrency × its raised stage-2 max_tokens', async () => {
+    const dir = await tmp();
+    const { handle, events } = start(dir, { budget: 50_000, script: `${META()}return 1;` });
+    expect(await handle.promise).toBe(1);
+    const perTurn = new AnthropicRunner().maxRequestTokens;
+    expect(perTurn).toBe(32_000);
+    expect(logs(events)).toContain(`budget: total 50000, overrun ceiling ${50_000 + 4 * perTurn}`);
   });
 });

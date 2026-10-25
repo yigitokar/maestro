@@ -158,6 +158,14 @@ export const LIMITS = {
   blobThresholdBytes: 64 * 1024,
   /** Floor for the budget entry reservation (spec 3.5). */
   reserveFloor: 5000,
+  /** Default max_tokens of one runner request (spec 3.2 "max_tokens sınırlıdır"). */
+  maxTokensPerTurn: 16_000,
+  /**
+   * Cap for the raised max_tokens of the stage-2 retry after a max_tokens-truncated structured reply
+   * (spec 3.2). The largest single request of the default runner, hence the budget's default
+   * max_tokens_per_turn in the overrun ceiling (spec 3.5 aşım payı).
+   */
+  maxTokensPerTurnRaised: 32_000,
 } as const;
 
 export const DEFAULT_MODEL = 'claude-opus-5-5';

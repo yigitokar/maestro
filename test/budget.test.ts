@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { Budget, type BudgetLease, parseBudgetDirective } from '../src/budget.js';
-import { MaestroError } from '../src/types.js';
+import { LIMITS, MaestroError } from '../src/types.js';
 
 function expectBudgetThrow(fn: () => unknown): void {
   try {
@@ -339,5 +339,14 @@ describe('Budget overrunCeiling()', () => {
     expect(new Budget({ total: 100_000, concurrency: 4, maxTokensPerTurn: 8_000 }).overrunCeiling()).toBe(
       100_000 + 4 * 8_000,
     );
+  });
+});
+
+describe('Budget default maxTokensPerTurn (spec 3.5 aşım payı)', () => {
+  it('is the largest single request of the default runner (its raised stage-2 retry)', () => {
+    expect(new Budget({ total: 1_000, concurrency: 2 }).overrunCeiling()).toBe(
+      1_000 + 2 * LIMITS.maxTokensPerTurnRaised,
+    );
+    expect(LIMITS.maxTokensPerTurnRaised).toBe(2 * LIMITS.maxTokensPerTurn);
   });
 });

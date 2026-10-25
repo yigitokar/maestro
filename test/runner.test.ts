@@ -2,7 +2,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   AnthropicRunner,
   RETURN_CONTRACT,
@@ -12,7 +12,7 @@ import {
   WRITER_INSTRUCTION,
 } from '../src/runner.js';
 import { buildTools } from '../src/tools.js';
-import { MaestroError, type RunRequest, type ToolDef, type Usage } from '../src/types.js';
+import { LIMITS, MaestroError, type RunRequest, type ToolDef, type Usage } from '../src/types.js';
 
 // ---- scripted Messages API ------------------------------------------------------------------
 
@@ -542,5 +542,114 @@ describe('systemPrompt and schema helpers', () => {
     expect(validateValue(schema, { xs: [1] }).join()).toContain('required');
     expect(validateValue(schema, { k: 'c' }).join()).toContain('enum');
     expect(validateValue(schema, { k: 'a', xs: [1.5] }).join()).toContain('integer');
+  });
+});
+
+describe('AnthropicRunner: stage-2 max_tokens (spec 3.2)', () => {
+  const schema = { type: 'object', properties: { count: { type: 'integer' } }, required: ['count'] };
+
+  it('a structured reply cut by max_tokens is a failed parse; the retry raises max_tokens', async () => {
+    const { client, bodies } = scripted([
+      reply([text('notes')], 'end_turn'),
+      reply([text('{"count": 12')], 'max_tokens'),
+      reply([text('{"count":12}')], 'end_turn'),
+    ]);
+    const { req, logs } = makeReq({ schema });
+    const res = await runnerFor(client).run(req);
+    expect(res).toMatchObject({ result: { count: 12 }, status: 'ok', turns: 3 });
+    expect(bodies.map((b) => b.max_tokens)).toEqual([16_000, 16_000, 32_000]);
+    // No "continue" turn: the retry is the same parse request apart from max_tokens.
+    expect(bodies[2].messages).toEqual(bodies[1].messages);
+    expect(logs.join('\n')).toContain('cut by max_tokens; retrying with max_tokens 32000');
+  });
+
+  it('a plain parse failure retries with the same max_tokens', async () => {
+    const { client, bodies } = scripted([
+      reply([text('notes')], 'end_turn'),
+      reply([text('not json')], 'end_turn'),
+      reply([text('{"count":1}')], 'end_turn'),
+    ]);
+    const res = await runnerFor(client).run(makeReq({ schema }).req);
+    expect(res.status).toBe('ok');
+    expect(bodies[2].max_tokens).toBe(bodies[1].max_tokens);
+  });
+
+  it('max_tokens on the last attempt only → null, no raise announced', async () => {
+    const { client, bodies } = scripted([
+      reply([text('notes')], 'end_turn'),
+      reply([text('not json')], 'end_turn'),
+      reply([text('{"count": 1')], 'max_tokens'),
+    ]);
+    const { req, logs } = makeReq({ schema });
+    const res = await runnerFor(client).run(req);
+    expect(res.status).toBe('null');
+    expect(bodies[2].max_tokens).toBe(bodies[1].max_tokens);
+    expect(logs.join('\n')).not.toContain('retrying with max_tokens');
+  });
+
+  it('max_tokens on both parse attempts → null, no third request', async () => {
+    const { client, bodies } = scripted([
+      reply([text('notes')], 'end_turn'),
+      reply([text('{"count": 1')], 'max_tokens'),
+      reply([text('{"count": 1')], 'max_tokens'),
+      reply([text('{"count":1}')], 'end_turn'),
+    ]);
+    const { req, logs } = makeReq({ schema });
+    const res = await runnerFor(client).run(req);
+    expect(res).toMatchObject({ result: null, status: 'null', raw: '{"count": 1', turns: 3 });
+    expect(bodies).toHaveLength(3);
+    expect(logs.join('\n')).toContain('schema parse failed twice');
+  });
+
+  it('the raise is capped; a maxTokens at or above the cap is not raised', () => {
+    expect(new AnthropicRunner()).toMatchObject({
+      maxTokens: LIMITS.maxTokensPerTurn,
+      maxRequestTokens: LIMITS.maxTokensPerTurnRaised,
+    });
+    expect(new AnthropicRunner({ maxTokens: 20_000 }).maxRequestTokens).toBe(LIMITS.maxTokensPerTurnRaised);
+    expect(new AnthropicRunner({ maxTokens: 50_000 }).maxRequestTokens).toBe(50_000);
+  });
+});
+
+describe('AnthropicRunner: default client keeps the SDK retries (spec 3.2 Hata halleri)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it('persistent 529: 3 SDK attempts × 2 runner tries = 6 requests, then null', async () => {
+    vi.stubEnv('ANTHROPIC_API_KEY', 'test-dummy');
+    vi.stubEnv('ANTHROPIC_AUTH_TOKEN', undefined);
+    // Never reach Anthropic, even if the fetch stub were bypassed.
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'http://127.0.0.1:9');
+    const urls: string[] = [];
+    vi.stubGlobal('fetch', async (url: unknown) => {
+      urls.push(String(url));
+      // retry-after-ms keeps the SDK's own backoff at 1 ms.
+      return new Response(
+        JSON.stringify({ type: 'error', error: { type: 'overloaded_error', message: 'busy' } }),
+        {
+          status: 529,
+          headers: { 'content-type': 'application/json', 'retry-after-ms': '1' },
+        },
+      );
+    });
+    const runner = new AnthropicRunner({ retryDelayMs: 0 });
+    expect(runner.client.maxRetries).toBe(2);
+    const { req, logs } = makeReq();
+    const res = await runner.run(req);
+    expect(res).toMatchObject({ result: null, status: 'null' });
+    expect(urls).toHaveLength(6);
+    expect(urls.every((u) => u.startsWith('http://127.0.0.1:9/'))).toBe(true);
+    expect(logs.join('\n')).toMatch(/529.*retrying once/);
+  });
+});
+
+describe('writer system prompt: no package installs (spec 3.6)', () => {
+  it('the writer is told not to run npm install; a reader is not', () => {
+    const writer = systemPrompt({ cwd, writer: true });
+    expect(writer).toContain('Do not run npm install');
+    expect(writer).toContain('node_modules');
+    expect(systemPrompt({ cwd, writer: false })).not.toContain('npm install');
   });
 });

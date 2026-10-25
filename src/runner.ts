@@ -33,7 +33,10 @@ export const RETURN_CONTRACT =
 
 export const WRITER_INSTRUCTION =
   'You are on a branch prepared for you; work only in the current working directory. ' +
-  'When finished, commit your changes with git_commit. Uncommitted work is not handed off.';
+  'When finished, commit your changes with git_commit. Uncommitted work is not handed off.\n' +
+  // spec 3.6: node_modules and build artifacts are not copied into the worktree; the agent does not install.
+  'Do not run npm install or any other package install (npm/pnpm/yarn/bun/pip install, npm ci): ' +
+  'node_modules and build artifacts are not copied into this worktree (at most symlinked from the main checkout).';
 
 const CONTINUE_MESSAGE =
   'devam et / continue: your previous reply was cut off by the output limit. Continue exactly where you ' +
@@ -295,12 +298,18 @@ export class AnthropicRunner implements AgentRunner {
   #client: Anthropic | undefined;
   readonly maxTurns: number;
   readonly maxTokens: number;
+  /** Largest max_tokens of any single request: the raised stage-2 retry (spec 3.5 max_tokens_per_turn). */
+  readonly maxRequestTokens: number;
   readonly retryDelayMs: number;
 
   constructor(opts: AnthropicRunnerOptions = {}) {
     this.#client = opts.client;
     this.maxTurns = opts.maxTurns ?? LIMITS.maxTurns;
-    this.maxTokens = opts.maxTokens ?? 16_000;
+    this.maxTokens = opts.maxTokens ?? LIMITS.maxTokensPerTurn;
+    this.maxRequestTokens = Math.max(
+      this.maxTokens,
+      Math.min(2 * this.maxTokens, LIMITS.maxTokensPerTurnRaised),
+    );
     this.retryDelayMs = opts.retryDelayMs ?? 5_000;
   }
 
@@ -433,19 +442,24 @@ export class AnthropicRunner implements AgentRunner {
     };
     const parseMessages: MessageParam[] = [...messages, { role: 'user', content: SCHEMA_MESSAGE }];
     let raw = '';
+    let maxTokens = this.maxTokens;
     for (let attempt = 1; attempt <= 2; attempt++) {
       const response = await this.#withRetry(req, () =>
         client.beta.messages.parse(
           {
             model: req.model,
-            max_tokens: this.maxTokens,
+            max_tokens: maxTokens,
             system: req.system,
             messages: parseMessages,
             // History with tool_use blocks needs the tool definitions; never force a tool (400 on current models).
             ...(apiTools.length > 0 ? { tools: apiTools, tool_choice: { type: 'none' as const } } : {}),
             output_config: { format, ...(req.effort ? { effort: req.effort } : {}) },
           },
-          { signal: req.signal },
+          // The SDK refuses a non-streaming request whose max_tokens implies > 10 min (about 21k tokens)
+          // unless a timeout is given; the raised retry sets the SDK's own expected-time estimate.
+          maxTokens > this.maxTokens
+            ? { signal: req.signal, timeout: Math.max(600_000, (3_600_000 * maxTokens) / 128_000) }
+            : { signal: req.signal },
         ),
       );
       st.turn(response.usage);
@@ -464,6 +478,14 @@ export class AnthropicRunner implements AgentRunner {
         req.log(
           `schema parse attempt ${attempt}: no parsable structured output (stop: ${response.stop_reason})`,
         );
+      }
+      // spec 3.2 "max_tokens → bir kez devam et": a "continue" turn cannot resume an output_config.format
+      // reply (the continuation would be a fresh JSON document, not the rest of the cut one), so a
+      // max_tokens-truncated structured reply counts as a failed parse and its one retry gets a raised
+      // max_tokens instead of the identical request.
+      if (attempt < 2 && response.stop_reason === 'max_tokens' && this.maxRequestTokens > maxTokens) {
+        maxTokens = this.maxRequestTokens;
+        req.log(`schema parse attempt ${attempt} cut by max_tokens; retrying with max_tokens ${maxTokens}`);
       }
     }
     const error = 'schema parse failed twice';

@@ -56,7 +56,8 @@ export class Budget implements BudgetView {
     this.reserveFloor = opts.reserveFloor ?? LIMITS.reserveFloor;
     this.window = Math.max(1, opts.window ?? 20);
     this.concurrency = opts.concurrency ?? LIMITS.maxConcurrency;
-    this.maxTokensPerTurn = opts.maxTokensPerTurn ?? 32_000;
+    // Default: the largest single request of the default runner (its raised stage-2 retry, spec 3.2).
+    this.maxTokensPerTurn = opts.maxTokensPerTurn ?? LIMITS.maxTokensPerTurnRaised;
   }
 
   spent(): number {

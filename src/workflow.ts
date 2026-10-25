@@ -455,10 +455,16 @@ export function run(opts: RunOptions): RunHandle {
         concurrency: opts.concurrency ?? defaultConcurrency(),
         maxAgents: parsed.meta.maxAgents,
       });
+      // spec 3.5 aşım payı: max_tokens_per_turn is the largest max_tokens the runner actually sends.
+      const r = getRunner();
       budget =
         opts.budget instanceof Budget
           ? opts.budget
-          : new Budget({ total: opts.budget ?? null, concurrency: scheduler.concurrency });
+          : new Budget({
+              total: opts.budget ?? null,
+              concurrency: scheduler.concurrency,
+              maxTokensPerTurn: r instanceof AnthropicRunner ? r.maxRequestTokens : undefined,
+            });
       const offTick = budget.onTick((t) => emit({ type: 'budget_tick', runId, ...t }));
       try {
         if (budget.total !== null) {
