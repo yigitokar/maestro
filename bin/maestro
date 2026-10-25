@@ -1,0 +1,5 @@
+#!/usr/bin/env node
+// Thin bin entry: the CLI lives in dist/cli.js (npm run build).
+import { main } from '../dist/cli.js';
+
+process.exitCode = await main(process.argv.slice(2), { handleSignals: true });

@@ -8,6 +8,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseBudgetDirective } from './budget.js';
 import { gc } from './isolation.js';
+import { serveMcp } from './mcp.js';
 import { attachTerminalProgress, type ProgressStream } from './progress.js';
 import { AnthropicRunner } from './runner.js';
 import { FakeRunner } from './testing/fake-runner.js';
@@ -19,6 +20,8 @@ export const USAGE = `usage:
                           [--dry-run] [--cwd <dir>] [--state-dir <dir>] [--concurrency <n>] [--model <model>]
   maestro run --resume <runId> [options]     resume with the stored script.js and args.json
   maestro gc [--delete] [--force] [--cwd <dir>]
+  maestro mcp [--cwd <dir>] [--state-dir <dir>] [--budget <500k>] [--concurrency <n>] [--model <model>] [--dry-run]
+                                             serve the Workflow tool over stdio as an MCP server
 
   --dry-run   run every agent with an in-memory fake runner (schema stubs, no network)
   gc          lists dirty worktrees and merged / unmerged wf/* branches; deletes only with --delete
@@ -108,6 +111,7 @@ export async function main(argv: string[], ioOverrides: Partial<CliIO> = {}): Pr
     }
     if (command === 'run') return await runCommand(parsed, io);
     if (command === 'gc') return await gcCommand(parsed, io);
+    if (command === 'mcp') return await mcpCommand(parsed, io);
     throw new UsageError(`unknown command "${command}"`);
   } catch (e) {
     if (e instanceof UsageError) {
@@ -224,6 +228,37 @@ async function gcCommand(p: Parsed, io: CliIO): Promise<number> {
       '(nothing deleted; pass --delete to remove worktrees and merged branches, --force for unmerged)',
     );
   io.stdout.write(`${out.join('\n')}\n`);
+  return 0;
+}
+
+async function mcpCommand(p: Parsed, io: CliIO): Promise<number> {
+  if (p.positionals.length > 0) throw new UsageError(`unexpected arguments: ${p.positionals.join(' ')}`);
+  const budgetArg = str(p, 'budget');
+  const budget = budgetArg === undefined ? null : parseBudgetDirective(budgetArg);
+  if (budgetArg !== undefined && budget === null) throw new UsageError(`invalid --budget "${budgetArg}"`);
+  const concArg = str(p, 'concurrency');
+  const concurrency = concArg === undefined ? undefined : Number(concArg);
+  if (concurrency !== undefined && (!Number.isInteger(concurrency) || concurrency < 1)) {
+    throw new UsageError(`--concurrency must be a positive integer, got "${concArg}"`);
+  }
+  const dryRun = p.flags.has('dry-run');
+  // stdout is the MCP channel: diagnostics go to stderr only.
+  if (!dryRun && !io.env.ANTHROPIC_API_KEY) {
+    io.stderr.write('maestro mcp: ANTHROPIC_API_KEY is not set; Workflow runs will fail until it is.\n');
+  }
+  const cwd = path.resolve(io.cwd, str(p, 'cwd') ?? '.');
+  const stateDir = str(p, 'state-dir');
+  const server = await serveMcp({
+    runner: dryRun ? new FakeRunner() : new AnthropicRunner(),
+    cwd,
+    budget,
+    ...(stateDir !== undefined ? { stateDir: path.resolve(io.cwd, stateDir) } : {}),
+    ...(concurrency !== undefined ? { concurrency } : {}),
+    ...(str(p, 'model') !== undefined ? { model: str(p, 'model') } : {}),
+  });
+  await new Promise<void>((resolve) => {
+    server.onclose = () => resolve();
+  });
   return 0;
 }
 
