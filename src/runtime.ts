@@ -25,9 +25,30 @@ export interface HostHooks {
   budget: BudgetView;
   /** Default: LIMITS.maxItemsPerCall. */
   checkItems?(count: number, where: 'parallel' | 'pipeline'): void;
+  /**
+   * Called when parallel()/pipeline() turns a throw (or a non-function slot/stage) into null, so the host
+   * can log how many items dropped (spec Seviye 1 "kaç öğe düştüğünü log() ile söyler", Seviye 4 "No silent caps").
+   */
+  onSwallowed?(where: 'parallel' | 'pipeline', index: number, error: unknown): void;
 }
 
 type CheckItems = (count: number, where: 'parallel' | 'pipeline') => void;
+type OnSwallowed = (where: 'parallel' | 'pipeline', index: number, error: unknown) => void;
+
+/** Reports a swallowed throw; a broken observer must never make parallel()/pipeline() reject. */
+function reportSwallowed(
+  onSwallowed: OnSwallowed | undefined,
+  where: 'parallel' | 'pipeline',
+  i: number,
+  e: unknown,
+) {
+  if (!onSwallowed) return;
+  try {
+    onSwallowed(where, i, e);
+  } catch {
+    // ignore
+  }
+}
 type Stage = (prev: unknown, item: unknown, index: number) => unknown;
 
 const ACORN_OPTS = {
@@ -185,7 +206,7 @@ function defaultCheckItems(count: number, where: 'parallel' | 'pipeline'): void 
 }
 
 /** parallel(thunks): never rejects because of a thunk; a throwing or non-function thunk yields null. */
-export function makeParallel(checkItems: CheckItems = defaultCheckItems) {
+export function makeParallel(checkItems: CheckItems = defaultCheckItems, onSwallowed?: OnSwallowed) {
   return async function parallel(thunks: Array<() => Promise<unknown>>): Promise<unknown[]> {
     if (!Array.isArray(thunks)) throw new TypeError('parallel() expects an array of functions');
     const count = thunks.length;
@@ -197,8 +218,10 @@ export function makeParallel(checkItems: CheckItems = defaultCheckItems) {
       slots.push(
         (async () => {
           try {
-            return typeof thunk === 'function' ? await thunk() : null;
-          } catch {
+            if (typeof thunk !== 'function') throw new TypeError(`parallel() slot ${i} is not a function`);
+            return await thunk();
+          } catch (e) {
+            reportSwallowed(onSwallowed, 'parallel', i, e);
             return null;
           }
         })(),
@@ -213,7 +236,7 @@ export function makeParallel(checkItems: CheckItems = defaultCheckItems) {
  * gets (item, item, index), later stages (prev, item, index). A throwing stage makes the item null and
  * skips its remaining stages; a stage that returns null passes null on as a normal value.
  */
-export function makePipeline(checkItems: CheckItems = defaultCheckItems) {
+export function makePipeline(checkItems: CheckItems = defaultCheckItems, onSwallowed?: OnSwallowed) {
   return async function pipeline(items: unknown[], ...stages: Stage[]): Promise<unknown[]> {
     if (!Array.isArray(items)) throw new TypeError('pipeline() expects an array of items');
     const count = items.length;
@@ -226,11 +249,12 @@ export function makePipeline(checkItems: CheckItems = defaultCheckItems) {
         (async () => {
           let prev: unknown = item;
           try {
-            for (const stage of stages) {
-              if (typeof stage !== 'function') return null;
+            for (const [s, stage] of stages.entries()) {
+              if (typeof stage !== 'function') throw new TypeError(`pipeline() stage ${s} is not a function`);
               prev = await stage(prev, item, index);
             }
-          } catch {
+          } catch (e) {
+            reportSwallowed(onSwallowed, 'pipeline', index, e);
             return null;
           }
           return prev;
@@ -338,8 +362,8 @@ export async function runScript(
 
   const context = vm.createContext({
     agent,
-    parallel: makeParallel(checkItems),
-    pipeline: makePipeline(checkItems),
+    parallel: makeParallel(checkItems, hooks.onSwallowed?.bind(hooks)),
+    pipeline: makePipeline(checkItems, hooks.onSwallowed?.bind(hooks)),
     phase,
     log,
     args,
