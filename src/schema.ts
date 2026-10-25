@@ -19,14 +19,15 @@ function invalid(path: string, why: string): never {
 }
 
 /**
- * Throws MaestroError('schema_invalid') unless the root is `{ type: 'object', properties: {...} }`,
- * every `required` is a subset of its `properties` keys, and the same holds for every nested schema
- * reachable through properties / items / anyOf / oneOf / allOf.
+ * Throws MaestroError('schema_invalid') unless the root has `type: 'object'`, every `required` is a
+ * subset of its `properties` keys, and the same holds for every nested schema reachable through
+ * properties / items / anyOf / oneOf / allOf. Only those two cases make a schema unsatisfiable (spec
+ * Level 1 null/throw table): an object without `properties` is read as `properties: {}`, so
+ * `{ type: 'object' }` is accepted (`{}` matches it) and any `required` on it is rejected.
  */
 export function assertSatisfiableSchema(schema: unknown): asserts schema is JSONSchema {
   if (!isObject(schema)) invalid('$', 'schema must be an object');
   if (schema.type !== 'object') invalid('$', "root schema must have type: 'object'");
-  if (!isObject(schema.properties)) invalid('$', 'root schema must have a properties object');
   checkNode(schema, '$', new Set());
 }
 

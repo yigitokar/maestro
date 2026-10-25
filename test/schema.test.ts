@@ -39,6 +39,10 @@ describe('assertSatisfiableSchema', () => {
   it('accepts object schemas with required ⊆ properties', () => {
     expect(code(FINDINGS)).toBeUndefined();
     expect(code({ type: 'object', properties: {} })).toBeUndefined();
+    // No properties reads as properties: {} (spec: only a non-object root or required ⊄ properties throw).
+    expect(code({ type: 'object' })).toBeUndefined();
+    expect(code({ type: 'object', required: [] })).toBeUndefined();
+    expect(code({ type: 'object', properties: { x: { type: 'object' } }, required: ['x'] })).toBeUndefined();
     expect(
       code({ type: 'object', properties: { a: true, b: { type: ['string', 'null'] } } }),
     ).toBeUndefined();
@@ -53,7 +57,12 @@ describe('assertSatisfiableSchema', () => {
     ['array', [{ type: 'object' }]],
     ['root type array', { type: 'array', items: { type: 'string' } }],
     ['root without type', { properties: {} }],
-    ['root without properties', { type: 'object' }],
+    ['root without properties, with required', { type: 'object', required: ['a'] }],
+    ['root properties not an object', { type: 'object', properties: [] }],
+    [
+      'nested without properties, with required',
+      { type: 'object', properties: { x: { type: 'object', required: ['a'] } } },
+    ],
     ['required not subset', { type: 'object', properties: { a: {} }, required: ['a', 'b'] }],
     ['required not an array', { type: 'object', properties: { a: {} }, required: 'a' }],
     ['required non-string', { type: 'object', properties: { a: {} }, required: [1] }],

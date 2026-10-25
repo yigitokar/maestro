@@ -18,6 +18,8 @@ export interface FakeResponse {
   /** Wait per turn in ms (abortable). Default 0. */
   delayMs?: number;
   error?: string;
+  /** Raw model text returned on a non-ok status (spec 3.2: schema parse failed twice → raw in the journal). */
+  raw?: string;
   /** Side effect run inside the "agent" before the result is computed (e.g. write + commit in req.cwd). */
   effect?: (req: RunRequest) => void | Promise<void>;
 }
@@ -85,6 +87,7 @@ export class FakeRunner implements AgentRunner {
         usage,
         turns,
         ...(r.error ? { error: r.error } : {}),
+        ...(r.raw !== undefined && status !== 'ok' ? { raw: r.raw } : {}),
       };
     } finally {
       this.active--;
