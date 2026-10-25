@@ -1,0 +1,185 @@
+// CLI (bin "maestro") tested in-process through main(argv, io): dry runs, resume, gc, usage errors.
+
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { main } from '../src/cli.js';
+
+beforeAll(() => {
+  process.env.GIT_CONFIG_GLOBAL = '/dev/null';
+  process.env.GIT_CONFIG_NOSYSTEM = '1';
+});
+
+const dirs: string[] = [];
+afterEach(async () => {
+  for (const d of dirs.splice(0)) await rm(d, { recursive: true, force: true });
+});
+
+async function tmp(): Promise<string> {
+  const d = await realpath(await mkdtemp(path.join(os.tmpdir(), 'maestro-cli-')));
+  dirs.push(d);
+  return d;
+}
+
+async function cli(argv: string[], cwd: string, env: Record<string, string | undefined> = {}) {
+  let stdout = '';
+  let stderr = '';
+  const code = await main(argv, {
+    cwd,
+    env,
+    stdout: { write: (s: string) => (stdout += s) },
+    stderr: { write: (s: string) => (stderr += s), isTTY: false },
+  });
+  return { code, stdout, stderr };
+}
+
+function git(cwd: string, ...args: string[]): string {
+  const env = { ...process.env };
+  delete env.GIT_DIR;
+  delete env.GIT_WORK_TREE;
+  delete env.GIT_INDEX_FILE;
+  return execFileSync('git', args, { cwd, env, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim();
+}
+
+const SCRIPT = `export const meta = { name: 'cli-demo', description: 'd' };
+const r = await agent('summarize ' + args.topic, { label: 'sum', schema: { type: 'object', properties: { title: { type: 'string' }, n: { type: 'integer' } }, required: ['title', 'n'] } });
+log('got ' + r.title);
+return { topic: args.topic, r };`;
+
+describe('maestro run', () => {
+  it('--dry-run --args prints the JSON result on stdout and progress on stderr', async () => {
+    const dir = await tmp();
+    await writeFile(path.join(dir, 'demo.js'), SCRIPT);
+    const res = await cli(
+      ['run', 'demo.js', '--dry-run', '--args', '{"topic":"x"}', '--concurrency', '2'],
+      dir,
+    );
+    expect(res.code).toBe(0);
+    expect(JSON.parse(res.stdout)).toEqual({ topic: 'x', r: { title: 'summarize x.title', n: 1 } });
+    expect(res.stderr).toMatch(/run \d{8}-\d{6}-[0-9a-f]{6} \(dry run\)/);
+    expect(res.stderr).toContain('✓ sum  100 tok');
+    expect(res.stderr).toContain('· got summarize x.title');
+
+    // --resume reuses the stored script and args: same output.
+    const runId = /run (\S+) \(dry run\)/.exec(res.stderr)![1]!;
+    const again = await cli(['run', '--resume', runId, '--dry-run'], dir);
+    expect(again.code).toBe(0);
+    expect(JSON.parse(again.stdout)).toEqual(JSON.parse(res.stdout));
+    expect(again.stderr).toContain('↺ sum');
+  });
+
+  it('--args-file, --budget and --cwd are honoured', async () => {
+    const dir = await tmp();
+    const work = path.join(dir, 'work');
+    await writeFile(path.join(dir, 'demo.js'), SCRIPT);
+    await writeFile(path.join(dir, 'args.json'), '{"topic":"from-file"}');
+    await mkdir(work);
+    const res = await cli(
+      ['run', 'demo.js', '--dry-run', '--args-file', 'args.json', '--budget', '50k', '--cwd', 'work'],
+      dir,
+    );
+    expect(res.code).toBe(0);
+    expect(JSON.parse(res.stdout).topic).toBe('from-file');
+    expect(res.stderr).toContain('budget: total 50000, overrun ceiling');
+    expect(res.stderr).toContain(path.join(work, '.maestro', 'runs'));
+  });
+
+  it('a failing script exits 1 with the error and a resume hint', async () => {
+    const dir = await tmp();
+    await writeFile(
+      path.join(dir, 'bad.js'),
+      `export const meta = { name: 'b', description: 'd' };\nthrow new Error('boom');`,
+    );
+    const res = await cli(['run', 'bad.js', '--dry-run'], dir);
+    expect(res.code).toBe(1);
+    expect(res.stdout).toBe('');
+    expect(res.stderr).toMatch(/failed: boom/);
+    expect(res.stderr).toMatch(/maestro run --resume \S+/);
+  });
+
+  it('without --dry-run and without ANTHROPIC_API_KEY: explains and exits 1, nothing runs', async () => {
+    const dir = await tmp();
+    await writeFile(path.join(dir, 'demo.js'), SCRIPT);
+    const res = await cli(['run', 'demo.js', '--args', '{}'], dir, {});
+    expect(res.code).toBe(1);
+    expect(res.stderr).toMatch(/ANTHROPIC_API_KEY is not set/);
+    expect(res.stderr).toMatch(/--dry-run/);
+  });
+
+  it('bad flags exit 1 with usage', async () => {
+    const dir = await tmp();
+    for (const argv of [
+      ['run', 'x.js', '--budget', 'lots', '--dry-run'],
+      ['run', 'x.js', '--args', '{nope', '--dry-run'],
+      ['run', 'x.js', '--concurrency', '0', '--dry-run'],
+      ['run', 'x.js', '--frobnicate'],
+      ['run'],
+    ]) {
+      const res = await cli(argv, dir);
+      expect(res.code).toBe(1);
+      expect(res.stderr).toContain('usage:');
+    }
+  });
+});
+
+describe('maestro gc', () => {
+  it('lists dirty worktrees and wf/* branches; deletes only with --delete', async () => {
+    const repo = await tmp();
+    git(repo, 'init', '-q', '-b', 'main');
+    git(repo, 'config', 'user.name', 'T');
+    git(repo, 'config', 'user.email', 't@example.com');
+    git(repo, 'config', 'commit.gpgsign', 'false');
+    await writeFile(path.join(repo, 'a.txt'), 'a\n');
+    git(repo, 'add', '-A');
+    git(repo, 'commit', '-q', '-m', 'init');
+    git(repo, 'branch', 'wf/r1/merged');
+    git(repo, 'branch', 'wf/r1/open');
+    const wt = path.join(repo, '.maestro', 'worktrees', 'r1', 'open');
+    git(repo, 'worktree', 'add', '-q', wt, 'wf/r1/open');
+    await writeFile(path.join(wt, 'b.txt'), 'b\n');
+    git(wt, 'add', '-A');
+    git(wt, 'commit', '-q', '-m', 'b');
+    await writeFile(path.join(wt, 'dirty.txt'), 'wip\n');
+
+    const list = await cli(['gc', '--cwd', repo], os.tmpdir());
+    expect(list.code).toBe(0);
+    expect(list.stdout).toContain('dirty worktrees:');
+    expect(list.stdout).toContain(`${wt} [wf/r1/open]`);
+    expect(list.stdout).toContain('1 untracked file');
+    expect(list.stdout).toMatch(/merged wf\/\* branches:\n {2}wf\/r1\/merged/);
+    expect(list.stdout).toMatch(/unmerged wf\/\* branches:\n {2}wf\/r1\/open/);
+    expect(list.stdout).toContain('nothing deleted');
+    expect(git(repo, 'branch', '--list', 'wf/*', '--format=%(refname:short)').split('\n')).toHaveLength(2);
+
+    const del = await cli(['gc', '--delete'], repo);
+    expect(del.code).toBe(0);
+    expect(del.stdout).toMatch(/removed:\n/);
+    expect(del.stdout).toContain('wf/r1/merged');
+    // Unmerged branches survive without --force.
+    expect(git(repo, 'branch', '--list', 'wf/*', '--format=%(refname:short)')).toBe('wf/r1/open');
+  });
+});
+
+describe('maestro (no command / unknown command / help)', () => {
+  it('unknown command → exit 1 with usage; help → exit 0', async () => {
+    const dir = await tmp();
+    const unknown = await cli(['frob'], dir);
+    expect(unknown.code).toBe(1);
+    expect(unknown.stderr).toContain('unknown command "frob"');
+    expect(unknown.stderr).toContain('usage:');
+    const none = await cli([], dir);
+    expect(none.code).toBe(1);
+    expect(none.stdout).toContain('usage:');
+    const help = await cli(['--help'], dir);
+    expect(help.code).toBe(0);
+    expect(help.stdout).toContain('maestro run <script.js>');
+  });
+
+  it('the bin entry starts with a node shebang', () => {
+    const src = readFileSync(path.join(import.meta.dirname, '..', 'src', 'cli.ts'), 'utf8');
+    expect(src.split('\n')[0]).toBe('#!/usr/bin/env node');
+  });
+});
