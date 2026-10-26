@@ -211,13 +211,18 @@ describe('review sheet', () => {
     expect(md).toContain('| r-null | 30 | fix: 1 | null (ajan sonuç vermedi) |');
     expect(md).toContain('| r-c | 50 | <=200 | 75% (3/4) |');
 
-    // An earlier round accepted r-no: it moves out of the rejected table, with the earlier bugs.
-    const earlier: TriageReport = { ...triage, results: [row('r-no', 20, [fixOf(2, true, [7])])] };
+    // An earlier round accepted r-no on fixes 2 and 5: it moves out of the rejected table with the earlier
+    // bugs, and each of those fixes shows this round's verdict on the same SHA (5 was not asked this time).
+    const earlier: TriageReport = {
+      ...triage,
+      results: [row('r-no', 20, [fixOf(2, true, [7]), fixOf(5, true, [8])])],
+    };
     const md2 = reviewSheet(triage, mined, earlier);
     expect(md2).toContain('1 önceki turda kabul edilmişti');
     expect(md2).toContain('## Önceki turda kabul, bu turda red (1)');
     expect(md2).toContain('- `a.ts:7` d7');
-    expect(md2).toContain('Bu tur: r2');
+    expect(md2).toContain('`: kusur / - / görülür, r2');
+    expect(md2).toContain('`: sorulmadı (8 fix sınırı ya da null)');
     expect(md2).toContain('## Reddedilenler (1)');
   });
 });

@@ -133,13 +133,19 @@ export function reviewSheet(triage: TriageReport, mined: MineResult, earlier?: T
     out.push(`## Önceki turda kabul, bu turda red (${flipped.length})`);
     out.push('');
     out.push(
-      "Fix listesi değişince yeniden soruldu ve bu tur reddetti. Aşağıda önceki turun kararı var; bu turun ilk fix'e " +
-        'gerekçesi başlığın altında.',
+      'Fix listesi değişince yeniden soruldu ve bu tur reddetti. Aşağıda önceki turun kararı var; altında, önceki ' +
+        "turun kabul ettiği her fix'e bu turun verdiği karar.",
     );
     for (const { now, earlierRow } of flipped) {
       candidateBlock(earlierRow, out);
       out.push('');
-      out.push(`Bu tur: ${cell(trim(now.triage?.fixes[0]?.reason ?? 'null (ajan sonuç vermedi)', 280))}`);
+      const current = new Map((now.triage?.fixes ?? []).map((f) => [f.sha, f]));
+      for (const f of earlierRow.triage!.fixes.filter(keep)) {
+        const c = current.get(f.sha);
+        out.push(
+          `- Bu tur \`${f.sha.slice(0, 9)}\`: ${c ? `${flags(c)}, ${cell(trim(c.reason, 280))}` : 'sorulmadı (8 fix sınırı ya da null)'}`,
+        );
+      }
     }
     out.push('');
   }
