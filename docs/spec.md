@@ -1,10 +1,11 @@
 # Workflow Orchestrator: Tasarım ve Spec
 
 > Çok-ajanlı orkestrasyon katmanı. Dört seviye: tek sayfa, sözleşmeler, mimari, bileşen spec'leri. Sonunda kalıp kütüphanesi, eval planı ve açık sorular.
-> Durum: taslak v0.3.1, 2026-10-25. Seviye 0-2 tam, Seviye 3 iki bileşen dolu, Seviye 4 iki örnek script.
+> Durum: taslak v0.3.2, 2026-10-25. Seviye 0-2 tam, Seviye 3 iki bileşen dolu, Seviye 4 iki örnek script.
 > v0.1 → v0.2 (review sonrası): journal anahtarı içerik adresli oldu, bütçeye giriş rezervasyonu ve tur içi abort geldi, izolasyon olmadan yazma aracı yok, semaforun ne zaman slot tuttuğu yazıldı, vm notu, blob eşiği, worktree gc, `meta.maxAgents`, koordinatör merge kalıbı, ADR-4.
 > v0.2 → v0.3: `vm` içinde `Date`/`Math` ezme kodu, yazan ajanın el ürünü branch (worktree yolu veya diff metni değil), Journal `get` yalnızca `ok` kayıtları döner.
 > v0.3 → v0.3.1: yazan ajanın branch'ini runtime açar (`git worktree add -B`), çıkış doğrulaması runtime'da, `branchName` şemadan çıktı.
+> v0.3.1 → v0.3.2 (ilk gerçek koşuların ölçümü sonrası): runner'da prompt caching (araçlar + sistem üzerinde açık breakpoint, transcript için otomatik breakpoint), `usage`'a cache okuma/yazma alanları, journal satırına denetim amaçlı `trace` (araç çağrıları + final metin) ve `maestro show`, Örnek 1'in skeptik prompt'una iddianın hangi diff hakkında olduğu.
 
 ---
 
@@ -148,7 +149,12 @@ interface Entry {
   key: string;              // hash + ":" + n
   label?: string;
   result: any | null;       // schema'lı ise doğrulanmış obje
-  usage: { output_tokens: number; input_tokens: number };
+  usage: {
+    output_tokens: number;
+    input_tokens: number;                  // cache'siz girdi (API anlamı)
+    cache_read_input_tokens?: number;      // API bildirdiyse; toplam girdi = input + cache_creation + cache_read
+    cache_creation_input_tokens?: number;
+  };
   status: 'ok' | 'null' | 'skipped';   // yalnızca 'ok' cache isabetidir
   trace?: {                 // yalnızca denetim: anahtara ve cache'e girmez
     toolCalls: { tool: string; inputSummary: string; ok: boolean }[];  // inputSummary: input JSON'unun ilk 200 karakteri
@@ -222,6 +228,7 @@ interface AgentRunner {
 - Runner içinde alt ajan yoktur. Ajan `agent()` çağıramaz, workflow başlatamaz. Semafor kıtlığının (slot tutan ajanın slot bekleyen çocuğu) tek kaynağı budur ve kapalıdır.
 - `stop_reason === 'refusal'` görülürse ajan null sayılır, kategori log'lanır, retry yapılmaz.
 - `stop_reason === 'max_tokens'` görülürse bir kez "devam et" ile tekrar denenir.
+- **Prompt caching.** Render sırası araçlar → sistem → mesajlar. Araç tanımları sabit sırada, sistem prompt'u tek bir text bloğu olarak gider ve o bloğa `cache_control: { type: 'ephemeral' }` konur: aynı araç listesi ve CLAUDE.md ile koşan bütün ajanlar bu prefix'i paylaşır. Değişken içerik (prompt, içine gömülü args, transcript) breakpoint'ten sonra gelir. Araç döngüsünde ayrıca istek düzeyinde `cache_control` (otomatik breakpoint) verilir; son bloğa yerleşir ve transcript büyüdükçe ilerler, böylece her tur bir önceki turun prefix'ini cache'ten okur. Stage 2 yalnızca sistem breakpoint'ini taşır: `tool_choice` ve çıktı formatı değiştiği için mesaj cache'i zaten geçersizdir, otomatik breakpoint tüm transcript'i yazma primiyle bir kez daha yazardı. Her turun `cache_read_input_tokens` ve `cache_creation_input_tokens` değerleri `usage`'a eklenir. Budget yalnızca çıktı tokenini saydığı için caching bütçeyi değiştirmez.
 - Ajan birbirinin çıktısını görmez; sadece script'in prompt'a koyduğu kadarını bilir.
 
 **Hata halleri.**
@@ -289,7 +296,7 @@ vm.runInContext(`
 - Testler: 16 paralel izole ajan: 16 worktree, sıralı oluşturma, çekişme hatası yok. Abort edilen temiz ajan: worktree yok. Abort edilen kirli ajan: worktree duruyor, log'da yol.
 
 ### 3.7 Observability (iskelet)
-- Olay akışı: `agent_start`, `agent_end`, `phase`, `log`, `budget_tick`.
+- Olay akışı: `agent_start`, `agent_end`, `phase`, `log`, `budget_tick`. `agent_end.usage` cache alanlarını taşır; terminal ağacı canlı ajan satırında "cached %x" (cache okuması / toplam girdi) gösterir, run sonunda toplam girdi ve cache'ten okunan oranı `log` olarak yazılır.
 - Tüketici: terminal ağacı, `/workflows` paneli.
 - Testler: TBD.
 
@@ -354,7 +361,9 @@ const perDimension = await pipeline(
     return parallel(found.findings.map(f => async () => {
       const votes = await parallel([0, 1, 2].map(i => () =>
         agent(`Bu iddiayı ÇÜRÜTMEYE çalış: ${f.claim} (${f.file}:${f.line}). Senaryo: ${f.failure}. ` +
-              `Kodu oku. Emin değilsen refuted=true. Perspektif ${i}: ${['tekrar üretilebilirlik','niyet/edge case','mevcut testler'][i]}.`,
+              `İddia şu değişiklik hakkında: "git diff ${args.diffRef}". Önce diff'i, sonra çalışma ağacındaki kodu oku; ` +
+              `iddia diff'in getirdiği durumu anlatıyor. Emin değilsen refuted=true. ` +
+              `Perspektif ${i}: ${['tekrar üretilebilirlik','niyet/edge case','mevcut testler'][i]}.`,
           { label: `verify:${f.file}:${f.line}#${i}`, phase: 'Verify', schema: VERDICT, effort: 'high' })))
       const alive = votes.filter(Boolean).filter(v => !v.refuted).length >= 2
       return alive ? { ...f, dimension: d.key, votes } : null
@@ -371,6 +380,8 @@ const summary = await agent(
   { phase: 'Synthesize', schema: FINDINGS })
 return summary
 ```
+
+Skeptik prompt'undaki diff satırı ilk gerçek koşudan gelir: iddianın hangi diff hakkında olduğunu bilmeyen skeptikler iddiaları diff'in üretmediği koda göre değerlendirdi ve 36 oyun 34'ünde yanlış çürüttü. Önce diff, sonra çalışma ağacı.
 
 Dikkat: `Verify` aşaması `Find`'ın tüm sonuçlarını beklemez; correctness boyutu doğrulanırken security hâlâ aranıyor olabilir. Sentez tek bariyerdir çünkü tüm bulgulara birlikte ihtiyaç duyar.
 
