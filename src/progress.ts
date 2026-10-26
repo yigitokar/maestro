@@ -2,7 +2,8 @@
 // that redraws it in place on a TTY or prints one line per agent_end / phase / log otherwise.
 
 import type { EventEmitter } from 'node:events';
-import type { EntryStatus, WorkflowEvent } from './types.js';
+import type { EntryStatus, Usage, WorkflowEvent } from './types.js';
+import { cacheReadRatio } from './usage.js';
 
 type AgentState = 'running' | EntryStatus | 'cached';
 
@@ -19,6 +20,8 @@ interface AgentRow {
   name: string;
   state: AgentState;
   outputTokens: number;
+  /** Share of input read from the prompt cache, when the runner reported cache figures. */
+  cacheRatio: number | null;
 }
 
 interface PhaseBox {
@@ -76,6 +79,7 @@ export class ProgressTree {
           name: ev.label ?? ev.key.slice(0, 12),
           state: 'running',
           outputTokens: 0,
+          cacheRatio: null,
         };
         this.agents.set(ev.id, row);
         this.box(ev.group, ev.phase ?? NO_PHASE).agents.push(row);
@@ -84,12 +88,19 @@ export class ProgressTree {
       case 'agent_end': {
         let row = this.agents.get(ev.id);
         if (!row) {
-          row = { id: ev.id, name: ev.label ?? ev.key.slice(0, 12), state: 'running', outputTokens: 0 };
+          row = {
+            id: ev.id,
+            name: ev.label ?? ev.key.slice(0, 12),
+            state: 'running',
+            outputTokens: 0,
+            cacheRatio: null,
+          };
           this.agents.set(ev.id, row);
           this.box(ev.group, ev.phase ?? NO_PHASE).agents.push(row);
         }
         row.state = ev.cached ? 'cached' : ev.status;
         row.outputTokens = ev.usage.output_tokens;
+        row.cacheRatio = ev.cached ? null : cacheReadRatio(ev.usage);
         break;
       }
     }
@@ -133,7 +144,7 @@ export class ProgressTree {
     const c = box.agents.filter((a) => a.state !== 'running').length;
     lines.push(`${indent}${box.title}${box.agents.length ? ` [${c}/${box.agents.length}]` : ''}`);
     for (const a of box.agents) {
-      const tok = a.state === 'running' ? '' : `  ${fmt(a.outputTokens)} tok`;
+      const tok = a.state === 'running' ? '' : `  ${fmt(a.outputTokens)} tok${cachedSuffix(a.cacheRatio)}`;
       lines.push(`${indent}  ${GLYPHS[a.state]} ${a.name}${tok}`);
     }
   }
@@ -160,6 +171,15 @@ export class ProgressTree {
   }
 }
 
+/** ", cached 73%" after the token count; empty without cache figures. */
+function cachedSuffix(ratio: number | null): string {
+  return ratio === null ? '' : `, cached ${Math.round(ratio * 100)}%`;
+}
+
+function usageSuffix(usage: Usage, cached: boolean): string {
+  return cached ? '' : cachedSuffix(cacheReadRatio(usage));
+}
+
 function fmt(n: number): string {
   if (!Number.isFinite(n)) return '∞';
   return Math.round(n).toLocaleString('en-US');
@@ -176,7 +196,7 @@ export function formatEventLine(ev: WorkflowEvent): string | null {
     case 'agent_end': {
       const state: AgentState = ev.cached ? 'cached' : ev.status;
       const where = ev.phase ? `${ev.phase} / ` : '';
-      return `${g}${GLYPHS[state]} ${where}${ev.label ?? ev.key.slice(0, 12)}  ${fmt(ev.usage.output_tokens)} tok`;
+      return `${g}${GLYPHS[state]} ${where}${ev.label ?? ev.key.slice(0, 12)}  ${fmt(ev.usage.output_tokens)} tok${usageSuffix(ev.usage, ev.cached)}`;
     }
     default:
       return null;

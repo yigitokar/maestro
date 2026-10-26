@@ -26,6 +26,7 @@ import type {
   WorkflowMeta,
 } from './types.js';
 import { DEFAULT_MODEL, MaestroError } from './types.js';
+import { addUsage, cacheReadRatio, hasCacheInfo, totalInput } from './usage.js';
 
 export interface RunOptions {
   /** Exactly one of script | scriptPath | name; a resume may omit all three and reuse the stored script.js. */
@@ -109,6 +110,8 @@ export function run(opts: RunOptions): RunHandle {
   const inflight = new Set<Promise<unknown>>();
   const skipControllers = new Map<number, AbortController>();
   let nextId = 0;
+  /** Usage of every live model turn of this run (journal hits excluded), for the run-end cache line. */
+  const liveUsage: Usage = { input_tokens: 0, output_tokens: 0 };
 
   let journal: Journal | undefined;
   let budget: Budget | undefined;
@@ -243,8 +246,8 @@ export function run(opts: RunOptions): RunHandle {
                 signal,
                 isolated,
                 onUsage: (u) => {
-                  turnUsage.input_tokens += finite(u.input_tokens);
-                  turnUsage.output_tokens += finite(u.output_tokens);
+                  addUsage(turnUsage, u);
+                  addUsage(liveUsage, u);
                   lease.report(finite(u.output_tokens));
                 },
                 log: (m) => emitLog(m, frame.group),
@@ -480,6 +483,7 @@ export function run(opts: RunOptions): RunHandle {
           // Agents the script left behind are aborted and journaled before the run settles.
           if (inflight.size > 0 && !runController.signal.aborted) runController.abort();
           await drain();
+          if (hasCacheInfo(liveUsage)) emitLog(cacheLine(liveUsage));
           // Thrown after the script settles, so it also wins when parallel() swallowed it into a null slot.
           // biome-ignore lint/correctness/noUnsafeFinally: the journal failure overrides the script outcome.
           if (fatal !== undefined) throw fatal;
@@ -569,6 +573,16 @@ function copyValue(v: unknown): unknown {
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === 'object' && !Array.isArray(v);
+}
+
+/** Run-end summary: total input against what the prompt cache served. */
+function cacheLine(u: Usage): string {
+  const pct = Math.round((cacheReadRatio(u) ?? 0) * 100);
+  const n = (v: number | undefined) => (v ?? 0).toLocaleString('en-US');
+  return (
+    `cache: ${n(totalInput(u))} input tokens, ${n(u.cache_read_input_tokens)} read from cache (${pct}%), ` +
+    `${n(u.cache_creation_input_tokens)} written, ${n(u.input_tokens)} uncached; ${n(u.output_tokens)} output`
+  );
 }
 
 function finite(n: unknown): number {

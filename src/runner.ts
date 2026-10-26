@@ -20,10 +20,24 @@ import {
   type ToolContext,
   type Usage,
 } from './types.js';
+import { addUsage } from './usage.js';
 
 type MessageParam = Anthropic.Beta.Messages.BetaMessageParam;
 type BetaMessage = Anthropic.Beta.Messages.BetaMessage;
 type BetaTool = Anthropic.Beta.Messages.BetaTool;
+type BetaTextBlockParam = Anthropic.Beta.Messages.BetaTextBlockParam;
+
+/** Prompt-cache breakpoint (5-minute TTL; agents of one run reuse each other's prefix well within it). */
+const EPHEMERAL = { type: 'ephemeral' } as const;
+
+/**
+ * The system prompt as one text block carrying an explicit cache breakpoint. Tools render before system,
+ * so the breakpoint caches tools + system: the stable prefix shared by every agent with the same tool
+ * list and CLAUDE.md. Volatile content (the prompt with its args, the transcript) comes after it.
+ */
+export function cachedSystem(system: string): BetaTextBlockParam[] {
+  return [{ type: 'text', text: system, cache_control: EPHEMERAL }];
+}
 
 /** Return contract (spec Level 1 "Dönüş sözleşmesi"). */
 export const RETURN_CONTRACT =
@@ -72,11 +86,11 @@ class RunState {
   turns = 0;
   constructor(private readonly req: RunRequest) {}
 
-  turn(u: { input_tokens?: number | null; output_tokens?: number | null } | null | undefined): void {
-    const usage = { input_tokens: u?.input_tokens ?? 0, output_tokens: u?.output_tokens ?? 0 };
+  turn(u: Partial<Record<keyof Usage, number | null>> | null | undefined): void {
+    const usage: Usage = { input_tokens: 0, output_tokens: 0 };
+    addUsage(usage, u);
     this.turns++;
-    this.usage.input_tokens += usage.input_tokens;
-    this.usage.output_tokens += usage.output_tokens;
+    addUsage(this.usage, usage);
     this.req.onUsage(usage); // immediately, per turn
     if (this.req.signal.aborted) throw new Aborted();
   }
@@ -369,9 +383,12 @@ export class AnthropicRunner implements AgentRunner {
         {
           model: req.model,
           max_tokens: this.maxTokens,
-          system: req.system,
+          system: cachedSystem(req.system),
           messages,
           tools: runnable,
+          // Automatic breakpoint on the last block: it walks forward with the transcript, so every turn
+          // reads the previous turn's prefix from the cache instead of paying for it again.
+          cache_control: EPHEMERAL,
           max_iterations: Math.max(1, this.maxTurns - loopTurns),
           // Full history each turn: the transcript stays local, so a runner-level retry or the
           // stage-2 parse continues from it without re-running finished tool calls.
@@ -449,7 +466,10 @@ export class AnthropicRunner implements AgentRunner {
           {
             model: req.model,
             max_tokens: maxTokens,
-            system: req.system,
+            // Only the tools + system breakpoint here: tool_choice and the output format differ from
+            // stage 1, which invalidates the messages cache, and an automatic breakpoint would write the
+            // whole transcript at the write premium for a request that is not repeated.
+            system: cachedSystem(req.system),
             messages: parseMessages,
             // History with tool_use blocks needs the tool definitions; never force a tool (400 on current models).
             ...(apiTools.length > 0 ? { tools: apiTools, tool_choice: { type: 'none' as const } } : {}),

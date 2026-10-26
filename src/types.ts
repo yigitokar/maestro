@@ -7,8 +7,13 @@ export type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 export type JSONSchema = { [key: string]: unknown };
 
 export interface Usage {
+  /** Uncached input only (API semantics): total input = input + cache_creation + cache_read. */
   input_tokens: number;
   output_tokens: number;
+  /** Prompt-cache reads, present when the API reported them (the real API always does). */
+  cache_read_input_tokens?: number;
+  /** Prompt-cache writes, present when the API reported them. */
+  cache_creation_input_tokens?: number;
 }
 
 /** Journal status. Only 'ok' is a cache hit (spec 3.1). */

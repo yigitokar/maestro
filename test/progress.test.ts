@@ -7,7 +7,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { attachTerminalProgress, formatEventLine, ProgressTree } from '../src/progress.js';
 import { FakeRunner } from '../src/testing/fake-runner.js';
-import type { WorkflowEvent } from '../src/types.js';
+import type { Usage, WorkflowEvent } from '../src/types.js';
 import { run } from '../src/workflow.js';
 
 const R = 'run-1';
@@ -181,6 +181,95 @@ return 1;`,
       expect(text).toContain('  ✓ A  100 tok');
       expect(text).toContain('  ✓ B  100 tok');
       expect(text).toContain('  · done');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('prompt-cache figures (v1.1)', () => {
+  const end = (usage: Usage, cached = false): WorkflowEvent => ({
+    type: 'agent_end',
+    runId: R,
+    id: 7,
+    key: K(7),
+    label: 'find:x',
+    phase: 'Find',
+    status: 'ok',
+    cached,
+    usage,
+  });
+
+  it('agent row and stream line show "cached N%" = cache reads / total input', () => {
+    const usage = {
+      input_tokens: 100,
+      output_tokens: 50,
+      cache_read_input_tokens: 700,
+      cache_creation_input_tokens: 200,
+    };
+    const tree = new ProgressTree();
+    tree.push(end(usage));
+    expect(tree.render()).toContain('✓ find:x  50 tok, cached 70%');
+    expect(formatEventLine(end(usage))).toBe('✓ Find / find:x  50 tok, cached 70%');
+  });
+
+  it('no suffix without cache figures, and none for journal hits', () => {
+    expect(formatEventLine(end(U(50)))).toBe('✓ Find / find:x  50 tok');
+    const usage = { input_tokens: 1, output_tokens: 50, cache_read_input_tokens: 9 };
+    expect(formatEventLine(end(usage, true))).toBe('↺ Find / find:x  50 tok');
+  });
+
+  it('run() logs total input against cache reads at the end of the run', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'maestro-cache-'));
+    try {
+      const runner = new FakeRunner(() => ({
+        turns: 2,
+        inputTokensPerTurn: 100,
+        cacheReadTokensPerTurn: 800,
+        cacheCreationTokensPerTurn: 100,
+      }));
+      const handle = run({
+        cwd: dir,
+        stateDir: path.join(dir, 'state'),
+        runner,
+        script: `export const meta = { name: 'c', description: 'd' };\nawait agent('a'); await agent('b'); return 1;`,
+      });
+      const messages: string[] = [];
+      const ends: WorkflowEvent[] = [];
+      handle.events.on('event', (e: WorkflowEvent) => {
+        if (e.type === 'log') messages.push(e.message);
+        if (e.type === 'agent_end') ends.push(e);
+      });
+      await handle.promise;
+      expect(ends[0]).toMatchObject({
+        usage: {
+          input_tokens: 200,
+          output_tokens: 200,
+          cache_read_input_tokens: 1600,
+          cache_creation_input_tokens: 200,
+        },
+      });
+      expect(messages).toContain(
+        'cache: 4,000 input tokens, 3,200 read from cache (80%), 400 written, 400 uncached; 400 output',
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('run() logs no cache line when the runner reports no cache figures', async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'maestro-cache-'));
+    try {
+      const handle = run({
+        cwd: dir,
+        stateDir: path.join(dir, 'state'),
+        runner: new FakeRunner(),
+        script: `export const meta = { name: 'c', description: 'd' };\nreturn agent('a');`,
+      });
+      const messages: string[] = [];
+      handle.events.on('log', (e: { message: string }) => messages.push(e.message));
+      await handle.promise;
+      expect(messages.some((m) => m.startsWith('cache:'))).toBe(false);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

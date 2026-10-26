@@ -3,6 +3,7 @@
 // checks the abort signal, so budget aborts and slot accounting behave like the real runner.
 
 import type { AgentRunner, EntryStatus, JSONSchema, RunRequest, RunResult, Usage } from '../types.js';
+import { addUsage } from '../usage.js';
 
 export interface FakeResponse {
   /** Result value, or a function of the request. Omitted: a stub derived from req.schema (or a text). */
@@ -15,6 +16,10 @@ export interface FakeResponse {
   outputTokensPerTurn?: number;
   /** Input tokens reported per turn. Default 50. */
   inputTokensPerTurn?: number;
+  /** Prompt-cache reads reported per turn. Default: not reported (the field stays absent). */
+  cacheReadTokensPerTurn?: number;
+  /** Prompt-cache writes reported per turn. Default: not reported. */
+  cacheCreationTokensPerTurn?: number;
   /** Wait per turn in ms (abortable). Default 0. */
   delayMs?: number;
   error?: string;
@@ -62,12 +67,16 @@ export class FakeRunner implements AgentRunner {
         if (r.delayMs) await abortableSleep(r.delayMs, req.signal);
         if (req.signal.aborted) return { result: null, status: 'skipped', usage, turns, error: 'aborted' };
         turns++;
-        const turnUsage = {
+        const turnUsage: Usage = {
           input_tokens: r.inputTokensPerTurn ?? 50,
           output_tokens: r.outputTokensPerTurn ?? 100,
         };
-        usage.input_tokens += turnUsage.input_tokens;
-        usage.output_tokens += turnUsage.output_tokens;
+        if (r.cacheReadTokensPerTurn !== undefined)
+          turnUsage.cache_read_input_tokens = r.cacheReadTokensPerTurn;
+        if (r.cacheCreationTokensPerTurn !== undefined) {
+          turnUsage.cache_creation_input_tokens = r.cacheCreationTokensPerTurn;
+        }
+        addUsage(usage, turnUsage);
         req.onUsage(turnUsage);
       }
       if (req.signal.aborted) return { result: null, status: 'skipped', usage, turns, error: 'aborted' };

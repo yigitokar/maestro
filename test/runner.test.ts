@@ -135,8 +135,9 @@ describe('AnthropicRunner: tool loop', () => {
       expect(t.input_schema.additionalProperties).toBe(false);
       expect([...t.input_schema.required].sort()).toEqual(Object.keys(t.input_schema.properties).sort());
     }
-    expect(body.system).toContain(RETURN_CONTRACT);
-    expect(body.system).toContain('Always answer in lowercase.');
+    expect(body.system).toHaveLength(1);
+    expect(body.system[0].text).toContain(RETURN_CONTRACT);
+    expect(body.system[0].text).toContain('Always answer in lowercase.');
   });
 
   it('omits output_config when no effort is given', async () => {
@@ -394,6 +395,93 @@ describe('AnthropicRunner: tool loop', () => {
     expect(bodies).toHaveLength(0);
     const ok = await runner.run(makeReq({ tools, isolated: true }).req);
     expect(ok.status).toBe('ok');
+  });
+});
+
+describe('AnthropicRunner: prompt caching', () => {
+  const schema = {
+    type: 'object',
+    properties: { ok: { type: 'boolean' } },
+    required: ['ok'],
+  };
+
+  it('breakpoint on the system block (tools + system), automatic breakpoint for the transcript', async () => {
+    const { client, bodies } = scripted([
+      reply([toolUse('t1', 'read_file', { path: 'notes.txt' })], 'tool_use'),
+      reply([text('done')], 'end_turn'),
+    ]);
+    const { req } = makeReq({ prompt: 'volatile prompt with args {"x":1}' });
+    const res = await runnerFor(client).run(req);
+    expect(res.status).toBe('ok');
+    expect(bodies).toHaveLength(2);
+    for (const body of bodies) {
+      // Render order is tools → system → messages: the stable part ends at the last system block.
+      expect(body.system).toEqual([{ type: 'text', text: req.system, cache_control: { type: 'ephemeral' } }]);
+      expect(body.cache_control).toEqual({ type: 'ephemeral' });
+      expect(body.tools.some((t: any) => 'cache_control' in t)).toBe(false);
+      // The prompt is volatile and stays after the breakpoint, unmarked.
+      expect(body.messages[0]).toEqual({ role: 'user', content: 'volatile prompt with args {"x":1}' });
+    }
+    // Same prefix on both turns: the second request only appends to the first.
+    expect(bodies[1].tools).toEqual(bodies[0].tools);
+    expect(bodies[1].system).toEqual(bodies[0].system);
+    expect(bodies[1].messages.slice(0, 1)).toEqual(bodies[0].messages);
+  });
+
+  it('stage 2 keeps only the system breakpoint (no automatic write of the whole transcript)', async () => {
+    const { client, bodies } = scripted([
+      reply([text('looked')], 'end_turn'),
+      reply([text('{"ok":true}')], 'end_turn'),
+    ]);
+    const { req } = makeReq({ schema });
+    const res = await runnerFor(client).run(req);
+    expect(res).toMatchObject({ status: 'ok', result: { ok: true } });
+    const stage2 = bodies[1];
+    expect(stage2.system).toEqual([{ type: 'text', text: req.system, cache_control: { type: 'ephemeral' } }]);
+    expect(stage2.cache_control).toBeUndefined();
+  });
+
+  it('cache figures reach onUsage per turn and the summed usage', async () => {
+    const { client } = scripted([
+      reply(
+        [toolUse('t1', 'read_file', { path: 'notes.txt' })],
+        'tool_use',
+        {},
+        {
+          usage: {
+            input_tokens: 20,
+            output_tokens: 5,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 900,
+          },
+        },
+      ),
+      reply(
+        [text('done')],
+        'end_turn',
+        {},
+        {
+          usage: {
+            input_tokens: 30,
+            output_tokens: 7,
+            cache_read_input_tokens: 900,
+            cache_creation_input_tokens: 40,
+          },
+        },
+      ),
+    ]);
+    const { req, usages } = makeReq();
+    const res = await runnerFor(client).run(req);
+    expect(usages).toEqual([
+      { input_tokens: 20, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 900 },
+      { input_tokens: 30, output_tokens: 7, cache_read_input_tokens: 900, cache_creation_input_tokens: 40 },
+    ]);
+    expect(res.usage).toEqual({
+      input_tokens: 50,
+      output_tokens: 12,
+      cache_read_input_tokens: 900,
+      cache_creation_input_tokens: 940,
+    });
   });
 });
 
