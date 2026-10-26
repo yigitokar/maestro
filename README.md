@@ -144,15 +144,19 @@ Aynı Workflow aracı stdio üzerinden bir MCP sunucusu olarak açılır ve `too
 - `WorkflowStop({ runId })`: run'ı durdurur. Script `run_stopped` ile reddeder, journal kalır ve run sonradan `resumeFromRunId` ile sürdürülebilir.
 - `WorkflowSkip({ runId, agentId })`: `liveAgents` içindeki bir ajanı atlar; o `agent()` çağrısı `null` döner.
 
-```bash
-claude mcp add maestro -- npx maestro mcp
-```
-
-Script yazma rehberini skill olarak ekle:
+Kendi projende kullanmak için sunucuyu Claude Code'a ekle. Komutu bu reponun kökünde, `npm run build`'den sonra çalıştır. Paket npm'de yayınlı değil; `npx maestro` npm'deki ilgisiz `maestro` paketini indirir, kullanma.
 
 ```bash
-mkdir -p .claude/skills/maestro-workflow-authoring && cp skill/SKILL.md .claude/skills/maestro-workflow-authoring/SKILL.md
+claude mcp add --scope user maestro -- node "$PWD/bin/maestro" mcp
 ```
+
+Script yazma rehberini bütün projelerde görünen bir skill olarak ekle:
+
+```bash
+mkdir -p ~/.claude/skills/maestro-workflow-authoring && cp skill/SKILL.md ~/.claude/skills/maestro-workflow-authoring/SKILL.md
+```
+
+Sunucu Claude Code'un ortamındaki `ANTHROPIC_API_KEY`'i kullanır. Ajanların maliyeti bu anahtarın hesabına yazılır.
 
 `maestro mcp` sunucusu `--cwd`, `--state-dir`, `--budget`, `--concurrency`, `--model` ve `--dry-run` seçeneklerini alır. `--budget` oturumun tamamı için tek havuzdur: sunucunun başlattığı bütün run'lar aynı `Budget` örneğinden harcar. stdout MCP kanalıdır, tanılar stderr'e gider. İstemci bağlantıyı kapatınca (stdin biter) sunucu kapanır, süren run'lar durdurulur (journal'ları resume için kalır) ve komut 0 ile çıkar.
 
