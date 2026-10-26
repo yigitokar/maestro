@@ -306,6 +306,7 @@ export function run(opts: RunOptions): RunHandle {
       raw,
       error,
       worktree,
+      trace: res?.trace,
     });
     // Step 7: write first, return second; otherwise an interruption re-runs the agent.
     try {

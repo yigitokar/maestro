@@ -10,11 +10,13 @@ import { pathToFileURL } from 'node:url';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { parseBudgetDirective } from './budget.js';
 import { gc } from './isolation.js';
+import { readEntries, readTrace } from './journal.js';
 import { serveMcp } from './mcp.js';
 import { attachTerminalProgress, type ProgressStream } from './progress.js';
 import { AnthropicRunner } from './runner.js';
 import { FakeRunner } from './testing/fake-runner.js';
-import type { AgentRunner } from './types.js';
+import type { AgentRunner, Entry } from './types.js';
+import { cacheReadRatio, totalInput } from './usage.js';
 import { run } from './workflow.js';
 
 export const USAGE = `usage:
@@ -22,6 +24,9 @@ export const USAGE = `usage:
                           [--dry-run] [--cwd <dir>] [--state-dir <dir>] [--concurrency <n>] [--model <model>]
   maestro run --resume <runId> [options]     resume with the stored script.js and args.json
   maestro gc [--delete] [--force] [--cwd <dir>]
+  maestro show <runId> [label] [--cwd <dir>] [--state-dir <dir>]
+                                             list a run's agents; with a label (or key prefix), print
+                                             that agent's trace: tool calls, final text, result, error
   maestro mcp [--cwd <dir>] [--state-dir <dir>] [--budget <500k>] [--concurrency <n>] [--model <model>] [--dry-run]
                                              serve the Workflow tool over stdio as an MCP server
                                              (--budget is one pool for the whole session; exits 0 when stdin ends)
@@ -118,6 +123,7 @@ export async function main(argv: string[], ioOverrides: Partial<CliIO> = {}): Pr
     }
     if (command === 'run') return await runCommand(parsed, io);
     if (command === 'gc') return await gcCommand(parsed, io);
+    if (command === 'show') return await showCommand(parsed, io);
     if (command === 'mcp') return await mcpCommand(parsed, io);
     throw new UsageError(`unknown command "${command}"`);
   } catch (e) {
@@ -281,6 +287,83 @@ async function mcpCommand(p: Parsed, io: CliIO): Promise<number> {
     if (io.stdin.readableEnded || io.stdin.destroyed) close();
   });
   return 0;
+}
+
+async function showCommand(p: Parsed, io: CliIO): Promise<number> {
+  const [runId, label, ...extra] = p.positionals;
+  if (runId === undefined) throw new UsageError('show needs a runId');
+  if (extra.length > 0) throw new UsageError(`unexpected arguments: ${extra.join(' ')}`);
+  const cwd = path.resolve(io.cwd, str(p, 'cwd') ?? '.');
+  const stateDirArg = str(p, 'state-dir');
+  const stateDir = stateDirArg !== undefined ? path.resolve(io.cwd, stateDirArg) : path.join(cwd, '.maestro');
+  const runDir = path.join(stateDir, 'runs', runId);
+  let rows: Entry[];
+  try {
+    rows = await readEntries(runDir);
+  } catch (e) {
+    io.stderr.write(`maestro: no journal for run ${runId} in ${runDir} (${errorText(e)})\n`);
+    return 1;
+  }
+  if (label === undefined) {
+    for (const row of rows) io.stdout.write(`${rowLine(row)}\n`);
+    return 0;
+  }
+  let picked = rows.filter((r) => r.label === label);
+  if (picked.length === 0) picked = rows.filter((r) => r.key.startsWith(label));
+  if (picked.length === 0) {
+    io.stderr.write(`maestro: no agent labelled "${label}" in run ${runId}\n`);
+    return 1;
+  }
+  for (const row of picked) io.stdout.write(`${await showRow(runDir, row)}\n`);
+  return 0;
+}
+
+const SHOW_RESULT_CHARS = 2_000;
+
+function rowLine(row: Entry): string {
+  const ratio = cacheReadRatio(row.usage);
+  const cached = ratio === null ? '' : ` (${Math.round(ratio * 100)}% cached)`;
+  const calls = row.trace && 'toolCalls' in row.trace ? `, ${row.trace.toolCalls.length} tool calls` : '';
+  const n = (v: number) => v.toLocaleString('en-US');
+  return (
+    `#${row.index} ${row.label ?? row.key.slice(0, 12)} [${row.status}] ` +
+    `${n(totalInput(row.usage))} in${cached}, ${n(row.usage.output_tokens)} out${calls}` +
+    (row.error ? ` · ${row.error}` : '')
+  );
+}
+
+async function showRow(runDir: string, row: Entry): Promise<string> {
+  const lines = [rowLine(row), `key: ${row.key}${row.phase ? `  phase: ${row.phase}` : ''}`];
+  const trace = await readTrace(runDir, row);
+  if (!trace) lines.push('trace: none (cache hit replayed, a runner without traces, or a pre-v1.1 row)');
+  else {
+    lines.push(`tool calls (${trace.toolCalls.length}):`);
+    for (const c of trace.toolCalls) lines.push(`  ${c.ok ? '✓' : '✗'} ${c.tool} ${c.inputSummary}`);
+    lines.push(`final text (${trace.finalText.length} chars, at most 2,000):`);
+    lines.push(trace.finalText === '' ? '  (empty)' : indent(trace.finalText));
+  }
+  let result: unknown = row.result;
+  if (row.blob === true) {
+    try {
+      result = JSON.parse(await readFile(path.join(runDir, 'blobs', `${row.key}.json`), 'utf8'));
+    } catch {
+      result = '(result blob unreadable)';
+    }
+  }
+  const json = JSON.stringify(result, null, 2) ?? 'null';
+  lines.push(
+    `result:\n${indent(json.length > SHOW_RESULT_CHARS ? `${json.slice(0, SHOW_RESULT_CHARS)}\n…` : json)}`,
+  );
+  if (row.raw !== undefined) lines.push(`raw:\n${indent(row.raw.slice(0, SHOW_RESULT_CHARS))}`);
+  if (row.error !== undefined) lines.push(`error: ${row.error}`);
+  return lines.join('\n');
+}
+
+function indent(text: string): string {
+  return text
+    .split('\n')
+    .map((l) => `  ${l}`)
+    .join('\n');
 }
 
 function errorText(e: unknown): string {

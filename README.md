@@ -162,6 +162,7 @@ mkdir -p .claude/skills/maestro-workflow-authoring && cp skill/SKILL.md .claude/
 maestro run <script.js> [--args <json>] [--args-file f] [--resume <runId>] [--budget 500k]
                         [--dry-run] [--cwd d] [--state-dir d] [--concurrency n] [--model m]
 maestro gc [--delete] [--force] [--cwd d]
+maestro show <runId> [label] [--cwd d] [--state-dir d]
 maestro mcp [--cwd d] [--state-dir d] [--budget 500k] [--concurrency n] [--model m] [--dry-run]
 ```
 
@@ -171,7 +172,7 @@ maestro mcp [--cwd d] [--state-dir d] [--budget 500k] [--concurrency n] [--model
 
 ## Run dizini ve resume
 
-`.maestro/runs/<runId>/` dizininde `script.js`, `args.json`, `journal.jsonl` ve `blobs/` bulunur. Journal satır başına bir `agent()` çağrısı tutar (`key = sha256(prompt + "\n" + canonicalJSON(opts \ {label, phase})) + ":" + n`). Yalnızca `status: 'ok'` satırlar cache isabetidir. `null` (API hatası) ve `skipped` (bütçe, atlama, durdurma) satırları resume'da tekrar koşar. Böylece bütçeyi artırıp resume etmek yarım kalan ajanları canlandırır. 64 KB üstü sonuçlar `blobs/<key>.json` dosyasına yazılır.
+`.maestro/runs/<runId>/` dizininde `script.js`, `args.json`, `journal.jsonl` ve `blobs/` bulunur. Journal satır başına bir `agent()` çağrısı tutar (`key = sha256(prompt + "\n" + canonicalJSON(opts \ {label, phase})) + ":" + n`). Yalnızca `status: 'ok'` satırlar cache isabetidir. `null` (API hatası) ve `skipped` (bütçe, atlama, durdurma) satırları resume'da tekrar koşar. Böylece bütçeyi artırıp resume etmek yarım kalan ajanları canlandırır. 64 KB üstü sonuçlar `blobs/<key>.json` dosyasına yazılır. Her canlı satır ayrıca `trace` taşır: ajanın araç çağrıları ve final metninin ilk 2.000 karakteri; `maestro show <runId>` ajanları listeler, `maestro show <runId> <label>` birinin trace'ini okunur basar.
 
 ## Örnekler
 

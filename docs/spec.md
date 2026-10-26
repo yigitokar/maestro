@@ -150,6 +150,10 @@ interface Entry {
   result: any | null;       // schema'lı ise doğrulanmış obje
   usage: { output_tokens: number; input_tokens: number };
   status: 'ok' | 'null' | 'skipped';   // yalnızca 'ok' cache isabetidir
+  trace?: {                 // yalnızca denetim: anahtara ve cache'e girmez
+    toolCalls: { tool: string; inputSummary: string; ok: boolean }[];  // inputSummary: input JSON'unun ilk 200 karakteri
+    finalText: string;      // final metnin ilk 2.000 karakteri; şemalı ajanda stage-2 öncesi son asistan metni
+  };
 }
 ```
 Dosya: `<run-dir>/journal.jsonl`, satır başına bir Entry. Ayrıca `<run-dir>/script.js` ve `<run-dir>/args.json`; resume bunları okur.
@@ -163,6 +167,7 @@ Dosya: `<run-dir>/journal.jsonl`, satır başına bir Entry. Ayrıca `<run-dir>/
 - Append sonuç döndürülmeden önce tamamlanır.
 - **`get(key)` yalnızca `status === 'ok'` kaydı döner.** `null` (API hatası) ve `skipped` (bütçe veya kullanıcı atlaması) kayıtlar denetim ve log içindir, cache isabeti sayılmaz; resume'da o çağrı tekrar koşar. Bütçe artırılıp (`+500k`) resume edildiğinde yarıda kalan ajanların canlanması bu kuralla olur. Aynı `key` için birden fazla satır olabilir, `get` en son `ok` olanı döner.
 - 64 KB üstü `result`, `<run-dir>/blobs/<key>.json` dosyasına yazılır; satırda `{ blob: "<key>" }` referansı durur. Altı doğrudan satıra gömülür.
+- `trace` canlı koşunun denetim kaydıdır: ajanın araç çağrıları (sırayla, aracın hata verip vermediğiyle) ve final metni. Boş dönen ajanın neden boş döndüğü buradan okunur (`maestro show <runId> [label]`). Aynı 64 KB kuralı geçerlidir: büyük trace `<run-dir>/blobs/<key>.trace.json` dosyasına gider, satırda `{ blob: "<key>" }` ve `traceBlob: true` durur. Cache isabeti trace üretmez; isabetin trace'i onu yazan satırdadır.
 
 **Hata halleri.**
 - Journal yazılamıyorsa run başlamaz. Yarı kayıtlı run resume edilemez olur, bu kabul edilemez.
@@ -176,6 +181,7 @@ Dosya: `<run-dir>/journal.jsonl`, satır başına bir Entry. Ayrıca `<run-dir>/
 - Döngüde aynı prompt 5 kez: aynı hash, `n` 0..4, 5 ayrı Entry.
 - `parallel` içinde 4 dal, ilk koşuda bitiş sırası A,C,B,D; resume'da hepsi cache'den ve sıra A,B,C,D: sıfır canlı çağrı.
 - 200 KB sonuç: satırda blob referansı, `blobs/` altında dosya, `get()` birleştirip döner.
+- Araç çağıran ve boş dönen ajan: satırda `trace.toolCalls` çağrı sırasıyla, `trace.finalText` son metinle; 64 KB üstü trace blob'a gider.
 - Bütçe 100k ile 10 ajanın 6'sı `ok`, 4'ü `skipped`; bütçe 300k ile resume: 6 cache, 4 canlı, journal'da 14 satır.
 - API hatasıyla `null` dönen ajan, resume'da tekrar koşar ve `ok` olursa `get` yeni kaydı döner.
 - Yazma sırasında process öldürüldü: resume son tam satırdan devam eder.

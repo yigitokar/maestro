@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { access, constants, type FileHandle, mkdir, open, readFile, truncate } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { AgentOpts, Entry } from './types.js';
+import type { AgentOpts, Entry, Trace } from './types.js';
 import { LIMITS, MaestroError } from './types.js';
 
 /** Deterministic JSON: object keys sorted recursively, otherwise JSON.stringify semantics. */
@@ -244,6 +244,12 @@ export class Journal {
         await writeDurable(this.blobPath(entry.key), json);
         row = { ...entry, result: { blob: entry.key }, blob: true };
       }
+      // The trace follows the same 64 KB rule, in its own blob.
+      const traceJson = row.trace === undefined ? undefined : JSON.stringify(row.trace);
+      if (traceJson !== undefined && Buffer.byteLength(traceJson) > LIMITS.blobThresholdBytes) {
+        await writeDurable(traceBlobPath(this.blobDir, entry.key), traceJson);
+        row = { ...row, trace: { blob: entry.key }, traceBlob: true };
+      }
       buf = Buffer.from(`${JSON.stringify(row)}\n`);
       const { bytesWritten } = await fh.write(buf);
       if (bytesWritten !== buf.length) {
@@ -266,6 +272,27 @@ export class Journal {
 
   private blobPath(key: string): string {
     return join(this.blobDir, `${key}.json`);
+  }
+}
+
+function traceBlobPath(blobDir: string, key: string): string {
+  return join(blobDir, `${key}.trace.json`);
+}
+
+/** Read-only view of a run's journal (for `maestro show`): rows of the good prefix, nothing truncated. */
+export async function readEntries(runDir: string): Promise<Entry[]> {
+  const data = await readFile(join(runDir, 'journal.jsonl'));
+  return scan(data).rows;
+}
+
+/** The row's trace with its blob resolved; undefined when the row has none or the blob is unreadable. */
+export async function readTrace(runDir: string, row: Entry): Promise<Trace | undefined> {
+  if (row.trace === undefined) return undefined;
+  if (row.traceBlob !== true) return row.trace as Trace;
+  try {
+    return JSON.parse(await readFile(traceBlobPath(join(runDir, 'blobs'), row.key), 'utf8')) as Trace;
+  } catch {
+    return undefined;
   }
 }
 

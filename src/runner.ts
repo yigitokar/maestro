@@ -18,6 +18,7 @@ import {
   type RunRequest,
   type RunResult,
   type ToolContext,
+  type TraceToolCall,
   type Usage,
 } from './types.js';
 import { addUsage } from './usage.js';
@@ -80,10 +81,17 @@ export interface AnthropicRunnerOptions {
 /** Thrown internally to unwind when the run's signal fires. */
 class Aborted extends Error {}
 
-/** Per-run bookkeeping: summed usage, turn count, onUsage per turn (spec 3.2 invariant). */
+/** Trace limits: input summary per tool call, final text per agent. */
+const TRACE_INPUT_CHARS = 200;
+const TRACE_TEXT_CHARS = 2_000;
+
+/** Per-run bookkeeping: summed usage, turn count, onUsage per turn (spec 3.2 invariant), trace. */
 class RunState {
   usage: Usage = { input_tokens: 0, output_tokens: 0 };
   turns = 0;
+  readonly toolCalls: TraceToolCall[] = [];
+  /** Last non-empty assistant text of stage 1 (the final text once the loop ends). */
+  finalText = '';
   constructor(private readonly req: RunRequest) {}
 
   turn(u: Partial<Record<keyof Usage, number | null>> | null | undefined): void {
@@ -96,10 +104,29 @@ class RunState {
   }
 
   done(result: unknown, status: EntryStatus, extra: { raw?: string; error?: string } = {}): RunResult {
-    const out: RunResult = { result, status, usage: { ...this.usage }, turns: this.turns };
+    const out: RunResult = {
+      result,
+      status,
+      usage: { ...this.usage },
+      turns: this.turns,
+      trace: { toolCalls: this.toolCalls.slice(), finalText: this.finalText.slice(0, TRACE_TEXT_CHARS) },
+    };
     if (extra.raw !== undefined) out.raw = extra.raw;
     if (extra.error !== undefined) out.error = extra.error;
     return out;
+  }
+
+  /** Records a tool call before it runs (call order); `ok` turns true once it returns. */
+  toolCall(tool: string, input: unknown): TraceToolCall {
+    let summary: string;
+    try {
+      summary = JSON.stringify(input) ?? String(input);
+    } catch {
+      summary = String(input);
+    }
+    const call = { tool, inputSummary: summary.slice(0, TRACE_INPUT_CHARS), ok: false };
+    this.toolCalls.push(call);
+    return call;
   }
 
   fail(error: string): RunResult {
@@ -365,7 +392,12 @@ export class AnthropicRunner implements AgentRunner {
     const runnable: BetaRunnableTool<any>[] = req.tools.map((t, i) => ({
       ...apiTools[i]!,
       // A throw becomes tool_result is_error:true in the SDK (runRunnableTool); the agent continues.
-      run: (input: unknown) => t.run(input, ctx),
+      run: async (input: unknown) => {
+        const call = st.toolCall(t.name, input);
+        const out = await t.run(input, ctx);
+        call.ok = true;
+        return out;
+      },
       parse: (input: unknown) => input,
     }));
     const outputConfig = req.effort ? { output_config: { effort: req.effort } } : {};
@@ -403,6 +435,8 @@ export class AnthropicRunner implements AgentRunner {
           loopTurns++;
           last = message;
           retried = false;
+          const said = textOf(message);
+          if (said !== '') st.finalText = carry + said;
           st.turn(message.usage);
           if (message.stop_reason === 'refusal') {
             const d = message.stop_details;
@@ -440,6 +474,8 @@ export class AnthropicRunner implements AgentRunner {
       break;
     }
 
+    const finalText = carry + textOf(last);
+    if (finalText !== '') st.finalText = finalText;
     if (!req.schema) return st.done(carry + textOf(last), 'ok');
 
     // ---- Stage 2: structured final ------------------------------------------------------

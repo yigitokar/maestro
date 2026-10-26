@@ -16,6 +16,22 @@ export interface Usage {
   cache_creation_input_tokens?: number;
 }
 
+/** One tool call of an agent, for the journal trace. */
+export interface TraceToolCall {
+  tool: string;
+  /** First 200 characters of the JSON input. */
+  inputSummary: string;
+  /** False when the tool threw (the agent saw a tool_result with is_error). */
+  ok: boolean;
+}
+
+/** What an agent did, kept for audit (`maestro show`): why did it return what it returned? */
+export interface Trace {
+  toolCalls: TraceToolCall[];
+  /** First 2,000 characters of the final text; with a schema, the last assistant text before stage 2. */
+  finalText: string;
+}
+
 /** Journal status. Only 'ok' is a cache hit (spec 3.1). */
 export type EntryStatus = 'ok' | 'null' | 'skipped';
 
@@ -39,6 +55,9 @@ export interface Entry {
   error?: string;
   /** Dirty worktree left behind by a writer (spec 3.6), for audit and `maestro gc`. */
   worktree?: { path: string; diffStat: string };
+  /** Audit-only trace of the live run; `{ blob: key }` when `traceBlob` (over 64 KB, blobs/<key>.trace.json). */
+  trace?: Trace | { blob: string };
+  traceBlob?: true;
 }
 
 /** Options accepted by the script-facing `agent()` (spec Level 1). */
@@ -99,6 +118,8 @@ export interface RunResult {
   turns: number;
   raw?: string;
   error?: string;
+  /** Tool calls and final text of this run, journaled as audit (absent from runners that do not trace). */
+  trace?: Trace;
 }
 
 /** Spec 3.2. Implementations: AnthropicRunner (src/runner.ts), FakeRunner (src/testing/fake-runner.ts). */

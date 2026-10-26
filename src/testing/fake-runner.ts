@@ -2,7 +2,7 @@
 // Simulates turns: each turn optionally waits, reports usage via req.onUsage, and
 // checks the abort signal, so budget aborts and slot accounting behave like the real runner.
 
-import type { AgentRunner, EntryStatus, JSONSchema, RunRequest, RunResult, Usage } from '../types.js';
+import type { AgentRunner, EntryStatus, JSONSchema, RunRequest, RunResult, Trace, Usage } from '../types.js';
 import { addUsage } from '../usage.js';
 
 export interface FakeResponse {
@@ -25,6 +25,8 @@ export interface FakeResponse {
   error?: string;
   /** Raw model text returned on a non-ok status (spec 3.2: schema parse failed twice → raw in the journal). */
   raw?: string;
+  /** Trace handed back as the runner's audit trace (journaled in the row). Default: none. */
+  trace?: Trace;
   /** Side effect run inside the "agent" before the result is computed (e.g. write + commit in req.cwd). */
   effect?: (req: RunRequest) => void | Promise<void>;
 }
@@ -97,6 +99,7 @@ export class FakeRunner implements AgentRunner {
         turns,
         ...(r.error ? { error: r.error } : {}),
         ...(r.raw !== undefined && status !== 'ok' ? { raw: r.raw } : {}),
+        ...(r.trace !== undefined ? { trace: r.trace } : {}),
       };
     } finally {
       this.active--;
