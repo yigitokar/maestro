@@ -1,6 +1,6 @@
 // eval/workflows/triage.js through run() with FakeRunner (one agent per candidate, fix cap, null agent,
-// acceptance log), eval/review.ts (bugs deduped across fixes, accepted/rejected split) and
-// eval/materialize.ts on a real temporary repo (nothing after the commit is reachable). Never the network.
+// acceptance log), eval/review.ts (bugs deduped across fixes, review order, sheet, decisions to the set)
+// and eval/materialize.ts on a real temporary repo (nothing after the commit is reachable). Never the network.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
@@ -11,7 +11,17 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { materialize } from '../eval/materialize.js';
 import type { MineResult } from '../eval/mine.js';
-import { distinctBugs, reviewSheet, type TriageReport, type TriageRow } from '../eval/review.js';
+import {
+  distinctBugs,
+  type Labels,
+  labelsSkeleton,
+  pickSet,
+  reviewOrder,
+  reviewSheet,
+  SEED,
+  type TriageReport,
+  type TriageRow,
+} from '../eval/review.js';
 import { FakeRunner } from '../src/testing/fake-runner.js';
 import type { RunRequest, WorkflowEvent } from '../src/types.js';
 import { run } from '../src/workflow.js';
@@ -173,8 +183,8 @@ describe('review sheet', () => {
   it('merges one bug reported by several fixes and ignores rejected fixes', () => {
     const r = row('r-1', 40, [fixOf(1, true, [3]), fixOf(2, true, [3, 9]), fixOf(3, false, [12])]);
     expect(distinctBugs(r)).toEqual([
-      { ...bug(3), fixes: [sha(1).slice(0, 9), sha(2).slice(0, 9)] },
-      { ...bug(9), fixes: [sha(2).slice(0, 9)] },
+      { ...bug(3), fixes: [sha(1), sha(2)] },
+      { ...bug(9), fixes: [sha(2)] },
     ]);
   });
 
@@ -205,24 +215,101 @@ describe('review sheet', () => {
     expect(md).toContain(
       '3 aday, 1 kabul (≤200: 0, 201-800: 1, 801-2000: 0), 0 önceki turda kabul edilmişti, 1 null',
     );
-    expect(md).toContain('### r-big: #1, 500 satır');
+    expect(md).toContain('## 1: 201–800 satır');
+    expect(md).toContain('### 1. r-big: #1, 500 satır, 2 dosya\n');
     expect(md).toContain('## Reddedilenler (2)');
-    expect(md).not.toContain('Önceki turda kabul');
+    expect(md).not.toContain('bu turda red');
     expect(md).toContain('| r-null | 30 | fix: 1 | null (ajan sonuç vermedi) |');
     expect(md).toContain('| r-c | 50 | <=200 | 75% (3/4) |');
 
-    // An earlier round accepted r-no on fixes 2 and 5: it moves out of the rejected table with the earlier
-    // bugs, and each of those fixes shows this round's verdict on the same SHA (5 was not asked this time).
+    // An earlier round accepted r-no on fixes 2 and 5: it moves out of the rejected table into the order
+    // (first, being small) with the earlier bugs, and each of those fixes shows this round's verdict on the
+    // same SHA (5 was not asked this time).
     const earlier: TriageReport = {
       ...triage,
       results: [row('r-no', 20, [fixOf(2, true, [7]), fixOf(5, true, [8])])],
     };
     const md2 = reviewSheet(triage, mined, earlier);
     expect(md2).toContain('1 önceki turda kabul edilmişti');
-    expect(md2).toContain('## Önceki turda kabul, bu turda red (1)');
+    expect(md2).toContain('## 1: ≤200 satır');
+    expect(md2).toContain('### 1. r-no: #1, 20 satır, 2 dosya (önceki turda kabul, bu turda red)');
+    expect(md2).toContain('### 2. r-big:');
     expect(md2).toContain('- `a.ts:7` d7');
     expect(md2).toContain('`: kusur / - / görülür, r2');
     expect(md2).toContain('`: sorulmadı (8 fix sınırı ya da null)');
     expect(md2).toContain('## Reddedilenler (1)');
+  });
+
+  const report = (results: TriageRow[]): TriageReport => ({
+    runId: 'r',
+    model: 'm',
+    effort: 'e',
+    summary: {},
+    results,
+  });
+
+  it('orders small candidates by size, then each larger group shuffled by the seed', () => {
+    const sizes = { s1: 150, s2: 30, m1: 300, m2: 400, m3: 500, m4: 600, m5: 700, b1: 900, b2: 1000 };
+    const rows = Object.entries(sizes).map(([id, lines]) => row(id, lines, [fixOf(1, true, [3])]));
+    const ids = (seed = SEED, results = rows) =>
+      reviewOrder(report(results), undefined, seed).map((i) => i.row.id);
+
+    const order = ids();
+    expect(order.slice(0, 2)).toEqual(['s2', 's1']);
+    expect(order.slice(2, 7).sort()).toEqual(['m1', 'm2', 'm3', 'm4', 'm5']);
+    expect(order.slice(7).sort()).toEqual(['b1', 'b2']);
+    expect(ids(SEED, [...rows].reverse())).toEqual(order); // independent of input order
+    expect(ids(1)).not.toEqual(order);
+    expect(reviewOrder(report(rows)).map((i) => [i.order, i.group])[2]).toEqual([3, '201-800']);
+  });
+
+  it('writes undecided labels and takes accepted candidates in order up to the target', () => {
+    const a = { ...row('a', 10, [fixOf(1, true, [3]), fixOf(2, true, [3, 9])]) };
+    a.fixes = [fix(1), { ...fix(2), kinds: ['sql_fn' as const, 'added' as const] }];
+    const rows = [a, row('b', 20, [fixOf(1, true, [4])]), row('c', 30, [fixOf(1, true, [5])])];
+    const labels: Labels = labelsSkeleton(
+      reviewOrder(report([...rows, row('d', 40, [fixOf(1, true, [6])])])),
+      'lula',
+    );
+    expect(labels.candidates.map((c) => [c.order, c.id, c.decision])).toEqual([
+      [1, 'a', null],
+      [2, 'b', null],
+      [3, 'c', null],
+      [4, 'd', null],
+    ]);
+    expect(labels.candidates[0]!.bugs).toEqual([
+      { ...bug(3), fix: sha(1), link: 'modified' },
+      { ...bug(9), fix: sha(2), link: 'sql_fn+added' },
+    ]);
+
+    labels.target = 2;
+    expect(pickSet(labels)).toMatchObject({ set: [], rejected: 0, next: { id: 'a' } });
+    labels.candidates[0]!.decision = 'accept';
+    labels.candidates[1]!.decision = 'reject';
+    let picked = pickSet(labels);
+    expect(picked).toMatchObject({ rejected: 1, next: { id: 'c' } });
+    expect(picked.set).toEqual([
+      {
+        id: 'a',
+        repo: 'lula',
+        merge: sha(9001),
+        base: sha(8001),
+        kind: 'bug',
+        lines: 10,
+        bugs: [
+          { id: 'a-a', ...bug(3), fix: sha(1), link: 'modified' },
+          { id: 'a-b', ...bug(9), fix: sha(2), link: 'sql_fn+added' },
+        ],
+      },
+    ]);
+    labels.candidates[2]!.decision = 'accept';
+    picked = pickSet(labels);
+    expect(picked.set.map((r) => r.id)).toEqual(['a', 'c']); // complete: d is never needed
+    expect(picked.next).toBeNull();
+
+    labels.candidates[2]!.bugs = [];
+    expect(() => pickSet(labels)).toThrow(/c: accepted without a bug/);
+    labels.candidates[2]!.decision = 'kabul' as never;
+    expect(() => pickSet(labels)).toThrow(/decision must be/);
   });
 });

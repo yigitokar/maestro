@@ -1,11 +1,14 @@
-// Eval step 2 input (docs/eval.md 2.3, 2.4): the human review sheet built from the triage and the mine.
+// Eval step 2 (docs/eval.md 2.3, 2.5): the human review sheet, the review order and the bug set.
 //   node eval/review.ts [--triage eval/data/triage.json] [--candidates eval/data/candidates.json]
 //                       [--earlier eval/data/triage.v1.json] [--out eval/data/review.md]
-// Accepted candidates in full (bugs deduped by file:line across fixes), ones an earlier triage accepted
-// and this one rejects with the earlier verdict, rejected ones in one line each, and the clean pool with
-// survival. Pure data transform: no git, no network.
+//                       [--labels eval/data/labels.json] [--set eval/data/set.json]
+// The candidates to review (accepted, and ones an earlier triage accepted and this one rejects) in one
+// numbered order: <=200 lines first, then 201-800 and 801-2000, each shuffled with a fixed seed. Bugs are
+// deduped by file:line across fixes. The human writes a decision per candidate into labels.json (created
+// once, never overwritten); walking the order, the first 20 accepted become set.json. The sheet also lists
+// the rejected candidates and the clean pool. Pure data transform: no git, no network.
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 // Type-only: Node's type stripping erases it, so the .js specifier never has to resolve at run time.
@@ -15,6 +18,17 @@ import type { BugCandidate, CleanCandidate, MineResult } from './mine.js';
 function sizeBucket(lines: number): string {
   return lines <= 200 ? '<=200' : lines <= 800 ? '201-800' : lines <= 2000 ? '801-2000' : '>2000';
 }
+
+/** Review order seed (docs/eval.md 2.3). */
+export const SEED = 20261026;
+/** Bug PRs in the set. */
+export const TARGET = 20;
+const GROUPS = ['<=200', '201-800', '801-2000'];
+const GROUP_TITLE: Record<string, string> = {
+  '<=200': '≤200 satır, onaylananların hepsi alınır',
+  '201-800': '201–800 satır, sabit tohumla karıştırıldı',
+  '801-2000': "801–2000 satır, sabit tohumla karıştırıldı; yalnızca 20'ye yetmezse",
+};
 
 export interface TriageBug {
   file: string;
@@ -44,6 +58,52 @@ export interface TriageReport {
   results: TriageRow[];
 }
 
+export interface ReviewItem {
+  order: number;
+  group: string;
+  /** The row whose verdicts accept the candidate: this round's, or the earlier round's when `now` is set. */
+  row: TriageRow;
+  /** This round's row, set when an earlier round accepted the candidate and this one rejects it. */
+  now?: TriageRow;
+}
+
+export interface LabelBug extends TriageBug {
+  /** The first fix that reported the bug and how that fix links to the PR. */
+  fix: string;
+  link: string;
+}
+
+export interface LabelEntry {
+  order: number;
+  id: string;
+  group: string;
+  lines: number;
+  merge: string;
+  base: string;
+  /** Written by the human: accept, reject, or null while undecided. */
+  decision: 'accept' | 'reject' | null;
+  note: string;
+  bugs: LabelBug[];
+}
+
+export interface Labels {
+  repo: string;
+  seed: number;
+  target: number;
+  candidates: LabelEntry[];
+}
+
+/** One bug PR of the set (docs/eval.md 2.5). */
+export interface SetRecord {
+  id: string;
+  repo: string;
+  merge: string;
+  base: string;
+  kind: 'bug';
+  lines: number;
+  bugs: (LabelBug & { id: string })[];
+}
+
 export const keep = (f: TriageFix): boolean =>
   f.defect && f.introducedHere && f.visibleFromDiff && f.bugs.length > 0;
 
@@ -54,11 +114,109 @@ export function distinctBugs(row: TriageRow): (TriageBug & { fixes: string[] })[
     for (const b of f.bugs) {
       const k = `${b.file}:${b.line}`;
       const seen = byLoc.get(k);
-      if (seen) seen.fixes.push(f.sha.slice(0, 9));
-      else byLoc.set(k, { ...b, fixes: [f.sha.slice(0, 9)] });
+      if (seen) seen.fixes.push(f.sha);
+      else byLoc.set(k, { ...b, fixes: [f.sha] });
     }
   }
   return [...byLoc.values()];
+}
+
+/** Fisher-Yates with mulberry32: the same seed gives the same order on every machine. */
+function shuffle<T>(list: T[], seed: number): T[] {
+  let a = seed >>> 0;
+  const rand = () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), a | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const out = [...list];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [out[i], out[j]] = [out[j]!, out[i]!];
+  }
+  return out;
+}
+
+/**
+ * Candidates to review, in the order the set takes them: <=200 by size (all of them are taken), then
+ * 201-800 and 801-2000, each shuffled with its own generator from `seed` so one group's change leaves the
+ * others' order alone. `earlier`: a previous triage of the same candidates; one it accepted and this round
+ * rejects is reviewed too, on the earlier verdict (triage is noisy, the human decides).
+ */
+export function reviewOrder(triage: TriageReport, earlier?: TriageReport, seed = SEED): ReviewItem[] {
+  const before = new Map((earlier?.results ?? []).map((r) => [r.id, r]));
+  const items: { row: TriageRow; now?: TriageRow }[] = [];
+  for (const r of triage.results) {
+    const e = before.get(r.id);
+    if (r.triage?.fixes.some(keep)) items.push({ row: r });
+    else if (e?.triage?.fixes.some(keep)) items.push({ row: e, now: r });
+  }
+  return GROUPS.flatMap((g) => {
+    const group = items
+      .filter((i) => sizeBucket(i.row.lines) === g)
+      .sort((a, b) => a.row.lines - b.row.lines || a.row.id.localeCompare(b.row.id));
+    return g === '<=200' ? group : shuffle(group, seed);
+  }).map((i, k) => ({ ...i, order: k + 1, group: sizeBucket(i.row.lines) }));
+}
+
+/** The decisions file before the human writes into it: every decision null, the triage's bugs per candidate. */
+export function labelsSkeleton(order: ReviewItem[], repo: string, seed = SEED): Labels {
+  return {
+    repo,
+    seed,
+    target: TARGET,
+    candidates: order.map(({ order: n, group, row }) => {
+      const link = new Map(row.fixes.map((f) => [f.sha, f.kinds.join('+')]));
+      return {
+        order: n,
+        id: row.id,
+        group,
+        lines: row.lines,
+        merge: row.merge,
+        base: row.base,
+        decision: null,
+        note: '',
+        bugs: distinctBugs(row).map(({ fixes, ...b }) => ({
+          ...b,
+          fix: fixes[0]!,
+          link: link.get(fixes[0]!) ?? '?',
+        })),
+      };
+    }),
+  };
+}
+
+/**
+ * Walks `labels` in order and takes accepted candidates until the target. Stops at the first undecided
+ * one, since the set is not fixed until it is decided: `next` is that candidate, null once the set is
+ * complete or the order ran out.
+ */
+export function pickSet(labels: Labels): { set: SetRecord[]; rejected: number; next: LabelEntry | null } {
+  const set: SetRecord[] = [];
+  let rejected = 0;
+  for (const c of labels.candidates) {
+    if (set.length === labels.target) break;
+    if (c.decision === null) return { set, rejected, next: c };
+    if (c.decision === 'reject') {
+      rejected++;
+      continue;
+    }
+    if (c.decision !== 'accept') {
+      throw new Error(`${c.id}: decision must be accept, reject or null, not ${JSON.stringify(c.decision)}`);
+    }
+    if (!c.bugs.length) throw new Error(`${c.id}: accepted without a bug`);
+    set.push({
+      id: c.id,
+      repo: labels.repo,
+      merge: c.merge,
+      base: c.base,
+      kind: 'bug',
+      lines: c.lines,
+      bugs: c.bugs.map((b, i) => ({ id: `${c.id}-${String.fromCharCode(97 + i)}`, ...b })),
+    });
+  }
+  return { set, rejected, next: null };
 }
 
 const flags = (f: TriageFix) =>
@@ -67,10 +225,15 @@ const trim = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…`
 const cell = (s: string) => s.replaceAll('|', '\\|').replaceAll('\n', ' ');
 const title = (r: { pr: number | null; merge: string }) => (r.pr === null ? r.merge.slice(0, 9) : `#${r.pr}`);
 
-/** Heading, diff command, deduped bugs and the per-fix verdict table of one triaged candidate. */
-function candidateBlock(r: TriageRow, out: string[]): void {
+/**
+ * Numbered heading, diff command, deduped bugs and the per-fix verdict table of one candidate; for one
+ * this round rejects, also this round's verdict on each fix the earlier round accepted.
+ */
+function candidateBlock({ order, row: r, now }: ReviewItem, out: string[]): void {
   out.push('');
-  out.push(`### ${r.id}: ${title(r)}, ${r.lines} satır, ${r.files} dosya`);
+  out.push(
+    `### ${order}. ${r.id}: ${title(r)}, ${r.lines} satır, ${r.files} dosya${now ? ' (önceki turda kabul, bu turda red)' : ''}`,
+  );
   out.push('');
   out.push(
     `Merge ${r.mergedAt.slice(0, 10)}, bağlantı \`${r.kind}\`. \`git diff ${r.base.slice(0, 12)} ${r.merge.slice(0, 12)}\``,
@@ -79,7 +242,8 @@ function candidateBlock(r: TriageRow, out: string[]): void {
   out.push("Bug'lar:");
   out.push('');
   for (const b of distinctBugs(r)) {
-    out.push(`- \`${b.file}:${b.line}\` ${b.description} Senaryo: ${b.trigger} (fix: ${b.fixes.join(', ')})`);
+    const fixes = b.fixes.map((s) => s.slice(0, 9)).join(', ');
+    out.push(`- \`${b.file}:${b.line}\` ${b.description} Senaryo: ${b.trigger} (fix: ${fixes})`);
   }
   out.push('');
   out.push('| Fix | Konu | Karar | Gerekçe |');
@@ -90,23 +254,29 @@ function candidateBlock(r: TriageRow, out: string[]): void {
       `| \`${f.sha.slice(0, 9)}\` | ${cell(trim(subject.get(f.sha) ?? '?', 70))} | ${flags(f)} | ${cell(trim(f.reason, 280))} |`,
     );
   }
+  if (!now) return;
+  out.push('');
+  out.push(
+    "Fix listesi değişince yeniden soruldu ve bu tur reddetti. Yukarıdaki karar önceki turun; önceki turun kabul ettiği her fix'e bu turun kararı:",
+  );
+  out.push('');
+  const current = new Map((now.triage?.fixes ?? []).map((f) => [f.sha, f]));
+  for (const f of r.triage!.fixes.filter(keep)) {
+    const c = current.get(f.sha);
+    out.push(
+      `- Bu tur \`${f.sha.slice(0, 9)}\`: ${c ? `${flags(c)}, ${cell(trim(c.reason, 280))}` : 'sorulmadı (8 fix sınırı ya da null)'}`,
+    );
+  }
 }
 
-/**
- * `earlier`: a previous triage of the same candidates. One a previous round accepted and this round
- * rejects is listed apart with the earlier verdict: triage is noisy, the human decides.
- */
+/** `earlier`: a previous triage of the same candidates (see reviewOrder). */
 export function reviewSheet(triage: TriageReport, mined: MineResult, earlier?: TriageReport): string {
   const rows = triage.results;
-  const accepted = rows.filter((r) => r.triage?.fixes.some(keep));
-  const before = new Map((earlier?.results ?? []).map((r) => [r.id, r]));
-  const flipped = rows
-    .filter((r) => !accepted.includes(r) && before.get(r.id)?.triage?.fixes.some(keep))
-    .map((r) => ({ now: r, earlierRow: before.get(r.id)! }));
-  const rejected = rows.filter((r) => !accepted.includes(r) && !flipped.some((f) => f.now === r));
-  accepted.sort((a, b) => a.lines - b.lines);
-  const count = (list: { lines: number }[], b: string) =>
-    list.filter((r) => sizeBucket(r.lines) === b).length;
+  const order = reviewOrder(triage, earlier);
+  const reviewed = new Set(order.map((i) => i.row.id));
+  const rejected = rows.filter((r) => !reviewed.has(r.id));
+  const accepted = order.filter((i) => !i.now);
+  const count = (b: string) => accepted.filter((i) => i.group === b).length;
   const out: string[] = [];
 
   out.push('# Eval etiket onayı');
@@ -114,41 +284,29 @@ export function reviewSheet(triage: TriageReport, mined: MineResult, earlier?: T
   out.push(
     `Eleme: run \`${triage.runId}\`, ${triage.model}/${triage.effort}. ` +
       `${rows.length} aday, ${accepted.length} kabul ` +
-      `(≤200: ${count(accepted, '<=200')}, 201-800: ${count(accepted, '201-800')}, ` +
-      `801-2000: ${count(accepted, '801-2000')}), ` +
-      `${flipped.length} önceki turda kabul edilmişti, ${rows.filter((r) => !r.triage).length} null. ` +
+      `(≤200: ${count('<=200')}, 201-800: ${count('201-800')}, 801-2000: ${count('801-2000')}), ` +
+      `${order.length - accepted.length} önceki turda kabul edilmişti, ${rows.filter((r) => !r.triage).length} null. ` +
       `Maliyet: ${JSON.stringify(triage.summary.dollars ?? null)} $.`,
   );
   out.push('');
   out.push(
-    "Hedef (docs/eval.md 2.3): 20 bug'lı PR; boyut dağılımı bölüm 2.3'te. Pilot bu setten PR almaz. " +
-      'Her aday için karar ver: kabul, red ya da tanımı düzelt. Aynı bug birden çok ' +
-      "fix'te geçiyorsa burada zaten tek satıra indirildi. Diff'i görmek için başlıktaki komutu lula'da çalıştır.",
+    `Hedef (docs/eval.md 2.3): ${TARGET} bug'lı PR. Sırayla ilerle: ≤200 grubunun hepsine bak, sonra kabul ` +
+      `sayısı ${TARGET} olana kadar devam et; sonrakilere bakman gerekmez. Kararı \`eval/data/labels.json\`'da ` +
+      "adayın `decision` alanına yaz (`accept` ya da `reject`); bir bug'ın tanımını düzeltebilir ya da yanlış " +
+      "bug'ı silebilirsin. Aynı bug birden çok fix'te geçiyorsa burada zaten tek satıra indirildi. Diff'i görmek " +
+      "için başlıktaki komutu lula'da çalıştır. `node eval/review.ts --earlier eval/data/triage.v1.json` " +
+      `ilerlemeyi ve sıradakini gösterir, ${TARGET} kabulde \`eval/data/set.json\`'u yazar. Pilot bu setten PR almaz.`,
   );
-  out.push('');
-  out.push(`## Kabul edilenler (${accepted.length})`);
-  for (const r of accepted) candidateBlock(r, out);
-  out.push('');
-  if (flipped.length) {
-    out.push(`## Önceki turda kabul, bu turda red (${flipped.length})`);
+  for (const g of GROUPS) {
+    const items = order.filter((i) => i.group === g);
+    if (!items.length) continue;
+    const first = items[0]!.order;
+    const last = items.at(-1)!.order;
     out.push('');
-    out.push(
-      'Fix listesi değişince yeniden soruldu ve bu tur reddetti. Aşağıda önceki turun kararı var; altında, önceki ' +
-        "turun kabul ettiği her fix'e bu turun verdiği karar.",
-    );
-    for (const { now, earlierRow } of flipped) {
-      candidateBlock(earlierRow, out);
-      out.push('');
-      const current = new Map((now.triage?.fixes ?? []).map((f) => [f.sha, f]));
-      for (const f of earlierRow.triage!.fixes.filter(keep)) {
-        const c = current.get(f.sha);
-        out.push(
-          `- Bu tur \`${f.sha.slice(0, 9)}\`: ${c ? `${flags(c)}, ${cell(trim(c.reason, 280))}` : 'sorulmadı (8 fix sınırı ya da null)'}`,
-        );
-      }
-    }
-    out.push('');
+    out.push(`## ${first === last ? first : `${first}–${last}`}: ${GROUP_TITLE[g]}`);
+    for (const i of items) candidateBlock(i, out);
   }
+  out.push('');
   out.push(`## Reddedilenler (${rejected.length})`);
   out.push('');
   out.push('| Aday | Satır | İlk fix | Gerekçe |');
@@ -196,9 +354,41 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   const triage = JSON.parse(readFileSync(flag(argv, '--triage') ?? 'eval/data/triage.json', 'utf8'));
   const mined = JSON.parse(readFileSync(flag(argv, '--candidates') ?? 'eval/data/candidates.json', 'utf8'));
   const out = flag(argv, '--out') ?? 'eval/data/review.md';
+  const labelsPath = flag(argv, '--labels') ?? 'eval/data/labels.json';
+  const setPath = flag(argv, '--set') ?? 'eval/data/set.json';
   mkdirSync(path.dirname(out), { recursive: true });
   const earlierPath = flag(argv, '--earlier');
   const earlier = earlierPath ? JSON.parse(readFileSync(earlierPath, 'utf8')) : undefined;
-  writeFileSync(out, reviewSheet(triage, mined, earlier));
-  console.error(`review: wrote ${out}`);
+  const order = reviewOrder(triage, earlier);
+  const labels: Labels | undefined = existsSync(labelsPath)
+    ? JSON.parse(readFileSync(labelsPath, 'utf8'))
+    : undefined;
+
+  // A sheet numbered apart from the decisions would mislead, so neither file is written then.
+  if (labels && labels.candidates.map((c) => c.id).join() !== order.map((i) => i.row.id).join()) {
+    console.error(
+      `review: ${labelsPath} does not follow this order (--earlier missing, or a new triage); nothing written`,
+    );
+    process.exitCode = 1;
+  } else {
+    writeFileSync(out, reviewSheet(triage, mined, earlier));
+    console.error(`review: wrote ${out}`);
+    if (!labels) {
+      writeFileSync(
+        labelsPath,
+        `${JSON.stringify(labelsSkeleton(order, path.basename(mined.repo)), null, 2)}\n`,
+      );
+      console.error(`review: wrote ${labelsPath}, ${order.length} candidates, no decisions yet`);
+    } else {
+      const { set, rejected, next } = pickSet(labels);
+      const where = next ? `; next #${next.order} ${next.id}` : '';
+      console.error(`review: ${set.length}/${labels.target} accepted, ${rejected} rejected${where}`);
+      if (set.length === labels.target) {
+        writeFileSync(setPath, `${JSON.stringify(set, null, 2)}\n`);
+        console.error(`review: wrote ${setPath}`);
+      } else if (!next) {
+        console.error(`review: the order ran out below ${labels.target}`);
+      }
+    }
+  }
 }

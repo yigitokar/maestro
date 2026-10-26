@@ -110,10 +110,12 @@ Böylece ajan, PR'ı kontrolleri kaldıran bir değişiklik olarak görür; fix'
 
 ### 2.3 İnsan onayı
 
-Kullanıcı 32 adayı gözden geçirir: elemeden geçen 30 aday ve önceki turda kabul edilip bu turda reddedilen 2 aday. Liste `eval/data/review.md`'dir. Her aday için PR diff'ini, fix diff'ini ve eleme metnini görür; kabul eder, reddeder ya da tanımı düzeltir. Aday başına 3–5 dakika sürer, toplam 1,5–2,5 saat.
+Kullanıcı adayları `eval/data/review.md`'deki sırayla gözden geçirir. Listede 32 aday var: elemeden geçen 30 aday ve önceki turda kabul edilip bu turda reddedilen 2 aday. Her aday için PR diff'ini, fix diff'ini ve eleme metnini görür; kabul eder, reddeder ya da tanımı düzeltir. Aday başına 3–5 dakika sürer. Kabul sayısı 20'ye ulaşınca durur; her aday kabul edilirse 20 aday, yaklaşık 1–1,5 saat.
 
 - **Etiket bug başınadır, PR başına değil.** #546'da iki bug vardı.
-- **Seçim:** 20 PR. Önce onaylanan ≤200 satırlık PR'ların hepsi alınır, sonra 201–800 satırlıklar, 20'ye yetmezse 801–2000 satırlıklar. Büyük PR'lar B'nin hücre maliyetini büyüttüğü için en sona kalır. Bir grupta gerekenden fazla aday varsa seçim sabit tohumla rastgele yapılır. 2000 satır üstü PR'lar kapsam dışıdır ve bu sınır raporda yazılır.
+- **Seçim:** 20 PR. Önce onaylanan ≤200 satırlık PR'ların hepsi alınır, sonra 201–800 satırlıklar, 20'ye yetmezse 801–2000 satırlıklar. Büyük PR'lar B'nin hücre maliyetini büyüttüğü için en sona kalır. 2000 satır üstü PR'lar kapsam dışıdır ve bu sınır raporda yazılır.
+- **Sıra:** `eval/review.ts` üretir. ≤200 grubu satır sayısına göre dizilir, çünkü onaylananların hepsi alınır. 201–800 ve 801–2000 grupları 20261026 tohumuyla ayrı ayrı karıştırılır (mulberry32 ile Fisher–Yates). Sırayla ilerleyip ilk 20 kabulü almak, gruptan sabit tohumla rastgele seçmekle aynıdır ve sonraki adaylara hiç bakılmaz. Kesinleşen sırada 1–5 ≤200, 6–23 201–800, 24–32 801–2000 satırlıktır.
+- **Kayıt:** kararlar `eval/data/labels.json`'a yazılır. Dosya bir kez, kararlar boş (`decision: null`) olarak oluşur ve yeniden üretilmez. Kullanıcı `accept` ya da `reject` yazar, bug tanımını düzeltir ya da yanlış bug'ı siler. `node eval/review.ts --earlier eval/data/triage.v1.json` ilerlemeyi ve sıradaki adayı gösterir. Karar verilmemiş ilk adayda durur, çünkü set o adaya kadar belli değildir. 20 kabulde seti bölüm 2.5'teki biçimde `eval/data/set.json`'a yazar. Eleme yeniden koşar ve sıra değişirse set yazılmaz.
 - **Pilot setten PR almaz:** ters-fix ve 2 temiz PR üzerinde koşar (bölüm 5).
 
 ### 2.4 Temiz PR'lar
@@ -134,6 +136,7 @@ Kesinleşen yapılandırmayla havuzda 56 PR var: 45'i ≤200, 10'u 201–800, 1'
   "id": "lula-546",
   "repo": "lula",
   "merge": "<M sha>",
+  "base": "<base sha>",
   "kind": "bug",
   "lines": 343,
   "bugs": [
@@ -257,7 +260,7 @@ Her metrik kol ve tekrar başına hesaplanır, üç tekrarın medyanı alınır.
 
 Toplamın kabaca $250–400 olması beklenir. Opus kollarda seçilirse pilot yeniden fiyatlar. Duvar saati henüz ölçülmedi, onu da pilot ölçer.
 
-Kullanıcının zamanı: etiket onayı için 2–3 saat, hakem kontrolü için 1–2 saat.
+Kullanıcının zamanı: etiket onayı için 1–1,5 saat (bölüm 2.3), hakem kontrolü için 1–2 saat.
 
 ## 8. Dosyalar ve sıra
 
@@ -266,7 +269,7 @@ Kullanıcının zamanı: etiket onayı için 2–3 saat, hakem kontrolü için 1
 | `eval/mine.ts` | SZZ ve üç bağlantı türü → `eval/data/candidates.json` (yazıldı) |
 | `eval/workflows/triage.js`, `eval/triage.js` | aday başına eleme ajanı ve çalıştırıcısı → `eval/data/triage.json` (yazıldı) |
 | `eval/materialize.ts` | tek commit'i ve atalarını taşıyan taze repo (bölüm 3) (yazıldı) |
-| `eval/review.ts` | onay listesi → `eval/data/review.md` (yazıldı) |
+| `eval/review.ts` | onay listesi ve sırası → `eval/data/review.md`; kararlar `eval/data/labels.json`'dan → `eval/data/set.json` (yazıldı) |
 | `eval/prepare.js` | hücre repolarını kurar, CLAUDE.md'yi yol için tarar |
 | `eval/workflows/single-review.js` | A kolu |
 | `eval/run.js` | 150 hücreyi koşar, `results.jsonl`'a yazar, trace'leri denetler |
