@@ -212,8 +212,14 @@ npm run smoke
 |---|---|---:|---:|---:|---:|---|
 | v1, temiz PR diff'i, cache yok | high | ölçülmedi | yok | ölçülmedi | $0,77 | 0 bulgu |
 | v1, bug'lı kurulum, cache yok | high | 3,36M | yok | 135k | $8,08 | 13 → 39 → 11 → 6, iki bug da bulundu |
-| v1.1, bug'lı kurulum, cache | high | ölçülmedi | ölçülmedi | ölçülmedi | ölçülmedi | ölçülmedi |
-| v1.1, bug'lı kurulum, cache | medium | ölçülmedi | ölçülmedi | ölçülmedi | ölçülmedi | ölçülmedi |
+| v1.1, bug'lı kurulum, cache | high | 2,97M | 2,02M (%68) | 102k | $3,56 | 10 → 30 → 9 → 6, iki bug da (2. ve 3. sıra) |
+| v1.1, bug'lı kurulum, cache | medium | 2,28M | 1,64M (%72) | 79k | $2,55 | 11 → 33 → 10 → 5, iki bug da (1. ve 2. sıra) |
+
+v1.1 koşuları 2026-10-25'te yapıldı (run `20261025-212908-d1a8b7` ve `20261025-213146-43651c`). Okuma notları:
+
+- **Cache.** Girdi maliyeti v1'de $6,72 (3,36M × $2), v1.1 high koşusunda $2,54: %62 düşüş. Bulucular her koşuda farklı sayıda bulgu üretir (13 yerine 10), bu yüzden ajan başına bakmak daha adil: girdi maliyeti ajan başına $0,156'dan $0,075'e iner (%52). Tek turlu sentez ajanı cache'ten yalnızca araçlar + sistem prefix'ini okur (%16); çok turlu skeptikler %70 civarı okur.
+- **Effort.** Skeptik başına maliyet high'da $0,103, medium'da $0,064 (%38 düşüş); skeptik başına çıktı 2,9k'dan 2,0k tokene iner. İki koşuda da tam olarak bir bulgu çürütüldü ve iki bilinen bug geçti. Medium'da oylar daha sık bölündü (11 bulgudan 3'ünde 2-1, high'da 10'dan 1'inde), yani medium skeptikler daha az otomatik onay verdi; bu tek bir koşu, istatistik değil.
+- Sonuç: cache her koşuda açık. Bu ölçümde `medium` skeptikler bulgu kalitesini kaybetmeden daha ucuz; tek koşuya dayanarak varsayılan `high` bırakıldı.
 
 Skeptik effort'u `args.skepticEffort` ile değişir, varsayılan `high`:
 
