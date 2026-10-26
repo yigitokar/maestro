@@ -12,7 +12,7 @@
 
 ## 1. Kaynak: lula
 
-lula'nın varsayılan branch'i `lula-version`'dır. İlk-ebeveyn zincirinde 381 merge commit'i vardır; çoğu PR'dır ve squash değil merge stratejisiyle gelmiştir. Ayrıca 458 "fix" commit'i vardır (konu satırında `fix`, `hotfix`, `bug`, `regression`). Commit mesajları açıklayıcıdır, bu da eleme adımını ucuzlatır. Kod TypeScript ve Supabase SQL'dir.
+lula'nın varsayılan branch'i `lula-version`'dır. İlk-ebeveyn zincirinde 381 merge commit'i vardır; çoğu PR'dır ve squash değil merge stratejisiyle gelmiştir. Ayrıca 458 "fix" commit'i vardır (konu satırında `fix`, `hotfix`, `bug`, `regression`); bölüm 2.2'deki geniş desenle bu sayı 547 olur. Commit mesajları açıklayıcıdır, bu da eleme adımını ucuzlatır. Kod TypeScript ve Supabase SQL'dir.
 
 Sınır: tek repo ve tek ekip. Sonuç lula'ya genellenir. İkinci bir repo gerekirse aynı araçlar `--repo` ile o repo üzerinde koşar.
 
@@ -28,7 +28,7 @@ Her fix commit'i için `git diff -U0 fix^ fix` okunur. Değişen satırların fi
 | eklemenin komşusu | eksik kontrol (`next_attempt_at <= now()` gibi) | fix yalnızca satır ekliyorsa, eklemeden önceki satırın blame'i |
 | SQL fonksiyonu | migration'daki fonksiyon bug'ları | fix migration'ı `create or replace function f` içeriyorsa, `f`'yi ondan önce son tanımlayan commit |
 
-Elenenler: fix'in aynı PR içinde olması, fix'in merge'den sonraki 24 saat içinde gelmesi, kilit dosyaları, `.md` ve snapshot dosyaları.
+Elenenler: fix'in aynı PR içinde olması, kilit dosyaları, `.md` ve snapshot dosyaları. Başlangıçta merge'den sonraki 24 saat içinde gelen fix'ler de eleniyordu. Bu kural 2026-10-26'da kaldırıldı (`--min-gap-days 0`), çünkü merge'den hemen sonra gelen hotfix, spec'in aradığı şeyin ta kendisidir.
 
 Deneme koşusunun sonucu aşağıda (`python3 eval/probe/szz_probe.py <lula> origin/lula-version`, 2026-10-25, yaklaşık 100 saniye). Bir PR yalnızca en güçlü bağlantı türüne sayılır:
 
@@ -43,22 +43,78 @@ SZZ gürültülüdür. Refactor'lar, biçim değişiklikleri ve kusurun yalnızc
 
 ### 2.2 Ajanla eleme
 
-Her (PR, fix) çifti için tek bir ajan koşar. Bu, Maestro'nun kendisiyle yazılmış bir workflow'dur (`eval/workflows/triage.js`). Ajan, fix commit'inde kurulmuş bir repoda çalışır, böylece hem PR'ı hem fix'i görür. Model Sonnet 5.5, effort `medium`. Dört soruya cevap verir:
+Her aday PR için tek bir ajan koşar ve PR'a bağlanan bütün fix'lere bakar; en fazla 8 fix, merge'e en yakın olanlar önce. Bu, Maestro'nun kendisiyle yazılmış bir workflow'dur (`eval/workflows/triage.js`). Ajan, madencilikte kullanılan trunk ucunda taze kurulmuş bir repoda çalışır (`eval/data/repos/<repo>-tip`), böylece hem PR'ı hem fix'leri görür; merge anındaki kodu `git show <merge>:<dosya>` ile okur. Model Sonnet 5.5, effort `medium`. Her fix için dört soruya cevap verir:
 
 1. Fix gerçekten bir kusuru mu düzeltiyor, yoksa refactor ya da özellik mi?
 2. Kusur bu PR ile mi geldi?
 3. Kusur, PR diff'i ve merge anındaki repo okunarak görülebilir mi? Çalışma zamanı ortamına, konfigürasyona ya da üçüncü taraf API davranışına bağlı bug'lar elenir.
 4. Her bug için: merge anındaki dosya ve satır, tek cümlelik tanım ve tetikleyen senaryo.
 
-113 aday için tahmini maliyet $10–15. Eleme ajanı geleceği görür, bu bir sorun değildir. Kendi state dizini kollarınkinden ayrıdır.
+Eleme ajanı geleceği görür, bu bir sorun değildir: kollar ayrı repolarda koşar ve elemenin state dizini (`eval/data/state`) kollarınkinden ayrıdır.
+
+Setin kullandığı yapılandırma (2026-10-26):
+
+```bash
+node eval/mine.ts --repo <lula> --ref origin/lula-version --fix-pattern broad --min-gap-days 0 --max-lines 2000
+```
+
+```bash
+npm run build && node eval/triage.js
+```
+
+**Pilot (2026-10-26).** Beş aday farklı boyut ve bağlantı türlerinden seçildi, koşu 1 dakika 53 saniye sürdü ve $0,72 tuttu. Aday başına maliyet $0,14 olduğu için 113 adayın tahmini maliyeti yaklaşık $16'dır. Gerekçeler ayrıntılıydı ama her cümlesi doğru değildi. Örneğin lula-76 reddedildi; fix'in konusu "kullanıcılar arası veri sızıntısı" idi. Elle doğrulandı: sızıntıya yol açan `cachedPersonas` önbelleği PR'dan önce de vardı ve PR o satırlara dokunmadı, yani red doğru. Ajanın "PR `prompts.ts`'te yalnızca boşluk değiştirdi" demesi ise yanlıştı: PR aynı dosyada araç listesini değiştirmişti. SZZ bağlantısı da muhtemelen bu komşu değişiklikten geliyordu. Satır numaraları merge anına göredir; bu da elle doğrulandı (lula-226: `isTerminalResultError` merge anında 377. satırda, trunk ucunda artık yok).
+
+Bir PR'ın birkaç fix'i genellikle aynı bug'ı bildirir. Özet bu yüzden bug'ları aday başına dosya:satır üzerinden tekilleştirir; gözden geçirme listesi (`node eval/review.ts` → `eval/data/review.md`) de aynısını yapar.
+
+**İlk tam koşu (2026-10-26, ilk yapılandırma: dar desen, 24 saat, ≤800 satır).** 113 aday incelendi ve maliyet pilot dahil $19,06 oldu. Bu tahminin üstünde, çünkü girdinin yalnızca %41'i cache'ten okundu. Sonuç:
+
+- 15 aday kabul edildi: 3 tanesi ≤200, 12 tanesi 201–800 satır.
+- Tekilleştirildikten sonra 17 bug.
+- Null dönen ajan yok.
+
+Kayıp esas olarak SZZ'nin yanlış PR'ı göstermesinden geliyor: incelenen 242 fix'ten 132'si gerçek bir kusur sayıldı, ama yalnızca 27'sinde kusur bu PR'a aitti.
+
+15, hedeflenen 20 + 3'ün altında kalıyor; ≤200 satırlık hedef 8'in ise yalnızca 3'ü karşılanıyor. Kaldıraçlar ölçüldü (API'siz, `eval/mine.ts` ile):
+
+| Kaldıraç | Yeni aday | Not |
+|---|---:|---|
+| Daha geniş fix deseni (`--fix-pattern broad`, desen `eval/mine.ts` `FIX_PATTERNS` içinde): "fix" kelimesi geçmeyen düzeltmeler, ör. "Stop the credit balance refresh from logging a 406" | 11 | 89 fix commit'i daha |
+| Aynı gün gelen hotfix'ler (`--min-gap-days 0`) | 3 | spec'in "hotfix commit'leri" ifadesiyle uyumlu |
+| İkisi birlikte | 17 yeni, 26 adayın fix listesi değişir | eleme ~$7 |
+| 801–2000 satır (karar 5'i değiştirir) | 33 | hücre maliyeti büyür |
+
+Kabul oranı %13 ile kapsam içindeki iki kaldıraç yaklaşık 3 bug daha getirir. İkinci bir repo seçenek değil: kullanıcının diğer reponlarında hiç ya da en fazla 7 kapanmış PR var.
+
+**Karar (2026-10-26).** Üç kaldıraç birlikte uygulandı: geniş desen, aynı gün hotfix'ler ve 801–2000 satır (bölüm 9, karar 5). Pilot ayrıca 3 ayrılmış bug'lı PR yerine ters-fix `2a877f1a` ve 2 temiz PR üzerinde koşar; bu, ihtiyacı 23'ten 20'ye indirir. Pilot B'yi ayarlamaz, yalnızca hattı ve maliyeti ölçer; bu yüzden etiketli setten PR ayırmak gerekmez.
+
+**Genişletilmiş koşu (2026-10-26).** Yeni yapılandırmayla 173 aday çıktı:
+
+- 60'ı yeni (43'ü 801–2000 satır),
+- 26'sının fix listesi değişti,
+- 87'si aynı kaldı.
+
+Eleme ilk koşudan resume edildi. Değişmeyen 87 aday journal'dan geldi; journal 113 satırdan 199'a çıktı, yani tam 86 ajan canlı koştu. Bu tur $20,30 tuttu; elemenin toplamı iki tur ve pilot dahil $39,36.
+
+Sonuç: 30 aday kabul edildi (4'ü ≤200, 17'si 201–800, 9'u 801–2000 satır) ve tekilleştirildikten sonra 41 bug var. Null dönen ajan yok.
+
+**Eleme gürültülüdür.** Yeniden sorulan 26 adaydan, ilk turda kabul edilmiş 2'si (lula-226 ve lula-94) bu turda reddedildi. lula-226 elle kontrol edildi ve ilk tur haklıydı: PR diff'i hem `status === 404 || status === 422` koşulunu hem de her 4xx'i kesin hata sayan `isTerminalResultError`'ı ekliyor. Yani eleme gerçek adayları kaçırabilir. Gözden geçirme listesi bu yüzden önceki turda kabul edilip bu turda reddedilenleri, önceki turun kararıyla ayrı bir bölümde gösterir (`node eval/review.ts --earlier eval/data/triage.v1.json`).
+
+Ters-fix hücresi sızıntısız olmalı, bu yüzden özel kurulur. `2a877f1a`'da kurulan bir repo fix'in mesajını taşır; `2a877f1a^1`'de kurulan bir repoda ise fix commit'i yoktur, yani `git diff 2a877f1a 2a877f1a^1` çalışmaz. Kurulum:
+
+1. Hücre `2a877f1a^1`'de kurulur. Bu bug'lı koddur.
+2. Fix'in patch'i nötr mesajlı bir commit olarak uygulanır (`B'`): düzeltilmiş kod.
+3. Ters patch ikinci bir nötr commit olarak uygulanır (`H'`): yeniden bug'lı kod.
+4. diffRef `B' H'` olur ve çalışma ağacı `H'`'de durur.
+
+Böylece ajan, PR'ı kontrolleri kaldıran bir değişiklik olarak görür; fix'in mesajı ve sonraki geçmiş hücrede yoktur.
 
 ### 2.3 İnsan onayı
 
-Elemeden geçenleri (tahminen 40–60 aday) kullanıcı gözden geçirir. Her aday için PR diff'ini, fix diff'ini ve eleme metnini görür; kabul eder, reddeder ya da tanımı düzeltir. Aday başına 3–5 dakika sürer, toplam 2–3 saat.
+Kullanıcı 32 adayı gözden geçirir: elemeden geçen 30 aday ve önceki turda kabul edilip bu turda reddedilen 2 aday. Liste `eval/data/review.md`'dir. Her aday için PR diff'ini, fix diff'ini ve eleme metnini görür; kabul eder, reddeder ya da tanımı düzeltir. Aday başına 3–5 dakika sürer, toplam 1,5–2,5 saat.
 
 - **Etiket bug başınadır, PR başına değil.** #546'da iki bug vardı.
-- **Seçim:** 20 PR, boyuta göre katmanlı: 8 tanesi ≤200 satır, 12 tanesi 201–800 satır. 800 satır üstü PR'lar kapsam dışıdır. Hem B'nin maliyeti bulgu sayısıyla büyür, hem de havuzdaki adayların çoğu 800'ün altındadır. Bu sınır raporda yazılır.
-- **Pilot için ayrılanlar:** Kabul edilen 3 PR daha pilota ayrılır. Bunlar 20'nin içinde değildir.
+- **Seçim:** 20 PR. Önce onaylanan ≤200 satırlık PR'ların hepsi alınır, sonra 201–800 satırlıklar, 20'ye yetmezse 801–2000 satırlıklar. Büyük PR'lar B'nin hücre maliyetini büyüttüğü için en sona kalır. Bir grupta gerekenden fazla aday varsa seçim sabit tohumla rastgele yapılır. 2000 satır üstü PR'lar kapsam dışıdır ve bu sınır raporda yazılır.
+- **Pilot setten PR almaz:** ters-fix ve 2 temiz PR üzerinde koşar (bölüm 5).
 
 ### 2.4 Temiz PR'lar
 
@@ -67,9 +123,9 @@ Bir PR şu dört koşulu sağlıyorsa temizdir:
 - `lula-version`'ın ucundan en az 90 gün önce merge edilmiş,
 - hiçbir bağlantı türüyle bir fix'e bağlanmamış,
 - eklediği satırlar ya hâlâ uçta duruyor ya da fix olmayan bir commit tarafından kaldırılmış,
-- boyutu bug setine benziyor: 2 tanesi ≤200, 3 tanesi 201–800 satır.
+- boyut dağılımı, kesinleşen bug setininkine benziyor.
 
-Denemede ilk iki koşulu 64 PR sağlıyor. Seçilen 5'i kullanıcı onaylar. Bir kol temiz bir PR'da gerçek bir bug bulursa bu yanlış pozitif sayılmaz (bölüm 6).
+Kesinleşen yapılandırmayla havuzda 56 PR var: 45'i ≤200, 10'u 201–800, 1'i 801–2000 satır. Set için 5 temiz PR, pilot için bunlardan ayrı 2 temiz PR seçilir; hepsini kullanıcı onaylar. Bir kol temiz bir PR'da gerçek bir bug bulursa bu yanlış pozitif sayılmaz (bölüm 6).
 
 ### 2.5 Kayıt biçimi
 
@@ -101,10 +157,10 @@ Etiketler private lula kodunu anlatır. Bu yüzden araçlar maestro'da, veriler 
 **Taze repo.** Her PR şöyle kurulur:
 
 ```bash
-git init -q <cell> && git -C <cell> fetch -q <lula> <M> && git -C <cell> checkout -q --detach <M> && rm <cell>/.git/FETCH_HEAD
+git init -q <cell> && git -C <cell> fetch -q --no-tags <lula> <M> && git -C <cell> checkout -q --detach <M> && rm <cell>/.git/FETCH_HEAD
 ```
 
-Bu repoda remote yoktur ve yalnızca `M`'nin ataları bulunur. Komut PR #546'nın merge commit'iyle (`7964fab`) denendi. Sonuç: `git log --all` yalnızca `M`'ye kadar gidiyor, `git cat-file -t 2a877f1a` "Not a valid object name" veriyor, `.git` altında ne ref ne remote ne de lula'nın yolu kalıyor. lula'ya hiçbir şey yazılmıyor. Gerekçe: salt-okur bash `git log --all` ve `git show <sha>` çalıştırmaya izin verir. lula'nın bir worktree'si, nesne deposunu paylaştığı için gelecekteki fix'i gösterir.
+Kodda bu adım `eval/materialize.ts`'tir. Bu repoda remote yoktur ve yalnızca `M`'nin ataları bulunur. Komut PR #546'nın merge commit'iyle (`7964fab`) denendi. Sonuç: `git log --all` yalnızca `M`'ye kadar gidiyor, `git cat-file -t 2a877f1a` "Not a valid object name" veriyor, `.git` altında ne ref ne remote ne de lula'nın yolu kalıyor. lula'ya hiçbir şey yazılmıyor. Gerekçe: salt-okur bash `git log --all` ve `git show <sha>` çalıştırmaya izin verir. lula'nın bir worktree'si, nesne deposunu paylaştığı için gelecekteki fix'i gösterir.
 
 **State dizini repo dışında.** Varsayılan `<cwd>/.maestro/`'dur. Journal'lar bulgu taşır, yani sonraki bir hücrenin ajanı önceki hücrelerin cevaplarını `cat` ile okuyabilirdi. Her hücre `--state-dir` ile repo dışına yazar.
 
@@ -139,7 +195,7 @@ Puanlanan şey her kolun son dönüş değeridir. B'de bu sentez çıktısıdır
 
 **Dondurma.** Tam koşudan önce `eval/data/manifest.json` yazılır. İçinde şunlar bulunur: maestro commit SHA'sı, `set.json`, kol script'leri ve hakem prompt'unun hash'leri, model ve bütün parametreler. Eval sonuçları görüldükten sonra B'nin prompt'ları değişmez; değişirse yeni bir manifest ve yeni bir tam koşu gerekir.
 
-**Pilot.** Ayrılmış 3 PR × 2 kol × 1 tekrar. Hücre başına gerçek doları ve duvar saatini ölçer. Hakemi ve trace denetimini sınar. Tahmini maliyet yaklaşık $15.
+**Pilot.** Ters-fix `2a877f1a` (kurulumu bölüm 2.2) ve setin dışındaki 2 temiz PR × 2 kol × 1 tekrar. Hücre başına gerçek doları ve duvar saatini ölçer. Hakemi ve trace denetimini sınar; ters-fix'in etiketi kesin olduğu için hakemin eşleştirmesi doğrudan kontrol edilir. Tahmini maliyet yaklaşık $15. Pilot 801–2000 satırlık bir PR içermez, bu yüzden büyük PR'lardaki B maliyeti ilk tam koşu tekrarında ölçülür.
 
 **Tam koşu.** 150 hücre. Sıralama:
 
@@ -193,9 +249,9 @@ Her metrik kol ve tekrar başına hesaplanır, üç tekrarın medyanı alınır.
 
 | Kalem | Hücre | Tahmin | Dayanak |
 |---|---:|---:|---|
-| Eleme | 113 | $10–15 | tahmin, Sonnet `medium` |
+| Eleme | 173 | $39,36 | ölçüldü: iki tur ve pilot dahil, Sonnet `medium` |
 | Pilot | 6 + hakem | ~$15 | B ölçümü |
-| B | 75 | $190–270 | ölçülen $2,55–3,56, 343 satırlık diff |
+| B | 75 | $190–270 | ölçülen $2,55–3,56, 343 satırlık diff; 801–2000 satırlık PR'larda daha pahalı, ölçülmedi |
 | A | 75 | $15–40 | tahmin, pilot ölçer |
 | Hakem | 150 | pilot ölçer | Opus |
 
@@ -207,8 +263,10 @@ Kullanıcının zamanı: etiket onayı için 2–3 saat, hakem kontrolü için 1
 
 | Dosya | İş |
 |---|---|
-| `eval/mine.js` | SZZ ve üç bağlantı türü → `eval/data/candidates.json` |
-| `eval/workflows/triage.js` | aday başına eleme ajanı |
+| `eval/mine.ts` | SZZ ve üç bağlantı türü → `eval/data/candidates.json` (yazıldı) |
+| `eval/workflows/triage.js`, `eval/triage.js` | aday başına eleme ajanı ve çalıştırıcısı → `eval/data/triage.json` (yazıldı) |
+| `eval/materialize.ts` | tek commit'i ve atalarını taşıyan taze repo (bölüm 3) (yazıldı) |
+| `eval/review.ts` | onay listesi → `eval/data/review.md` (yazıldı) |
 | `eval/prepare.js` | hücre repolarını kurar, CLAUDE.md'yi yol için tarar |
 | `eval/workflows/single-review.js` | A kolu |
 | `eval/run.js` | 150 hücreyi koşar, `results.jsonl`'a yazar, trace'leri denetler |
@@ -219,7 +277,7 @@ Kullanıcının zamanı: etiket onayı için 2–3 saat, hakem kontrolü için 1
 
 Sıra:
 
-1. Madencilik ve eleme (ajan, ~$15).
+1. Madencilik ve eleme (yapıldı, $39,36).
 2. Etiket onayı (kullanıcı).
 3. Hücre repolarını kurma.
 4. Pilot ve kontrolü.
@@ -236,4 +294,6 @@ Sıra:
 2. **A'nın effort'u:** `high`.
 3. **Veri yeri:** maestro'da git'e girmeyen `eval/data/`.
 4. **Bütçe:** kabaca $250–400.
-5. **Kapsam:** 800 satır üstü PR'lar dışarıda kalır. Bu yüzden tek bilinen örneğimiz #546 (yaklaşık 4.150 satır) sete girmez; rapor bunu kapsam sınırı olarak yazar.
+5. **Kapsam:** 2000 satır üstü PR'lar dışarıda kalır. İlk karar 800'dü; aynı gün 2000'e genişletildi, çünkü ≤800 ile elemeden yalnızca 15 aday geçti ve onaydan sonra set 20'nin hayli altında kalacaktı (bölüm 2.2). Tek bilinen örneğimiz #546 (yaklaşık 4.150 satır) yine sete girmez; rapor bunu kapsam sınırı olarak yazar.
+6. **Madencilik:** geniş fix deseni ve aynı gün hotfix'ler (bölüm 2.1, 2.2).
+7. **Pilot:** ters-fix `2a877f1a` ve setin dışındaki 2 temiz PR (bölüm 5).

@@ -19,6 +19,6 @@
     "outDir": "dist",
     "rootDir": "."
   },
-  "include": ["src", "test", "examples/**/*.ts", "vitest.config.ts"],
-  "exclude": ["examples/smoke.ts", "dist", "node_modules"]
+  "include": ["src", "test", "examples/**/*.ts", "eval/**/*.ts", "vitest.config.ts"],
+  "exclude": ["examples/smoke.ts", "eval/data", "dist", "node_modules"]
 }
