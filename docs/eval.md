@@ -4,7 +4,7 @@
 
 ## Özet
 
-- **Set** lula'dan gelir. lula private olduğu için eğitim verisinde yoktur. Bug'lı PR'lar üç adımda seçilir: SZZ ile madencilik, ajanla eleme, insan onayı. 20 bug'lı ve 5 temiz PR.
+- **Set** lula'dan gelir. lula private olduğu için eğitim verisinde yoktur. Bug'lı PR'lar üç adımda seçilir: SZZ ile madencilik, ajanla eleme, insan onayının yerine ajanla doğrulama (karar 8). 20 bug'lı ve 5 temiz PR.
 - **Sızıntı:** Her PR, yalnızca merge commit'inin atalarını içeren taze bir repoda koşar. Sonradan gelen fix ajanın erişebildiği hiçbir yerde yoktur.
 - **Kollar:** A tek ajan, B `review-changes` değişmeden. Model, araçlar ve çıktı şeması aynı. 25 PR × 2 kol × 3 tekrar = 150 hücre, karışık sırada.
 - **Puanlama:** Kolu bilmeyen bir hakem ajanı puanlar, insan kontrol eder. Karar kuralı spec'teki gibidir.
@@ -108,15 +108,32 @@ Ters-fix hücresi sızıntısız olmalı, bu yüzden özel kurulur. `2a877f1a`'d
 
 Böylece ajan, PR'ı kontrolleri kaldıran bir değişiklik olarak görür; fix'in mesajı ve sonraki geçmiş hücrede yoktur.
 
-### 2.3 İnsan onayı
+### 2.3 Onay
 
-Kullanıcı adayları `eval/data/review.md`'deki sırayla gözden geçirir. Listede 32 aday var: elemeden geçen 30 aday ve önceki turda kabul edilip bu turda reddedilen 2 aday. Her aday için PR diff'ini, fix diff'ini ve eleme metnini görür; kabul eder, reddeder ya da tanımı düzeltir. Aday başına 3–5 dakika sürer. Kabul sayısı 20'ye ulaşınca durur; her aday kabul edilirse 20 aday, yaklaşık 1–1,5 saat.
+Plan, kullanıcının adayları `eval/data/review.md`'deki sırayla gözden geçirmesiydi. Listede 32 aday var: elemeden geçen 30 aday ve önceki turda kabul edilip bu turda reddedilen 2 aday. Kullanıcı bu onayı yapmadı (karar 8). Onun yerine her aday bir doğrulama ajanından geçer (`eval/workflows/verify.js`, `eval/verify.js`, Opus 5.5 `high`):
+
+- Ajan elemenin gerekçesini görmez, yalnızca iddiayı: dosya, satır, tanım, senaryo ve fix SHA'sı. Böylece iddiayı üreten modelin akıl yürütmesine yaslanmaz.
+- Her bug'ı çürütmeye çalışır ve dört soruyu kodu okuyarak cevaplar: kusur merge anında var mı, PR mı getirdi, fix onu düzeltiyor mu, diff'ten görülür mü.
+- Dördüne de evet denen bug kalır, ajanın düzelttiği konum ve tanımla. Hiç bug'ı kalmayan aday reddedilir.
+- Emin olmayan ajan hayır der. 32 adaydan 20'si gerektiği için yanlış bir red ucuzdur, yanlış bir kabul pahalıdır.
+- Ajanın null dönmesi altyapı hatasıdır: aday kararsız kalır ve yeniden koşulur.
+
+Seçim, sıra ve kayıt insan onayı için kurulduğu gibi kaldı:
 
 - **Etiket bug başınadır, PR başına değil.** #546'da iki bug vardı.
 - **Seçim:** 20 PR. Önce onaylanan ≤200 satırlık PR'ların hepsi alınır, sonra 201–800 satırlıklar, 20'ye yetmezse 801–2000 satırlıklar. Büyük PR'lar B'nin hücre maliyetini büyüttüğü için en sona kalır. 2000 satır üstü PR'lar kapsam dışıdır ve bu sınır raporda yazılır.
 - **Sıra:** `eval/review.ts` üretir. ≤200 grubu satır sayısına göre dizilir, çünkü onaylananların hepsi alınır. 201–800 ve 801–2000 grupları 20261026 tohumuyla ayrı ayrı karıştırılır (mulberry32 ile Fisher–Yates). Sırayla ilerleyip ilk 20 kabulü almak, gruptan sabit tohumla rastgele seçmekle aynıdır ve sonraki adaylara hiç bakılmaz. Kesinleşen sırada 1–5 ≤200, 6–23 201–800, 24–32 801–2000 satırlıktır.
-- **Kayıt:** kararlar `eval/data/labels.json`'a yazılır. Dosya bir kez, kararlar boş (`decision: null`) olarak oluşur ve yeniden üretilmez. Kullanıcı `accept` ya da `reject` yazar, bug tanımını düzeltir ya da yanlış bug'ı siler. `node eval/review.ts --earlier eval/data/triage.v1.json` ilerlemeyi ve sıradaki adayı gösterir. Karar verilmemiş ilk adayda durur, çünkü set o adaya kadar belli değildir. 20 kabulde seti bölüm 2.5'teki biçimde `eval/data/set.json`'a yazar. Eleme yeniden koşar ve sıra değişirse set yazılmaz.
+- **Kayıt:** kararlar `eval/data/labels.json`'a yazılır. Dosya bir kez, kararlar boş (`decision: null`) olarak oluşur ve yeniden üretilmez. Kararları `eval/verify.js` yazar; doğrulamanın gerekçesi `note` alanına, tam çıktısı `eval/data/verify.json`'a gider. Önceden yazılmış bir karara dokunmaz, yani bir kararı elle değiştirmek her zaman mümkündür. `node eval/review.ts --earlier eval/data/triage.v1.json` ilerlemeyi ve sıradaki adayı gösterir. Karar verilmemiş ilk adayda durur, çünkü set o adaya kadar belli değildir. 20 kabulde seti bölüm 2.5'teki biçimde `eval/data/set.json`'a yazar. Eleme yeniden koşar ve sıra değişirse set yazılmaz.
 - **Pilot setten PR almaz:** ters-fix ve 2 temiz PR üzerinde koşar (bölüm 5).
+
+**Sonuç (2026-10-26).** 1–25. sıradaki adaylar doğrulandı, maliyet $8,60. Run'lar: `20261026-182346-2e1e6d`, `20261026-182447-027884` ve `20261026-182624-399d3f`.
+
+- **Kararlar:** 25 adayın 31 iddiasından 24'ü doğrulandı. 20 aday kabul, 5 aday red.
+- **Red gerekçeleri:** lula-324, lula-326 ve lula-94'te kusur yok. lula-110'da fix bu kusuru düzeltmiyor. lula-225'teki kusur PR'dan önce de vardı.
+- **Set:** 20. kabul 24. sıradaki lula-262'dir (1.882 satır). lula-225 ondan sonra geldiği için sete etkisi yoktur. Setin boyut dağılımı 4 ≤200, 15 201–800, 1 801–2000 satırdır. 20 bug'lı PR'da 24 bug var.
+- **Düzeltilen etiketler:** Kabul edilen 7 adayda doğrulayıcı bir bug'ın satırını, tanımını ya da senaryosunu düzeltti: lula-479, lula-226, lula-273, lula-210, lula-83065cc7b, lula-147, lula-74.
+- **Önceki turda kabul, bu turda red alan iki aday:** lula-226 doğrulandı, lula-94 reddedildi.
+- **Bug'ların ağırlığı karışıktır.** Derleme hataları (lula-de161bc3d, lula-132, lula-83065cc7b) ve yanlış metinler gibi küçük kusurlar var. Yetkisiz veri erişimi gibi ciddi olanlar da var (lula-71, lula-234).
 
 ### 2.4 Temiz PR'lar
 
@@ -127,7 +144,15 @@ Bir PR şu dört koşulu sağlıyorsa temizdir:
 - eklediği satırlar ya hâlâ uçta duruyor ya da fix olmayan bir commit tarafından kaldırılmış,
 - boyut dağılımı, kesinleşen bug setininkine benziyor.
 
-Kesinleşen yapılandırmayla havuzda 56 PR var: 45'i ≤200, 10'u 201–800, 1'i 801–2000 satır. Set için 5 temiz PR, pilot için bunlardan ayrı 2 temiz PR seçilir; hepsini kullanıcı onaylar. Bir kol temiz bir PR'da gerçek bir bug bulursa bu yanlış pozitif sayılmaz (bölüm 6).
+Kesinleşen yapılandırmayla havuzda 56 PR var: 45'i ≤200, 10'u 201–800, 1'i 801–2000 satır. Set için 5 temiz PR, pilot için bunlardan ayrı 2 temiz PR seçilir. Kullanıcı onayı yapılmaz (karar 8).
+
+Seçimi `eval/review.ts` set yazılırken yapar:
+
+- **Gruplara bölme:** önce setin 5'i, sonra pilotun 2'si bug setinin boyut dağılımına göre gruplara bölünür (en büyük kalan yöntemi). Grup içinde hayatta kalması en yüksek PR önce gelir; eşitlik 20261026 tohumuyla bozulur.
+- **Boş PR seçilmez:** sayılan hiç satır eklememiş bir PR, örneğin 0/0 olan lula-90, kollara incelenecek bir şey bırakmaz.
+- **Hayatta kalma tavanı:** değer 1'de kesilir, çünkü uçtaki blame bir PR'a eklediğinden birkaç satır fazlasını yazabiliyor.
+
+Sonuç: set için lula-311 (19 satır), lula-366 (353), lula-360 (659), lula-298 (439) ve lula-274 (443). Pilot için lula-252 (213) ve lula-f82693144 (509). lula-f82693144, `lula-version`'ın kendisine yapılmış bir merge'üdür, yani tek bir PR değil, uzak dalda biriken bir değişiklik grubudur. Bir kol temiz bir PR'da gerçek bir bug bulursa bu yanlış pozitif sayılmaz (bölüm 6).
 
 ### 2.5 Kayıt biçimi
 
@@ -152,6 +177,8 @@ Kesinleşen yapılandırmayla havuzda 56 PR var: 45'i ≤200, 10'u 201–800, 1'
   ]
 }
 ```
+
+Temiz PR'lar aynı biçimde, `kind: "clean"` ve boş `bugs` ile yazılır. Set (20 bug'lı ve 5 temiz PR) `eval/data/set.json`'da, pilotun temiz PR'ları `eval/data/pilot.json`'dadır.
 
 Etiketler private lula kodunu anlatır. Bu yüzden araçlar maestro'da, veriler git'e girmeyen `eval/data/` altında durur.
 
@@ -198,7 +225,7 @@ Puanlanan şey her kolun son dönüş değeridir. B'de bu sentez çıktısıdır
 
 **Dondurma.** Tam koşudan önce `eval/data/manifest.json` yazılır. İçinde şunlar bulunur: maestro commit SHA'sı, `set.json`, kol script'leri ve hakem prompt'unun hash'leri, model ve bütün parametreler. Eval sonuçları görüldükten sonra B'nin prompt'ları değişmez; değişirse yeni bir manifest ve yeni bir tam koşu gerekir.
 
-**Pilot.** Ters-fix `2a877f1a` (kurulumu bölüm 2.2) ve setin dışındaki 2 temiz PR × 2 kol × 1 tekrar. Hücre başına gerçek doları ve duvar saatini ölçer. Hakemi ve trace denetimini sınar; ters-fix'in etiketi kesin olduğu için hakemin eşleştirmesi doğrudan kontrol edilir. Tahmini maliyet yaklaşık $15. Pilot 801–2000 satırlık bir PR içermez, bu yüzden büyük PR'lardaki B maliyeti ilk tam koşu tekrarında ölçülür.
+**Pilot.** Ters-fix `2a877f1a` (kurulumu bölüm 2.2) ve setin dışındaki 2 temiz PR (lula-252 ve lula-f82693144, bölüm 2.4) × 2 kol × 1 tekrar. Hücre başına gerçek doları ve duvar saatini ölçer. Hakemi ve trace denetimini sınar; ters-fix'in etiketi kesin olduğu için hakemin eşleştirmesi doğrudan kontrol edilir. Tahmini maliyet yaklaşık $15. Pilot 801–2000 satırlık bir PR içermez, bu yüzden büyük PR'lardaki B maliyeti ilk tam koşu tekrarında ölçülür.
 
 **Tam koşu.** 150 hücre. Sıralama:
 
@@ -253,6 +280,7 @@ Her metrik kol ve tekrar başına hesaplanır, üç tekrarın medyanı alınır.
 | Kalem | Hücre | Tahmin | Dayanak |
 |---|---:|---:|---|
 | Eleme | 173 | $39,36 | ölçüldü: iki tur ve pilot dahil, Sonnet `medium` |
+| Doğrulama | 25 | $8,60 | ölçüldü: Opus 5.5 `high` (bölüm 2.3) |
 | Pilot | 6 + hakem | ~$15 | B ölçümü |
 | B | 75 | $190–270 | ölçülen $2,55–3,56, 343 satırlık diff; 801–2000 satırlık PR'larda daha pahalı, ölçülmedi |
 | A | 75 | $15–40 | tahmin, pilot ölçer |
@@ -260,7 +288,7 @@ Her metrik kol ve tekrar başına hesaplanır, üç tekrarın medyanı alınır.
 
 Toplamın kabaca $250–400 olması beklenir. Opus kollarda seçilirse pilot yeniden fiyatlar. Duvar saati henüz ölçülmedi, onu da pilot ölçer.
 
-Kullanıcının zamanı: etiket onayı için 1–1,5 saat (bölüm 2.3), hakem kontrolü için 1–2 saat.
+Kullanıcının zamanı: etiket onayı yok (karar 8), hakem kontrolü için 1–2 saat.
 
 ## 8. Dosyalar ve sıra
 
@@ -270,6 +298,7 @@ Kullanıcının zamanı: etiket onayı için 1–1,5 saat (bölüm 2.3), hakem k
 | `eval/workflows/triage.js`, `eval/triage.js` | aday başına eleme ajanı ve çalıştırıcısı → `eval/data/triage.json` (yazıldı) |
 | `eval/materialize.ts` | tek commit'i ve atalarını taşıyan taze repo (bölüm 3) (yazıldı) |
 | `eval/review.ts` | onay listesi ve sırası → `eval/data/review.md`; kararlar `eval/data/labels.json`'dan → `eval/data/set.json` (yazıldı) |
+| `eval/workflows/verify.js`, `eval/verify.js` | aday başına doğrulama ajanı ve çalıştırıcısı → `eval/data/verify.json`, kararlar `eval/data/labels.json`'a (yazıldı) |
 | `eval/prepare.js` | hücre repolarını kurar, CLAUDE.md'yi yol için tarar |
 | `eval/workflows/single-review.js` | A kolu |
 | `eval/run.js` | 150 hücreyi koşar, `results.jsonl`'a yazar, trace'leri denetler |
@@ -281,7 +310,7 @@ Kullanıcının zamanı: etiket onayı için 1–1,5 saat (bölüm 2.3), hakem k
 Sıra:
 
 1. Madencilik ve eleme (yapıldı, $39,36).
-2. Etiket onayı (kullanıcı).
+2. Etiket onayı: Opus ile doğrulama ve temiz PR seçimi (yapıldı, $8,60; karar 8).
 3. Hücre repolarını kurma.
 4. Pilot ve kontrolü.
 5. Dondurma.
@@ -300,3 +329,4 @@ Sıra:
 5. **Kapsam:** 2000 satır üstü PR'lar dışarıda kalır. İlk karar 800'dü; aynı gün 2000'e genişletildi, çünkü ≤800 ile elemeden yalnızca 15 aday geçti ve onaydan sonra set 20'nin hayli altında kalacaktı (bölüm 2.2). Tek bilinen örneğimiz #546 (yaklaşık 4.150 satır) yine sete girmez; rapor bunu kapsam sınırı olarak yazar.
 6. **Madencilik:** geniş fix deseni ve aynı gün hotfix'ler (bölüm 2.1, 2.2).
 7. **Pilot:** ters-fix `2a877f1a` ve setin dışındaki 2 temiz PR (bölüm 5).
+8. **Etiket onayı:** insan yerine Opus 5.5 `high` ile doğrulama (bölüm 2.3), çünkü kullanıcı adayları okumaya zaman ayıramadı. Etiketler böylece iki modelin süzgecinden geçer: eleme Sonnet, doğrulama Opus. Rapor bunu sınır olarak yazar. Hakem de Opus'tur, ama hakemin işi bulguyu etiketle eşleştirmektir, etiketin doğruluğuna karar vermek değil.

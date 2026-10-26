@@ -1,12 +1,13 @@
-// Eval step 2 (docs/eval.md 2.3, 2.5): the human review sheet, the review order and the bug set.
+// Eval step 2 (docs/eval.md 2.3-2.5): the review sheet, the review order and the set.
 //   node eval/review.ts [--triage eval/data/triage.json] [--candidates eval/data/candidates.json]
 //                       [--earlier eval/data/triage.v1.json] [--out eval/data/review.md]
-//                       [--labels eval/data/labels.json] [--set eval/data/set.json]
+//                       [--labels eval/data/labels.json] [--set eval/data/set.json] [--pilot eval/data/pilot.json]
 // The candidates to review (accepted, and ones an earlier triage accepted and this one rejects) in one
 // numbered order: <=200 lines first, then 201-800 and 801-2000, each shuffled with a fixed seed. Bugs are
-// deduped by file:line across fixes. The human writes a decision per candidate into labels.json (created
-// once, never overwritten); walking the order, the first 20 accepted become set.json. The sheet also lists
-// the rejected candidates and the clean pool. Pure data transform: no git, no network.
+// deduped by file:line across fixes. A decision per candidate goes into labels.json, by hand or by
+// eval/verify.js (the file is created once, never overwritten); walking the order, the first 20 accepted become set.json with 5 clean PRs of
+// the same size split, and 2 more clean PRs become pilot.json. The sheet also lists the rejected candidates
+// and the clean pool. Pure data transform: no git, no network.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -99,13 +100,31 @@ export interface SetRecord {
   repo: string;
   merge: string;
   base: string;
-  kind: 'bug';
+  kind: 'bug' | 'clean';
   lines: number;
   bugs: (LabelBug & { id: string })[];
 }
 
+/** One bug's verdict from eval/workflows/verify.js, with the location and wording it settled on. */
+export interface VerifyBug extends TriageBug {
+  index: number;
+  exists: boolean;
+  introduced: boolean;
+  fixed: boolean;
+  visible: boolean;
+  corrected: boolean;
+  reason: string;
+}
+
+export interface VerifyResult {
+  id: string;
+  verify: { bugs: VerifyBug[] } | null;
+}
+
 export const keep = (f: TriageFix): boolean =>
   f.defect && f.introducedHere && f.visibleFromDiff && f.bugs.length > 0;
+
+export const confirmed = (b: VerifyBug): boolean => b.exists && b.introduced && b.fixed && b.visible;
 
 /** Bugs of the kept fixes, one per file:line, with every fix that reported it. */
 export function distinctBugs(row: TriageRow): (TriageBug & { fixes: string[] })[] {
@@ -188,6 +207,38 @@ export function labelsSkeleton(order: ReviewItem[], repo: string, seed = SEED): 
 }
 
 /**
+ * Writes the verifier's verdicts into `labels` as decisions (docs/eval.md 2.3): a candidate with a confirmed
+ * bug is accepted with its confirmed bugs only, in the verifier's wording; one without is rejected. A
+ * decision already written is never touched, and a null verdict leaves the candidate undecided. Returns the
+ * ids written.
+ */
+export function applyVerdicts(labels: Labels, results: VerifyResult[], runId: string): string[] {
+  const byId = new Map(labels.candidates.map((c) => [c.id, c]));
+  const written: string[] = [];
+  for (const { id, verify } of results) {
+    const c = byId.get(id);
+    if (!c || c.decision !== null || !verify) continue;
+    const kept = new Map<string, LabelBug>();
+    for (const v of verify.bugs.filter(confirmed)) {
+      const claimed = c.bugs[v.index];
+      if (!claimed) continue;
+      const bug = { file: v.file, line: v.line, description: v.description, trigger: v.trigger };
+      kept.set(`${v.file}:${v.line}`, { ...bug, fix: claimed.fix, link: claimed.link });
+    }
+    c.decision = kept.size ? 'accept' : 'reject';
+    if (kept.size) c.bugs = [...kept.values()];
+    c.note = `verify ${runId}: ${verify.bugs
+      .map(
+        (v) =>
+          `#${v.index} ${confirmed(v) ? 'doğrulandı' : 'red'}${v.corrected ? ' (düzeltildi)' : ''}: ${v.reason}`,
+      )
+      .join(' | ')}`;
+    written.push(id);
+  }
+  return written;
+}
+
+/**
  * Walks `labels` in order and takes accepted candidates until the target. Stops at the first undecided
  * one, since the set is not fixed until it is decided: `next` is that candidate, null once the set is
  * complete or the order ran out.
@@ -217,6 +268,54 @@ export function pickSet(labels: Labels): { set: SetRecord[]; rejected: number; n
     });
   }
   return { set, rejected, next: null };
+}
+
+/**
+ * Clean PRs (docs/eval.md 2.4): `n` for the set, then `pilot` more for the pilot, each split over the size
+ * groups like the bug set (largest remainder; a group short of PRs leaves its share to the best of the
+ * rest). Within a group the highest survival first, ties broken by `seed`. A PR that added no counted line
+ * gives the arms nothing to review and is never picked.
+ */
+export function pickClean(
+  pool: CleanCandidate[],
+  bugs: SetRecord[],
+  n = 5,
+  pilot = 2,
+  seed = SEED,
+): { set: CleanCandidate[]; pilot: CleanCandidate[] } {
+  const rank = (list: CleanCandidate[]) =>
+    shuffle(
+      [...list].sort((a, b) => a.id.localeCompare(b.id)),
+      seed,
+    ).sort((a, b) => survival(b) - survival(a));
+  const pick = (from: CleanCandidate[], k: number) => {
+    const share = GROUPS.map(
+      (g) => (k * bugs.filter((b) => sizeBucket(b.lines) === g).length) / (bugs.length || 1),
+    );
+    const quota = share.map(Math.floor);
+    const byRemainder = GROUPS.map((_, i) => i).sort(
+      (a, b) => share[b]! - quota[b]! - (share[a]! - quota[a]!),
+    );
+    for (const i of byRemainder.slice(0, k - quota.reduce((t, q) => t + q, 0))) quota[i] = quota[i]! + 1;
+    const picked = GROUPS.flatMap((g, i) =>
+      rank(from.filter((c) => sizeBucket(c.lines) === g)).slice(0, quota[i]),
+    );
+    return [...picked, ...rank(from.filter((c) => !picked.includes(c))).slice(0, k - picked.length)];
+  };
+  const eligible = pool.filter((c) => c.added > 0);
+  const set = pick(eligible, n);
+  return {
+    set,
+    pilot: pick(
+      eligible.filter((c) => !set.includes(c)),
+      pilot,
+    ),
+  };
+}
+
+/** A clean PR as a set record (docs/eval.md 2.5): no bugs to find. */
+export function cleanRecord(c: CleanCandidate, repo: string): SetRecord {
+  return { id: c.id, repo, merge: c.merge, base: c.base, kind: 'clean', lines: c.lines, bugs: [] };
 }
 
 const flags = (f: TriageFix) =>
@@ -340,8 +439,9 @@ export function reviewSheet(triage: TriageReport, mined: MineResult, earlier?: T
   return out.join('\n');
 }
 
+/** Capped at 1: blame at the tip can credit the PR with a few more lines than it added. */
 function survival(c: CleanCandidate): number {
-  return c.added ? c.surviving / c.added : 1;
+  return c.added ? Math.min(1, c.surviving / c.added) : 1;
 }
 
 function flag(argv: string[], name: string): string | undefined {
@@ -356,6 +456,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
   const out = flag(argv, '--out') ?? 'eval/data/review.md';
   const labelsPath = flag(argv, '--labels') ?? 'eval/data/labels.json';
   const setPath = flag(argv, '--set') ?? 'eval/data/set.json';
+  const pilotPath = flag(argv, '--pilot') ?? 'eval/data/pilot.json';
   mkdirSync(path.dirname(out), { recursive: true });
   const earlierPath = flag(argv, '--earlier');
   const earlier = earlierPath ? JSON.parse(readFileSync(earlierPath, 'utf8')) : undefined;
@@ -384,8 +485,13 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
       const where = next ? `; next #${next.order} ${next.id}` : '';
       console.error(`review: ${set.length}/${labels.target} accepted, ${rejected} rejected${where}`);
       if (set.length === labels.target) {
-        writeFileSync(setPath, `${JSON.stringify(set, null, 2)}\n`);
-        console.error(`review: wrote ${setPath}`);
+        const clean = pickClean(mined.clean, set);
+        const records = (list: CleanCandidate[]) => list.map((c) => cleanRecord(c, labels.repo));
+        writeFileSync(setPath, `${JSON.stringify([...set, ...records(clean.set)], null, 2)}\n`);
+        writeFileSync(pilotPath, `${JSON.stringify(records(clean.pilot), null, 2)}\n`);
+        console.error(
+          `review: wrote ${setPath} (${set.length} bug, ${clean.set.length} clean) and ${pilotPath}`,
+        );
       } else if (!next) {
         console.error(`review: the order ran out below ${labels.target}`);
       }

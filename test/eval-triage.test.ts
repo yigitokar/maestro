@@ -12,13 +12,16 @@ import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { materialize } from '../eval/materialize.js';
 import type { MineResult } from '../eval/mine.js';
 import {
+  cleanRecord,
   distinctBugs,
   type Labels,
   labelsSkeleton,
+  pickClean,
   pickSet,
   reviewOrder,
   reviewSheet,
   SEED,
+  type SetRecord,
   type TriageReport,
   type TriageRow,
 } from '../eval/review.js';
@@ -311,5 +314,78 @@ describe('review sheet', () => {
     expect(() => pickSet(labels)).toThrow(/c: accepted without a bug/);
     labels.candidates[2]!.decision = 'kabul' as never;
     expect(() => pickSet(labels)).toThrow(/decision must be/);
+  });
+});
+
+describe('clean picks', () => {
+  const clean = (id: string, lines: number, surviving: number) => ({
+    id,
+    pr: 1,
+    merge: sha(1),
+    base: sha(2),
+    lines,
+    files: 1,
+    added: 10,
+    surviving,
+    mergedAt: '2026-01-01',
+    subject: 's',
+  });
+  const bugRecord = (lines: number): SetRecord => ({
+    id: `b${lines}`,
+    repo: 'lula',
+    merge: sha(3),
+    base: sha(4),
+    kind: 'bug',
+    lines,
+    bugs: [],
+  });
+
+  it('follows the bug set size split by survival, for the set and then the pilot', () => {
+    const pool = [
+      clean('s1', 50, 10),
+      clean('s2', 60, 5),
+      clean('s3', 70, 10),
+      clean('s4', 80, 9),
+      clean('m1', 300, 10),
+      clean('m2', 400, 8),
+      clean('m3', 500, 10),
+      clean('m4', 600, 6),
+      clean('m5', 700, 9),
+      clean('m6', 750, 1),
+    ];
+    // 1 small and 3 mid bug PRs: 5 x 1/4 = 1.25 and 5 x 3/4 = 3.75, the larger remainder rounds up.
+    const picked = pickClean(pool, [bugRecord(100), bugRecord(300), bugRecord(400), bugRecord(500)]);
+    const ids = picked.set.map((c) => c.id);
+    expect(ids).toHaveLength(5);
+    expect(ids.slice(1, 3).sort()).toEqual(['m1', 'm3']); // the survival tie, in seed order
+    expect(ids.slice(3)).toEqual(['m5', 'm2']);
+    expect(['s1', 's3']).toContain(ids[0]);
+    // The pilot's 2 split 0.5 / 1.5: the tied remainders go to the smaller group first.
+    expect(picked.pilot.map((c) => c.id)).toEqual([ids[0] === 's1' ? 's3' : 's1', 'm4']);
+    expect(pickClean(pool, [bugRecord(100), bugRecord(300), bugRecord(400), bugRecord(500)])).toEqual(picked);
+    expect(cleanRecord(pool[0]!, 'lula')).toEqual({
+      id: 's1',
+      repo: 'lula',
+      merge: sha(1),
+      base: sha(2),
+      kind: 'clean',
+      lines: 50,
+      bugs: [],
+    });
+  });
+
+  it('passes a short group share to the best of the rest', () => {
+    const pool = [clean('s1', 50, 10), clean('s2', 60, 9), clean('s3', 70, 8), clean('m1', 300, 1)];
+    const picked = pickClean(pool, [bugRecord(300)], 3, 0);
+    expect(picked.set.map((c) => c.id)).toEqual(['m1', 's1', 's2']);
+    expect(picked.pilot).toEqual([]);
+  });
+
+  it('never picks a PR without added lines and caps survival at 1', () => {
+    const empty = { ...clean('s0', 40, 0), added: 0 };
+    const over = clean('s9', 45, 30); // 30 of 10: blame credits more than was added
+    const picked = pickClean([empty, over, clean('s1', 50, 10), clean('s2', 60, 9)], [bugRecord(50)], 3, 0);
+    expect(picked.set.map((c) => c.id).sort()).toEqual(['s1', 's2', 's9']);
+    expect(picked.set[2]!.id).toBe('s2'); // s9 and s1 tie at 100%
   });
 });
