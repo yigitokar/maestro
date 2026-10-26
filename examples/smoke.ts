@@ -1,4 +1,5 @@
 // Real-API smoke test (not part of `npm test`): npm run smoke
+// MAESTRO_MODEL=claude-haiku-5-5 npm run smoke   picks a cheaper model for the two agents.
 // Runs a two-agent workflow against the Anthropic API: one schema agent with read-only tools,
 // one plain-text agent fed from the first. Exits with an explanation when no API key is set.
 // Runs on Node's built-in type stripping and imports the build, so `npm run build` comes first.
@@ -38,6 +39,7 @@ const handle = run({
   script,
   cwd: process.cwd(),
   stateDir: await mkdtemp(path.join(os.tmpdir(), 'maestro-smoke-')),
+  model: process.env.MAESTRO_MODEL, // undefined → DEFAULT_MODEL (claude-opus-5-5)
   runner: new AnthropicRunner(),
   budget: new Budget({ total: 200_000 }),
 });

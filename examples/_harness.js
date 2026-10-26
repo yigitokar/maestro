@@ -1,6 +1,6 @@
 // Shared host for the example launchers: reads examples/workflows/<name>.js and runs it with
 // run(). --dry-run uses FakeRunner with canned answers (no network); otherwise AnthropicRunner.
-// Needs a build first: npm run build.
+// Needs a build first: npm run build. MAESTRO_MODEL picks the model for real runs.
 
 import { mkdtemp, readFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -38,6 +38,8 @@ export async function runExample({ name, args, rules, setup }) {
     args: effectiveArgs,
     cwd,
     ...(stateDir ? { stateDir } : {}),
+    model: process.env.MAESTRO_MODEL, // undefined → DEFAULT_MODEL
+    ...(process.env.MAESTRO_BUDGET ? { budget: Number(process.env.MAESTRO_BUDGET) } : {}), // output-token ceiling
     runner: dryRun ? new FakeRunner(rules) : new AnthropicRunner(),
     ...(dryRun ? { concurrency: 4 } : {}),
   });

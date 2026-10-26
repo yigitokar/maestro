@@ -42,7 +42,9 @@ const perDimension = await pipeline(
     return parallel(found.findings.map(f => async () => {
       const votes = await parallel([0, 1, 2].map(i => () =>
         agent(`Bu iddiayı ÇÜRÜTMEYE çalış: ${f.claim} (${f.file}:${f.line}). Senaryo: ${f.failure}. ` +
-              `Kodu oku. Emin değilsen refuted=true. Perspektif ${i}: ${['tekrar üretilebilirlik','niyet/edge case','mevcut testler'][i]}.`,
+              `İddia şu değişiklik hakkında: "git diff ${args.diffRef}". Önce diff'i, sonra çalışma ağacındaki kodu oku; ` +
+              `iddia diff'in getirdiği durumu anlatıyor. Emin değilsen refuted=true. ` +
+              `Perspektif ${i}: ${['tekrar üretilebilirlik','niyet/edge case','mevcut testler'][i]}.`,
           { label: `verify:${f.file}:${f.line}#${i}`, phase: 'Verify', schema: VERDICT, effort: 'high' })))
       const alive = votes.filter(Boolean).filter(v => !v.refuted).length >= 2
       return alive ? { ...f, dimension: d.key, votes } : null
