@@ -203,6 +203,23 @@ Gerçek API ile kısa bir duman testi, varsayılan test koşusunun dışında:
 npm run smoke
 ```
 
+## Maliyet ve effort
+
+`review-changes` gerçek API ile, `MAESTRO_MODEL=claude-sonnet-5-5`, `MAESTRO_BUDGET=250000`. "Bug'lı kurulum": lula reposunda `2a877f1a^1` için açılmış geçici bir worktree, `diffRef: "2a877f1a 2a877f1a^1"`; bu diff `lib/moderation/image-moderation-queue.ts` içinde bilinen bir sayım-upsert yarışı ve `claim_image_moderation` içinde eksik bir `next_attempt_at <= now()` kontrolü içerir. Toplam girdi = cache'siz girdi + cache yazımı + cache okuması. Dolar, Sonnet 5.5 fiyatıyla hesaplanır: girdi $2/M, cache yazımı $2,50/M (5 dakika), cache okuması $0,20/M, çıktı $10/M.
+
+| Koşu | Skeptik effort | Toplam girdi | Cache'ten okunan | Çıktı | Dolar | Bulgu → skeptik → geçen → sentez |
+|---|---|---:|---:|---:|---:|---|
+| v1, temiz PR diff'i, cache yok | high | ölçülmedi | yok | ölçülmedi | $0,77 | 0 bulgu |
+| v1, bug'lı kurulum, cache yok | high | 3,36M | yok | 135k | $8,08 | 13 → 39 → 11 → 6, iki bug da bulundu |
+| v1.1, bug'lı kurulum, cache | high | ölçülmedi | ölçülmedi | ölçülmedi | ölçülmedi | ölçülmedi |
+| v1.1, bug'lı kurulum, cache | medium | ölçülmedi | ölçülmedi | ölçülmedi | ölçülmedi | ölçülmedi |
+
+Skeptik effort'u `args.skepticEffort` ile değişir, varsayılan `high`:
+
+```bash
+node examples/review-changes.js --args '{"diffRef":"main...HEAD","skepticEffort":"medium"}'
+```
+
 ## Geliştirme
 
 ```bash

@@ -139,6 +139,29 @@ describe('Örnek 1: review-changes', () => {
     expect(verifiers.every((c) => c.effort === 'high')).toBe(true);
   });
 
+  it("args.skepticEffort overrides the verifiers' effort; finders and synthesis keep the default", async () => {
+    const dir = await tmp();
+    const runner = new FakeRunner((req): FakeResponse => {
+      if (req.prompt.startsWith('Diff:')) {
+        return { result: { findings: [{ file: 'a.ts', line: 1, claim: 'c', failure: 'f' }] } };
+      }
+      if (req.prompt.startsWith('Bu iddiayı ÇÜRÜTMEYE')) return { result: { refuted: false, reason: 'r' } };
+      return { result: { findings: [] } };
+    });
+    const { handle } = start(dir, {
+      runner,
+      runId: 'rc-effort',
+      script: example('review-changes'),
+      args: { diffRef: 'main...HEAD', skepticEffort: 'medium' },
+    });
+    await handle.promise;
+    const verifiers = runner.calls.filter((c) => c.prompt.startsWith('Bu iddiayı ÇÜRÜTMEYE'));
+    expect(verifiers).toHaveLength(9);
+    expect(verifiers.every((c) => c.effort === 'medium')).toBe(true);
+    const others = runner.calls.filter((c) => !c.prompt.startsWith('Bu iddiayı ÇÜRÜTMEYE'));
+    expect(others.every((c) => c.effort === undefined)).toBe(true);
+  });
+
   it('nothing confirmed: { findings: [] } and no synthesis agent', async () => {
     const dir = await tmp();
     const runner = new FakeRunner((req): FakeResponse => {

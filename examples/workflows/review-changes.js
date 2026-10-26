@@ -5,7 +5,8 @@ export const meta = {
 }
 
 // Spec Seviye 4, Örnek 1: bul → adversarial doğrula → sentezle.
-// args: { diffRef: string }  ör. { "diffRef": "main...HEAD" }
+// args: { diffRef: string, skepticEffort?: 'low'|'medium'|'high'|'xhigh'|'max' }  ör. { "diffRef": "main...HEAD" }
+// skepticEffort: skeptiklerin effort'u, varsayılan 'high' (README "Maliyet ve effort").
 
 const FINDINGS = {
   type: 'object',
@@ -45,7 +46,7 @@ const perDimension = await pipeline(
               `İddia şu değişiklik hakkında: "git diff ${args.diffRef}". Önce diff'i, sonra çalışma ağacındaki kodu oku; ` +
               `iddia diff'in getirdiği durumu anlatıyor. Emin değilsen refuted=true. ` +
               `Perspektif ${i}: ${['tekrar üretilebilirlik','niyet/edge case','mevcut testler'][i]}.`,
-          { label: `verify:${f.file}:${f.line}#${i}`, phase: 'Verify', schema: VERDICT, effort: 'high' })))
+          { label: `verify:${f.file}:${f.line}#${i}`, phase: 'Verify', schema: VERDICT, effort: args.skepticEffort ?? 'high' })))
       const alive = votes.filter(Boolean).filter(v => !v.refuted).length >= 2
       return alive ? { ...f, dimension: d.key, votes } : null
     }))
