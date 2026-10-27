@@ -5,6 +5,7 @@
 import { execFile } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import type { ToolRegistry } from './custom-tools.js';
 import { MaestroError, type ToolDef } from './types.js';
 
 export const READ_TOOL_NAMES = ['read_file', 'grep', 'glob', 'bash'] as const;
@@ -545,20 +546,23 @@ const ALL_TOOLS: ReadonlyMap<string, ToolDef> = new Map(
 );
 
 /**
- * Tool set for one agent. undefined → the read-only default set. Unknown name → 'unknown_tool';
- * a write tool without isolation → 'write_tool_without_isolation' (spec 3.6: writer = isolated agent).
+ * Tool set for one agent. undefined → the read-only default set. A name is a built-in or a custom tool
+ * of `custom` (src/custom-tools.ts). Unknown name → 'unknown_tool'; a write tool without isolation →
+ * 'write_tool_without_isolation' (spec 3.6: writer = isolated agent), custom write tools included.
  */
-export function buildTools(names: string[] | undefined, isolated: boolean): ToolDef[] {
+export function buildTools(
+  names: string[] | undefined,
+  isolated: boolean,
+  custom: ToolRegistry = new Map(),
+): ToolDef[] {
   const requested = names ?? [...READ_TOOL_NAMES];
   const out: ToolDef[] = [];
   const seen = new Set<string>();
   for (const name of requested) {
-    const tool = ALL_TOOLS.get(name);
+    const tool = ALL_TOOLS.get(name) ?? custom.get(name);
     if (!tool) {
-      throw new MaestroError(
-        `unknown tool "${name}" (known: ${[...READ_TOOL_NAMES, ...WRITE_TOOL_NAMES].join(', ')})`,
-        'unknown_tool',
-      );
+      const known = [...READ_TOOL_NAMES, ...WRITE_TOOL_NAMES, ...custom.keys()];
+      throw new MaestroError(`unknown tool "${name}" (known: ${known.join(', ')})`, 'unknown_tool');
     }
     if (seen.has(name)) continue;
     seen.add(name);

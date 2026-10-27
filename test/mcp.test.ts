@@ -1,10 +1,11 @@
 // `maestro mcp`: the Workflow tool over the stdio transport, driven by a real MCP client in-process:
 // Workflow + WorkflowResult, the WorkflowStop / WorkflowSkip controls, one budget pool per server.
 
-import { mkdtemp, rm } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { PassThrough } from 'node:stream';
+import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -45,7 +46,7 @@ async function connect(opts: { handler?: FakeHandler; budget?: number } = {}) {
     await server.close();
     await rm(dir, { recursive: true, force: true });
   });
-  return { client, server };
+  return { client, server, dir };
 }
 
 const textOf = (res: any): string => res.content[0].text;
@@ -85,6 +86,22 @@ describe('maestro mcp', () => {
     for (const t of tools) expect((t.inputSchema as any).additionalProperties, t.name).toBe(false);
     const skip = tools.find((t) => t.name === WORKFLOW_SKIP_TOOL_NAME)!;
     expect((skip.inputSchema as any).required).toEqual(['runId', 'agentId']);
+  });
+
+  it('tools/list names the custom tools of <stateDir>/tools, read again on every call', async () => {
+    const { client, dir } = await connect();
+    const workflowDescription = async () =>
+      (await client.listTools()).tools.find((t) => t.name === 'Workflow')!.description;
+    expect(await workflowDescription()).not.toContain('Custom tools for agent opts.tools');
+    const example = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'examples', 'tools');
+    await mkdir(path.join(dir, 'state', 'tools'), { recursive: true });
+    await copyFile(
+      path.join(example, 'arxiv_search.js'),
+      path.join(dir, 'state', 'tools', 'arxiv_search.js'),
+    );
+    expect(await workflowDescription()).toContain(
+      'Custom tools for agent opts.tools:\n- arxiv_search: Search arXiv',
+    );
   });
 
   it('WorkflowStop stops a running run: WorkflowResult then reports failed with run_stopped', async () => {

@@ -21,17 +21,21 @@ import { run } from './workflow.js';
 
 export const USAGE = `usage:
   maestro run <script.js> [--args <json>] [--args-file <file>] [--resume <runId>] [--budget <500k>]
-                          [--dry-run] [--cwd <dir>] [--state-dir <dir>] [--concurrency <n>] [--model <model>]
+                          [--dry-run] [--cwd <dir>] [--state-dir <dir>] [--tools-dir <dir>] [--concurrency <n>]
+                          [--model <model>]
   maestro run --resume <runId> [options]     resume with the stored script.js and args.json
   maestro gc [--delete] [--force] [--cwd <dir>]
   maestro show <runId> [label] [--cwd <dir>] [--state-dir <dir>]
                                              list a run's agents; with a label (or key prefix), print
                                              that agent's trace: tool calls, final text, result, error
-  maestro mcp [--cwd <dir>] [--state-dir <dir>] [--budget <500k>] [--concurrency <n>] [--model <model>] [--dry-run]
+  maestro mcp [--cwd <dir>] [--state-dir <dir>] [--tools-dir <dir>] [--budget <500k>] [--concurrency <n>]
+              [--model <model>] [--dry-run]
                                              serve the Workflow tool over stdio as an MCP server
                                              (--budget is one pool for the whole session; exits 0 when stdin ends)
 
   --dry-run   run every agent with an in-memory fake runner (schema stubs, no network)
+  --tools-dir custom tools agents may name in opts.tools: *.js files that default-export a tool
+              (default <state-dir>/tools)
   gc          lists dirty worktrees and merged / unmerged wf/* branches; deletes only with --delete
               (--force also deletes unmerged branches)`;
 
@@ -61,6 +65,7 @@ const VALUE_FLAGS = new Set([
   'budget',
   'cwd',
   'state-dir',
+  'tools-dir',
   'concurrency',
   'model',
 ]);
@@ -188,11 +193,13 @@ async function runCommand(p: Parsed, io: CliIO): Promise<number> {
   }
 
   const stateDir = str(p, 'state-dir');
+  const toolsDir = str(p, 'tools-dir');
   const handle = run({
     ...(scriptArg !== undefined ? { scriptPath: path.resolve(io.cwd, scriptArg) } : {}),
     ...(args !== undefined ? { args } : {}),
     ...(resume !== undefined ? { resumeFromRunId: resume } : {}),
     ...(stateDir !== undefined ? { stateDir: path.resolve(io.cwd, stateDir) } : {}),
+    ...(toolsDir !== undefined ? { toolsDir: path.resolve(io.cwd, toolsDir) } : {}),
     ...(concurrency !== undefined ? { concurrency } : {}),
     ...(str(p, 'model') !== undefined ? { model: str(p, 'model') } : {}),
     runner,
@@ -261,6 +268,7 @@ async function mcpCommand(p: Parsed, io: CliIO): Promise<number> {
   }
   const cwd = path.resolve(io.cwd, str(p, 'cwd') ?? '.');
   const stateDir = str(p, 'state-dir');
+  const toolsDir = str(p, 'tools-dir');
   // A numeric budget becomes one Budget shared by every run of this server (createMcpServer).
   const server = await serveMcp(
     {
@@ -268,6 +276,7 @@ async function mcpCommand(p: Parsed, io: CliIO): Promise<number> {
       cwd,
       budget,
       ...(stateDir !== undefined ? { stateDir: path.resolve(io.cwd, stateDir) } : {}),
+      ...(toolsDir !== undefined ? { toolsDir: path.resolve(io.cwd, toolsDir) } : {}),
       ...(concurrency !== undefined ? { concurrency } : {}),
       ...(str(p, 'model') !== undefined ? { model: str(p, 'model') } : {}),
     },

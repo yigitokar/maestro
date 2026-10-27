@@ -90,6 +90,29 @@ describe('maestro run', () => {
     expect(res.stderr).toContain(path.join(work, '.maestro', 'runs'));
   });
 
+  it('--tools-dir gives the agents the custom tools of that directory', async () => {
+    const dir = await tmp();
+    await writeFile(
+      path.join(dir, 'uses-tool.js'),
+      `export const meta = { name: 'uses-tool', description: 'd' };
+return await agent('look it up', { label: 'look', tools: ['echo'] });`,
+    );
+    await mkdir(path.join(dir, 'my-tools'));
+    await writeFile(
+      path.join(dir, 'my-tools', 'echo.js'),
+      `export default { name: 'echo', description: 'Echo the text back.', write: false,
+  inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'], additionalProperties: false },
+  async run(input) { return 'echo: ' + input.text; } };
+`,
+    );
+    const without = await cli(['run', 'uses-tool.js', '--dry-run'], dir);
+    expect(without.code).toBe(1);
+    expect(without.stderr).toContain('unknown tool "echo"');
+    const res = await cli(['run', 'uses-tool.js', '--dry-run', '--tools-dir', 'my-tools'], dir);
+    expect(res.code, res.stderr).toBe(0);
+    expect(res.stderr).toContain('✓ look');
+  });
+
   it('a failing script exits 1 with the error and a resume hint', async () => {
     const dir = await tmp();
     await writeFile(

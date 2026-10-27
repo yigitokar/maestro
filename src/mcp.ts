@@ -12,9 +12,10 @@ import { defaultConcurrency } from './scheduler.js';
 import {
   handleWorkflowToolCall,
   liveWorkflowAgents,
-  maestroToolDefinition,
+  maestroToolDefinitionFor,
   skipWorkflowAgent,
   stopWorkflowRun,
+  WORKFLOW_TOOL_NAME,
   type WorkflowOutcome,
   type WorkflowToolContext,
 } from './tool.js';
@@ -44,7 +45,6 @@ export function createMcpServer(ctx: Omit<WorkflowToolContext, 'onComplete'> = {
       ? ctx.budget
       : new Budget({ total: ctx.budget ?? null, concurrency: ctx.concurrency ?? defaultConcurrency() });
   const runCtx = { ...ctx, budget };
-  const def = maestroToolDefinition();
   const server = new Server({ name: 'maestro', version: '0.1.0' }, { capabilities: { tools: {} } });
   // The client is gone: nobody can poll the result, so live runs stop (their journals stay for resume).
   server.onclose = () => {
@@ -52,51 +52,58 @@ export function createMcpServer(ctx: Omit<WorkflowToolContext, 'onComplete'> = {
       if (outcome === 'running') stopWorkflowRun(runId, 'MCP client disconnected');
   };
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
-      { name: def.name, description: def.description, inputSchema: def.input_schema as any },
-      {
-        name: WORKFLOW_RESULT_TOOL_NAME,
-        description:
-          'Result of a Workflow run started earlier: { status: "running" } while it runs, then { status: "done", result } or { status: "failed", error }.',
-        inputSchema: {
-          type: 'object',
-          properties: RUN_ID_PROPERTY,
-          required: ['runId'],
-          additionalProperties: false,
-        },
-      },
-      {
-        name: WORKFLOW_STOP_TOOL_NAME,
-        description:
-          'Stop a running Workflow run: live agents are aborted and journaled as skipped, the run fails with run_stopped and can be resumed later with resumeFromRunId.',
-        inputSchema: {
-          type: 'object',
-          properties: RUN_ID_PROPERTY,
-          required: ['runId'],
-          additionalProperties: false,
-        },
-      },
-      {
-        name: WORKFLOW_SKIP_TOOL_NAME,
-        description:
-          "Skip one live agent of a running Workflow run: its agent() call returns null and its journal row is 'skipped'. Live agent ids are listed by WorkflowResult while the run is running.",
-        inputSchema: {
-          type: 'object',
-          properties: {
-            ...RUN_ID_PROPERTY,
-            agentId: { type: 'integer', description: 'id of a live agent, from WorkflowResult.liveAgents.' },
+  // Listed fresh on every tools/list, so the description names the custom tools as they are on disk now.
+  server.setRequestHandler(ListToolsRequestSchema, async () => {
+    const def = await maestroToolDefinitionFor(ctx);
+    return {
+      tools: [
+        { name: def.name, description: def.description, inputSchema: def.input_schema as any },
+        {
+          name: WORKFLOW_RESULT_TOOL_NAME,
+          description:
+            'Result of a Workflow run started earlier: { status: "running" } while it runs, then { status: "done", result } or { status: "failed", error }.',
+          inputSchema: {
+            type: 'object',
+            properties: RUN_ID_PROPERTY,
+            required: ['runId'],
+            additionalProperties: false,
           },
-          required: ['runId', 'agentId'],
-          additionalProperties: false,
         },
-      },
-    ],
-  }));
+        {
+          name: WORKFLOW_STOP_TOOL_NAME,
+          description:
+            'Stop a running Workflow run: live agents are aborted and journaled as skipped, the run fails with run_stopped and can be resumed later with resumeFromRunId.',
+          inputSchema: {
+            type: 'object',
+            properties: RUN_ID_PROPERTY,
+            required: ['runId'],
+            additionalProperties: false,
+          },
+        },
+        {
+          name: WORKFLOW_SKIP_TOOL_NAME,
+          description:
+            "Skip one live agent of a running Workflow run: its agent() call returns null and its journal row is 'skipped'. Live agent ids are listed by WorkflowResult while the run is running.",
+          inputSchema: {
+            type: 'object',
+            properties: {
+              ...RUN_ID_PROPERTY,
+              agentId: {
+                type: 'integer',
+                description: 'id of a live agent, from WorkflowResult.liveAgents.',
+              },
+            },
+            required: ['runId', 'agentId'],
+            additionalProperties: false,
+          },
+        },
+      ],
+    };
+  });
 
   server.setRequestHandler(CallToolRequestSchema, async (req): Promise<CallResult> => {
     const { name, arguments: input } = req.params;
-    if (name === def.name) {
+    if (name === WORKFLOW_TOOL_NAME) {
       const res = await handleWorkflowToolCall(input ?? {}, {
         ...runCtx,
         onComplete: (runId, outcome) => outcomes.set(runId, outcome),

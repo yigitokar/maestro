@@ -8,6 +8,7 @@ import { existsSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Budget, type BudgetLease } from './budget.js';
+import { EMPTY_TOOL_REGISTRY, loadCustomTools, type ToolRegistry } from './custom-tools.js';
 import { Isolation, type WorktreeLease } from './isolation.js';
 import { hashCall, Journal, makeKey, Occurrences } from './journal.js';
 import { AnthropicRunner, systemPrompt } from './runner.js';
@@ -43,6 +44,10 @@ export interface RunOptions {
   stateDir?: string;
   /** Registry for `name` and workflow('<name>'). Default <stateDir>/workflows (<name>.js). */
   workflowsDir?: string;
+  /** Custom tools a script may name in agent opts.tools, next to the built-ins and toolsDir's. */
+  tools?: ToolDef[];
+  /** Custom tool files (*.js, each default-exporting a ToolDef or an array). Default <stateDir>/tools. */
+  toolsDir?: string;
   /** A shared Budget, a total in output tokens, or null/undefined for unbounded. */
   budget?: Budget | number | null;
   /** Semaphore size. Default defaultConcurrency(). */
@@ -97,6 +102,7 @@ export function run(opts: RunOptions): RunHandle {
   const stateDir = path.resolve(cwd, opts.stateDir ?? '.maestro');
   const runDir = path.join(stateDir, 'runs', runId);
   const workflowsDir = path.resolve(cwd, opts.workflowsDir ?? path.join(stateDir, 'workflows'));
+  const toolsDir = path.resolve(cwd, opts.toolsDir ?? path.join(stateDir, 'tools'));
   const events = new EventEmitter();
   events.setMaxListeners(0);
 
@@ -117,6 +123,7 @@ export function run(opts: RunOptions): RunHandle {
   let budget: Budget | undefined;
   let scheduler: Scheduler | undefined;
   let isolation: Isolation | undefined;
+  let customTools: ToolRegistry = EMPTY_TOOL_REGISTRY;
   const occurrences = new Occurrences();
   let runner: AgentRunner | undefined;
   const model = opts.model ?? DEFAULT_MODEL;
@@ -154,7 +161,7 @@ export function run(opts: RunOptions): RunHandle {
     if (o.isolation !== undefined && o.isolation !== 'worktree') {
       throw new TypeError(`agent(): opts.isolation must be 'worktree', got ${JSON.stringify(o.isolation)}`);
     }
-    const tools = buildTools(o.tools, o.isolation === 'worktree');
+    const tools = buildTools(o.tools, o.isolation === 'worktree', customTools);
     const writer = tools.some((t) => t.write);
     const hash = hashCall(prompt, o);
     const n = occurrences.next(hash);
@@ -448,6 +455,9 @@ export function run(opts: RunOptions): RunHandle {
     if (args === undefined && resume && existsSync(argsFile))
       args = JSON.parse(await readFile(argsFile, 'utf8'));
     args = normalizeArgs(args);
+    // Before the run dir too: agent() picks tools synchronously, and a bad tool file fails the start.
+    customTools = await loadCustomTools({ tools: opts.tools, toolsDir });
+    if (customTools.size > 0) emitLog(`custom tools: ${[...customTools.keys()].join(', ')}`);
 
     // spec 3.1: if the journal cannot be written the run does not start.
     journal = await Journal.open(runDir, { log: (m) => emitLog(m) });

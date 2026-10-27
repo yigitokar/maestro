@@ -39,7 +39,7 @@ Script gövdesi async'tir: `await` ve en üstte `return` serbest. Dönüş değe
 | `budget` | `{ total, spent(), remaining() }`. `total` yoksa null ve `remaining()` Infinity. Havuz paylaşılır, sınır serttir. |
 | `workflow(nameOrRef, args?)` | Başka bir workflow'u alt adım olarak koşar. Aynı semafor, sayaç ve bütçe. Yalnızca bir seviye: çocuğun içinde `workflow()` throw eder. |
 
-`opts`: `label` (görüntü adı), `phase`, `schema`, `model`, `effort` (`low` … `max`), `isolation: 'worktree'`, `tools` (izinli araçlar). Varsayılan araçlar salt-okurdur: `read_file`, `grep`, `glob`, `bash` (ls, cat, git log/diff/status/show, rg, find). Yazma araçları (`write_file`, `edit_file`, `shell`, `git_commit`) yalnızca `isolation: 'worktree'` ile verilir.
+`opts`: `label` (görüntü adı), `phase`, `schema`, `model`, `effort` (`low` … `max`), `isolation: 'worktree'`, `tools` (izinli araçlar). Varsayılan araçlar salt-okurdur: `read_file`, `grep`, `glob`, `bash` (ls, cat, git log/diff/status/show, rg, find). Yazma araçları (`write_file`, `edit_file`, `shell`, `git_commit`) yalnızca `isolation: 'worktree'` ile verilir. Script'in dışında tanımlanmış özel araçlar (`.maestro/tools/*.js`, örneğin `arxiv_search`) de adıyla seçilir; hangilerinin olduğu Workflow aracının açıklamasının sonunda yazar. `tools` varsayılan seti genişletmez, yerine geçer: özel aracın yanında gereken okuma araçlarını da say.
 
 Kural: ajan seviyesindeki hata sessizce null'a düşer, script seviyesindeki hata run'ı öldürür. Sonuçlara `.filter(Boolean)` uygula ve kaç öğenin düştüğünü `log()` ile söyle.
 

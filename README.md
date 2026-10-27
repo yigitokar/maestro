@@ -99,6 +99,36 @@ Script'in gördüğü yüzey (spec Seviye 1). Bunların dışında yalnızca JS 
 
 `agent` opts: `label`, `phase`, `schema`, `model`, `effort` (`low` … `max`), `isolation: 'worktree'`, `tools`. Varsayılan araçlar salt-okurdur: `read_file`, `grep`, `glob` ve izin listeli `bash` (ls, cat, git log/diff/status/show, rg, find). `write_file`, `edit_file`, `shell` ve `git_commit` yalnızca `isolation: 'worktree'` ile verilir. Yazan ajan, runtime'ın açtığı `wf/<runId>/<label>` branch'ine commit eder; çıkışta branch, temiz status ve en az bir commit Git'ten doğrulanır ve sonuca `branchName` eklenir.
 
+### Özel araçlar
+
+Ajanlara yerleşik olmayan bir yetenek (makale ya da web araması, bir veritabanı, şirket içi bir API) vermek için araç script'in dışında tanımlanır; script yalnızca adını seçer:
+
+```js
+// .maestro/tools/arxiv_search.js
+export default {
+  name: 'arxiv_search',
+  description: 'Search arXiv papers. ...',
+  inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false },
+  write: false,
+  async run(input, ctx) { /* ctx.cwd, ctx.signal */ return '...'; },
+};
+```
+
+```js
+// script
+const papers = await agent('DML üzerine makaleleri bul', { tools: ['read_file', 'arxiv_search'] })
+```
+
+- Dizin varsayılan olarak `.maestro/tools/`'tur, `--tools-dir` ile değişir. Her `*.js`/`*.mjs` dosyası bir aracı ya da bir araç dizisini `export default` eder; `_` ile başlayan dosyalar yardımcıdır ve araç olarak yüklenmez. Kütüphane olarak `run({ tools: [...] })` de olur.
+- Denetimler run başlamadan yapılır ve bozuk bir tanım run'ı `tool_invalid` ile başlatmaz: ad yerleşik bir araçla ya da başka bir tanımla çakışmaz, `write` açıkça yazılır ve girdi şeması strict'tir (her objede `additionalProperties: false`, her özellik `required` içinde; opsiyonel alan nullable yapılır).
+- `write: true` olan araç yazma aracıdır ve yalnızca `isolation: 'worktree'` ile verilir.
+- Araç kodu Maestro'nun kendi sürecinde koşar, script'in sandbox'ında değil; ağa çıkabilir. Okuyan bir ajana ağa çıkan bir araç vermek, okuduğunu dışarı gönderebilmesi demektir.
+- `.maestro/tools/` altındaki dosyalar `package.json` script'leri gibi çalıştırılabilir koddur: Maestro onları bir run başlarken, `maestro mcp` ise araç listesini her verişinde yükler. Maestro'yu yalnızca güvendiğin repolarda çalıştır.
+- Workflow aracının açıklaması mevcut özel araçları listeler (`maestro mcp` her `tools/list`'te diskten yeniden okur), böylece script'i yazan model adlarını bilir.
+- Journal anahtarında yalnızca aracın adı vardır: aracın kodunu değiştirmek eski sonuçları geçersiz kılmaz. Bir run'ın kullandığı aracı silmek ise o run'ın resume'unu bozar, cache'teki ajanlar dahil.
+
+Hazır örnek `examples/tools/arxiv_search.js` arXiv'de makale arar ve API anahtarı istemez; kullanmak için dosyayı `.maestro/tools/` altına kopyala.
+
 Determinizm: script içinde `Date.now()`, `Math.random()` ve argümansız `new Date()` throw eder, çünkü resume cache anahtarı `sha256(prompt + opts)` ve aynı içeriğin kaçıncı çağrısı olduğundan türer. Zaman damgası `args` ile verilir (`new Date(args.ts)` çalışır).
 
 ## Kendi harness'ine bağlama
@@ -158,16 +188,16 @@ mkdir -p ~/.claude/skills/maestro-workflow-authoring && cp skill/SKILL.md ~/.cla
 
 Sunucu Claude Code'un ortamındaki `ANTHROPIC_API_KEY`'i kullanır. Ajanların maliyeti bu anahtarın hesabına yazılır.
 
-`maestro mcp` sunucusu `--cwd`, `--state-dir`, `--budget`, `--concurrency`, `--model` ve `--dry-run` seçeneklerini alır. `--budget` oturumun tamamı için tek havuzdur: sunucunun başlattığı bütün run'lar aynı `Budget` örneğinden harcar. stdout MCP kanalıdır, tanılar stderr'e gider. İstemci bağlantıyı kapatınca (stdin biter) sunucu kapanır, süren run'lar durdurulur (journal'ları resume için kalır) ve komut 0 ile çıkar.
+`maestro mcp` sunucusu `--cwd`, `--state-dir`, `--tools-dir`, `--budget`, `--concurrency`, `--model` ve `--dry-run` seçeneklerini alır. `--budget` oturumun tamamı için tek havuzdur: sunucunun başlattığı bütün run'lar aynı `Budget` örneğinden harcar. stdout MCP kanalıdır, tanılar stderr'e gider. İstemci bağlantıyı kapatınca (stdin biter) sunucu kapanır, süren run'lar durdurulur (journal'ları resume için kalır) ve komut 0 ile çıkar.
 
 ## CLI
 
 ```text
 maestro run <script.js> [--args <json>] [--args-file f] [--resume <runId>] [--budget 500k]
-                        [--dry-run] [--cwd d] [--state-dir d] [--concurrency n] [--model m]
+                        [--dry-run] [--cwd d] [--state-dir d] [--tools-dir d] [--concurrency n] [--model m]
 maestro gc [--delete] [--force] [--cwd d]
 maestro show <runId> [label] [--cwd d] [--state-dir d]
-maestro mcp [--cwd d] [--state-dir d] [--budget 500k] [--concurrency n] [--model m] [--dry-run]
+maestro mcp [--cwd d] [--state-dir d] [--tools-dir d] [--budget 500k] [--concurrency n] [--model m] [--dry-run]
 ```
 
 `maestro run` sonucu stdout'a JSON olarak yazar, ilerleme stderr'e gider; Ctrl-C run'ı durdurur ve resume komutunu gösterir. `maestro mcp`, stdin bitince 0 ile çıkar; `--budget` orada her run için değil, oturum boyunca paylaşılan tek havuz içindir.
@@ -250,7 +280,7 @@ Testler Vitest'tir ve ağa çıkmaz. Runner testleri gerçek SDK `toolRunner` ve
 | Bileşen | Kaynak | Spec |
 |---|---|---|
 | Journal | `src/journal.ts` | 3.1 |
-| Agent runner, araçlar | `src/runner.ts`, `src/tools.ts` | 3.2 |
+| Agent runner, araçlar | `src/runner.ts`, `src/tools.ts`, `src/custom-tools.ts` | 3.2 |
 | Script runtime, schema | `src/runtime.ts`, `src/schema.ts` | 3.3 |
 | Scheduler | `src/scheduler.ts` | 3.4 |
 | Budget | `src/budget.ts` | 3.5 |

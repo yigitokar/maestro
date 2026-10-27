@@ -3,6 +3,8 @@
 export type { BudgetLease, BudgetOptions, BudgetTick } from './budget.js';
 export { Budget, parseBudgetDirective } from './budget.js';
 export type { CliIO } from './cli.js';
+export type { ToolRegistry } from './custom-tools.js';
+export { checkToolDef, loadCustomTools, loadToolsDir, makeToolRegistry } from './custom-tools.js';
 export type {
   CloseResult,
   GcOptions,
@@ -41,6 +43,7 @@ export {
   handleWorkflowToolCall,
   liveWorkflowAgents,
   maestroToolDefinition,
+  maestroToolDefinitionFor,
   skipWorkflowAgent,
   stopWorkflowRun,
   toToolResultBlock,

@@ -5,8 +5,9 @@
 import { existsSync, promises as fs } from 'node:fs';
 import path from 'node:path';
 import type Anthropic from '@anthropic-ai/sdk';
+import { loadCustomTools } from './custom-tools.js';
 import { parseScript } from './runtime.js';
-import type { WorkflowEvent } from './types.js';
+import type { ToolDef, WorkflowEvent } from './types.js';
 import { type RunHandle, type RunOptions, run } from './workflow.js';
 
 export const WORKFLOW_TOOL_NAME = 'Workflow';
@@ -18,7 +19,7 @@ Use it only when the user asked for multi-agent orchestration, or when the work 
 The script is plain JavaScript (no TypeScript) and must start with a pure-literal meta block (no variables, calls, spreads or template interpolation):
   export const meta = { name: 'review-changes', description: 'one line', phases: [{ title: 'Find' }, { title: 'Verify' }], maxAgents: 60 }
 The body may use top-level await and return; its return value is the run result. Globals: agent(prompt, opts) → value | null, parallel(thunks) (barrier, never rejects; a throwing thunk becomes null), pipeline(items, ...stages) (no barrier; the default for multi-stage work), phase(title), log(message), args, budget { total, spent(), remaining() }, workflow(nameOrRef, args) (one nesting level). Date.now(), Math.random() and argless new Date() throw: they would break resume. Pass timestamps via args.
-agent opts: label, phase, schema (JSON Schema with root type object; returns the validated object), model, effort ('low'|'medium'|'high'|'xhigh'|'max'), isolation: 'worktree', tools. Write tools (write_file, edit_file, shell, git_commit) require isolation: 'worktree'; a writer commits to the branch wf/<runId>/<label> that the runtime opens and gets branchName added to its result.
+agent opts: label, phase, schema (JSON Schema with root type object; returns the validated object), model, effort ('low'|'medium'|'high'|'xhigh'|'max'), isolation: 'worktree', tools. Write tools (write_file, edit_file, shell, git_commit) require isolation: 'worktree'; a writer commits to the branch wf/<runId>/<label> that the runtime opens and gets branchName added to its result. tools may also name custom tools defined outside the script (.maestro/tools/*.js); when any exist, they are listed at the end of this description.
 
 Give the script inline in "script" (preferred), or "scriptPath", or a registered "name" (.maestro/workflows/<name>.js): exactly one. "args" is the JSON-encoded value the script sees as args. The call returns a runId at once; the result arrives later. To edit and re-run cheaply, pass the edited script with "resumeFromRunId": unchanged agent() calls return their journaled results.`;
 
@@ -81,11 +82,27 @@ const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 const nullableString = (description: string) => ({ type: ['string', 'null'], description });
 
-/** The Workflow tool definition for `tools: [...]` (strict, additionalProperties false). */
-export function maestroToolDefinition(): Anthropic.Tool {
+type CustomToolListing = Pick<ToolDef, 'name' | 'description' | 'write'>;
+
+/**
+ * The Workflow tool definition for `tools: [...]` (strict, additionalProperties false). `custom` are
+ * the custom tools the runs will have, listed so the model writing a script knows their names;
+ * `loadError` says why they could not be loaded (every run fails until that is fixed).
+ */
+export function maestroToolDefinition(custom: CustomToolListing[] = [], loadError?: string): Anthropic.Tool {
+  let description = WORKFLOW_TOOL_DESCRIPTION;
+  if (custom.length > 0) {
+    const rows = custom.map((t) => {
+      const summary = t.description.split('\n')[0]!.slice(0, 200);
+      return `- ${t.name}${t.write ? ' (write tool: needs isolation)' : ''}: ${summary}`;
+    });
+    description += `\n\nCustom tools for agent opts.tools:\n${rows.join('\n')}`;
+  }
+  if (loadError !== undefined)
+    description += `\n\nCustom tools failed to load, runs fail until fixed: ${loadError}`;
   return {
     name: WORKFLOW_TOOL_NAME,
-    description: WORKFLOW_TOOL_DESCRIPTION,
+    description,
     strict: true,
     input_schema: {
       type: 'object',
@@ -102,6 +119,21 @@ export function maestroToolDefinition(): Anthropic.Tool {
       additionalProperties: false,
     },
   } as Anthropic.Tool;
+}
+
+/** maestroToolDefinition with the custom tools a run started with `ctx` would load (same directories). */
+export async function maestroToolDefinitionFor(
+  ctx: Pick<RunOptions, 'cwd' | 'stateDir' | 'tools' | 'toolsDir'> = {},
+): Promise<Anthropic.Tool> {
+  const cwd = path.resolve(ctx.cwd ?? process.cwd());
+  const stateDir = path.resolve(cwd, ctx.stateDir ?? '.maestro');
+  const toolsDir = path.resolve(cwd, ctx.toolsDir ?? path.join(stateDir, 'tools'));
+  try {
+    const registry = await loadCustomTools({ tools: ctx.tools, toolsDir });
+    return maestroToolDefinition([...registry.values()]);
+  } catch (err) {
+    return maestroToolDefinition([], errorText(err));
+  }
 }
 
 function present(v: unknown): v is string {

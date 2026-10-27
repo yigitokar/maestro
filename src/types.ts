@@ -86,7 +86,10 @@ export interface ToolDef {
   name: string;
   description: string;
   inputSchema: JSONSchema;
-  /** True for tools that can mutate the working tree (write_file, edit_file, shell, git_commit). */
+  /**
+   * True for tools that can mutate the working tree (write_file, edit_file, shell, git_commit). Custom
+   * tools must set it explicitly: only write tools get the isolation guard.
+   */
   write: boolean;
   run(input: any, ctx: ToolContext): Promise<string>;
 }
@@ -207,6 +210,7 @@ export class MaestroError extends Error {
       | 'item_limit'
       | 'write_tool_without_isolation'
       | 'unknown_tool'
+      | 'tool_invalid'
       | 'unknown_phase'
       | 'meta_invalid'
       | 'determinism'
