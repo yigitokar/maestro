@@ -15,9 +15,11 @@ export type {
 } from './isolation.js';
 export { branchNameFor, gc, Isolation } from './isolation.js';
 export { canonicalJSON, hashCall, Journal, makeKey, Occurrences } from './journal.js';
+export type { McpServerOptions } from './mcp.js';
 export {
   createMcpServer,
   serveMcp,
+  WAIT_PROGRESS_INTERVAL_MS,
   WORKFLOW_RESULT_TOOL_NAME,
   WORKFLOW_SKIP_TOOL_NAME,
   WORKFLOW_STOP_TOOL_NAME,
