@@ -1,12 +1,22 @@
-// `maestro mcp`: the Workflow tool as a stdio MCP server. MCP has no push, so completion is polled
-// through a second tool, WorkflowResult({ runId }), which returns the outcome or "running" (with the
-// live agents). WorkflowStop and WorkflowSkip are the user controls of the spec Seviye 1 null/throw
-// table: stop the run (script rejects, journal stays) and skip a live agent (agent() → null).
+// `maestro mcp`: the Workflow tool as a stdio MCP server. Workflow returns a runId at once and a
+// second tool, WorkflowResult({ runId, wait? }), gives the outcome. Without wait it answers now: the
+// outcome, or "running" with the live agents. With wait: true it holds the call until the run
+// settles, so a client that moves long tool calls to the background (Claude Code, after 2 minutes)
+// hands the result to the model as a notification and nobody polls. A waiting call sends
+// notifications/progress when the client gave a progressToken, so an idle-call timeout does not end
+// it. WorkflowStop and WorkflowSkip are the user controls of the spec Seviye 1 null/throw table: stop
+// the run (script rejects, journal stays) and skip a live agent (agent() → null).
 
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolRequestSchema,
+  ListToolsRequestSchema,
+  type ServerNotification,
+  type ServerRequest,
+} from '@modelcontextprotocol/sdk/types.js';
 import { Budget } from './budget.js';
 import { defaultConcurrency } from './scheduler.js';
 import {
@@ -33,13 +43,26 @@ const text = (value: unknown, isError = false): CallResult => ({
 
 const RUN_ID_PROPERTY = { runId: { type: 'string', description: 'runId returned by the Workflow tool.' } };
 
+/** How often a waiting WorkflowResult call reports progress, well under any idle-call timeout. */
+export const WAIT_PROGRESS_INTERVAL_MS = 30_000;
+
+export interface McpServerOptions extends Omit<WorkflowToolContext, 'onComplete'> {
+  /** Progress interval of a waiting WorkflowResult call; default WAIT_PROGRESS_INTERVAL_MS. */
+  progressIntervalMs?: number;
+}
+
+type Extra = RequestHandlerExtra<ServerRequest, ServerNotification>;
+
 /**
  * Builds the MCP server. `ctx` configures runs exactly like handleWorkflowToolCall's context, except
  * that a numeric `budget` becomes one Budget shared by every run of this server: spec 3.5 "tek
  * havuz", so --budget is the session total, not a fresh pool per Workflow call.
  */
-export function createMcpServer(ctx: Omit<WorkflowToolContext, 'onComplete'> = {}): Server {
+export function createMcpServer(options: McpServerOptions = {}): Server {
+  const { progressIntervalMs = WAIT_PROGRESS_INTERVAL_MS, ...ctx } = options;
   const outcomes = new Map<string, WorkflowOutcome | 'running'>();
+  // runId → wake-ups of the WorkflowResult calls waiting for that run to settle.
+  const waiters = new Map<string, Set<() => void>>();
   const budget =
     ctx.budget instanceof Budget
       ? ctx.budget
@@ -52,6 +75,46 @@ export function createMcpServer(ctx: Omit<WorkflowToolContext, 'onComplete'> = {
       if (outcome === 'running') stopWorkflowRun(runId, 'MCP client disconnected');
   };
 
+  const settle = (runId: string, outcome: WorkflowOutcome) => {
+    outcomes.set(runId, outcome);
+    const wakes = waiters.get(runId);
+    waiters.delete(runId);
+    for (const wake of wakes ?? []) wake();
+  };
+
+  // Resolves once the run settles or the client cancels the call. Progress goes out only when the
+  // client asked for it (a progressToken): it is what keeps an idle-call timeout from ending the call.
+  const waitForRun = (runId: string, extra: Extra) =>
+    new Promise<void>((resolve) => {
+      if (outcomes.get(runId) !== 'running' || extra.signal.aborted) return resolve();
+      const progressToken = extra._meta?.progressToken;
+      let progress = 0;
+      const timer =
+        progressToken === undefined
+          ? undefined
+          : setInterval(() => {
+              const live = liveWorkflowAgents(runId) ?? [];
+              const message = live.length
+                ? `running: ${live.map((a) => a.label ?? `agent ${a.id}`).join(', ')}`
+                : 'running';
+              extra
+                .sendNotification({
+                  method: 'notifications/progress',
+                  params: { progressToken, progress: ++progress, message },
+                })
+                .catch(() => {});
+            }, progressIntervalMs);
+      const wake = () => {
+        clearInterval(timer);
+        waiters.get(runId)?.delete(wake);
+        extra.signal.removeEventListener('abort', wake);
+        resolve();
+      };
+      if (!waiters.has(runId)) waiters.set(runId, new Set());
+      waiters.get(runId)?.add(wake);
+      extra.signal.addEventListener('abort', wake, { once: true });
+    });
+
   // Listed fresh on every tools/list, so the description names the custom tools as they are on disk now.
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const def = await maestroToolDefinitionFor(ctx);
@@ -61,10 +124,16 @@ export function createMcpServer(ctx: Omit<WorkflowToolContext, 'onComplete'> = {
         {
           name: WORKFLOW_RESULT_TOOL_NAME,
           description:
-            'Result of a Workflow run started earlier: { status: "running" } while it runs, then { status: "done", result } or { status: "failed", error }.',
+            'Result of a Workflow run started earlier: { status: "running" } while it runs, then { status: "done", result } or { status: "failed", error }. Prefer wait: true over polling: the call then returns only once the run settles. Claude Code moves a call that runs past 2 minutes to the background and delivers its result as a notification, so you can keep working meanwhile. If a timeout ends the call, the run goes on: call WorkflowResult again.',
           inputSchema: {
             type: 'object',
-            properties: RUN_ID_PROPERTY,
+            properties: {
+              ...RUN_ID_PROPERTY,
+              wait: {
+                type: 'boolean',
+                description: 'true: answer only once the run is done or failed. Default false: answer now.',
+              },
+            },
             required: ['runId'],
             additionalProperties: false,
           },
@@ -101,13 +170,10 @@ export function createMcpServer(ctx: Omit<WorkflowToolContext, 'onComplete'> = {
     };
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (req): Promise<CallResult> => {
+  server.setRequestHandler(CallToolRequestSchema, async (req, extra): Promise<CallResult> => {
     const { name, arguments: input } = req.params;
     if (name === WORKFLOW_TOOL_NAME) {
-      const res = await handleWorkflowToolCall(input ?? {}, {
-        ...runCtx,
-        onComplete: (runId, outcome) => outcomes.set(runId, outcome),
-      });
+      const res = await handleWorkflowToolCall(input ?? {}, { ...runCtx, onComplete: settle });
       if ('is_error' in res) return text(res.content, true);
       if (!outcomes.has(res.runId)) outcomes.set(res.runId, 'running');
       return text(res);
@@ -135,11 +201,13 @@ export function createMcpServer(ctx: Omit<WorkflowToolContext, 'onComplete'> = {
           return text(`agent ${agentId} of run ${runId} is not live`, true);
         return text({ runId, agentId, status: 'skipped' });
       }
-      if (outcome === 'running')
+      if ((input as { wait?: unknown }).wait === true) await waitForRun(runId, extra);
+      const current = outcomes.get(runId) ?? outcome;
+      if (current === 'running')
         return text({ runId, status: 'running', liveAgents: liveWorkflowAgents(runId) ?? [] });
-      return outcome.ok
-        ? text({ runId, status: 'done', result: outcome.result })
-        : text({ runId, status: 'failed', error: outcome.error }, true);
+      return current.ok
+        ? text({ runId, status: 'done', result: current.result })
+        : text({ runId, status: 'failed', error: current.error }, true);
     }
     return text(`unknown tool ${name}`, true);
   });
@@ -149,10 +217,10 @@ export function createMcpServer(ctx: Omit<WorkflowToolContext, 'onComplete'> = {
 
 /** Serves over the given transport (stdio by default); closing the server stops its live runs. */
 export async function serveMcp(
-  ctx: Omit<WorkflowToolContext, 'onComplete'> = {},
+  options: McpServerOptions = {},
   transport: Transport = new StdioServerTransport(),
 ): Promise<Server> {
-  const server = createMcpServer(ctx);
+  const server = createMcpServer(options);
   await server.connect(transport);
   return server;
 }

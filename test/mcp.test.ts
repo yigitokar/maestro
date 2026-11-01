@@ -1,5 +1,6 @@
 // `maestro mcp`: the Workflow tool over the stdio transport, driven by a real MCP client in-process:
-// Workflow + WorkflowResult, the WorkflowStop / WorkflowSkip controls, one budget pool per server.
+// Workflow + WorkflowResult (polled, or held open with wait: true and its progress), the WorkflowStop /
+// WorkflowSkip controls, one budget pool per server.
 
 import { copyFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -23,7 +24,7 @@ afterEach(async () => {
   for (const c of cleanups.splice(0)) await c();
 });
 
-async function connect(opts: { handler?: FakeHandler; budget?: number } = {}) {
+async function connect(opts: { handler?: FakeHandler; budget?: number; progressIntervalMs?: number } = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'maestro-mcp-'));
   // Two pipes: client → server (server stdin) and server → client (server stdout). The client side
   // reuses the line-delimited JSON-RPC stdio transport on the opposite ends.
@@ -36,6 +37,7 @@ async function connect(opts: { handler?: FakeHandler; budget?: number } = {}) {
       runner: new FakeRunner(opts.handler ?? (() => ({ delayMs: 20 }))),
       concurrency: 2,
       ...(opts.budget !== undefined ? { budget: opts.budget } : {}),
+      ...(opts.progressIntervalMs !== undefined ? { progressIntervalMs: opts.progressIntervalMs } : {}),
     },
     new StdioServerTransport(toServer, toClient),
   );
@@ -86,6 +88,83 @@ describe('maestro mcp', () => {
     for (const t of tools) expect((t.inputSchema as any).additionalProperties, t.name).toBe(false);
     const skip = tools.find((t) => t.name === WORKFLOW_SKIP_TOOL_NAME)!;
     expect((skip.inputSchema as any).required).toEqual(['runId', 'agentId']);
+    const result = tools.find((t) => t.name === WORKFLOW_RESULT_TOOL_NAME)!;
+    expect((result.inputSchema as any).required).toEqual(['runId']);
+    expect((result.inputSchema as any).properties.wait.type).toBe('boolean');
+  });
+
+  it('WorkflowResult with wait: true answers only once the run settles', async () => {
+    const { client } = await connect({ handler: () => ({ delayMs: 200 }) });
+    const runId = await startWorkflow(
+      client,
+      `export const meta = { name: 'm', description: 'd' };\nreturn await agent('slow ' + 1);`,
+    );
+    const res = await client.callTool({ name: WORKFLOW_RESULT_TOOL_NAME, arguments: { runId, wait: true } });
+    expect(res.isError, textOf(res)).toBeFalsy();
+    expect(JSON.parse(textOf(res))).toMatchObject({
+      runId,
+      status: 'done',
+      result: expect.stringContaining('slow 1'),
+    });
+  });
+
+  it('a waiting WorkflowResult sends progress naming the live agents when the client asks for it', async () => {
+    const { client } = await connect({ handler: () => ({ delayMs: 300 }), progressIntervalMs: 20 });
+    const runId = await startWorkflow(
+      client,
+      `export const meta = { name: 'm', description: 'd' };\nreturn await agent('slow', { label: 'slow' });`,
+    );
+    const seen: Array<{ progress: number; message?: string }> = [];
+    const res = await client.callTool(
+      { name: WORKFLOW_RESULT_TOOL_NAME, arguments: { runId, wait: true } },
+      undefined,
+      { onprogress: (p) => seen.push(p) },
+    );
+    expect(JSON.parse(textOf(res))).toMatchObject({ runId, status: 'done' });
+    expect(seen.length).toBeGreaterThanOrEqual(2);
+    // MCP requires progress to increase with every notification.
+    expect(seen.map((p) => p.progress)).toEqual(seen.map((_, i) => i + 1));
+    expect(
+      seen.some((p) => p.message === 'running: slow'),
+      JSON.stringify(seen),
+    ).toBe(true);
+  });
+
+  it('WorkflowStop ends a waiting WorkflowResult with the failed outcome', async () => {
+    const { client } = await connect({ handler: () => ({ delayMs: 5_000 }) });
+    const runId = await startWorkflow(
+      client,
+      `export const meta = { name: 'm', description: 'd' };\nreturn await agent('long');`,
+    );
+    await poll(client, runId, (r) => r.status === 'running' && r.liveAgents.length === 1);
+    const waiting = client.callTool({ name: WORKFLOW_RESULT_TOOL_NAME, arguments: { runId, wait: true } });
+    const stop = await client.callTool({ name: WORKFLOW_STOP_TOOL_NAME, arguments: { runId } });
+    expect(stop.isError, textOf(stop)).toBeFalsy();
+    const res = await waiting;
+    expect(res.isError).toBe(true);
+    expect(JSON.parse(textOf(res))).toMatchObject({
+      runId,
+      status: 'failed',
+      error: expect.stringMatching(/stopped by user/),
+    });
+  });
+
+  it('a cancelled wait leaves the run alone: a later WorkflowResult still gets its outcome', async () => {
+    const { client } = await connect({ handler: () => ({ delayMs: 200 }) });
+    const runId = await startWorkflow(
+      client,
+      `export const meta = { name: 'm', description: 'd' };\nreturn await agent('slow');`,
+    );
+    const ac = new AbortController();
+    const cancelled = client.callTool(
+      { name: WORKFLOW_RESULT_TOOL_NAME, arguments: { runId, wait: true } },
+      undefined,
+      { signal: ac.signal },
+    );
+    ac.abort('changed my mind');
+    await expect(cancelled).rejects.toThrow();
+    const res = await client.callTool({ name: WORKFLOW_RESULT_TOOL_NAME, arguments: { runId, wait: true } });
+    expect(JSON.parse(textOf(res))).toMatchObject({ runId, status: 'done' });
   });
 
   it('tools/list names the custom tools of <stateDir>/tools, read again on every call', async () => {
