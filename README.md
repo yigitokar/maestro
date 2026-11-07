@@ -1,6 +1,6 @@
 # Maestro
 
-Çok-ajanlı orkestrasyon katmanı. Kontrol akışı kodda, muhakeme ajanda: deterministik bir JavaScript script'i, her biri temiz context'le başlayan Claude ajanlarını çağırır, sonuçlarını birleştirir, oylatır ve tekrar dağıtır. Script'i ana ajan yazar, çalıştıran LLM değil düz bir runtime'dır.
+Çok-ajanlı orkestrasyon katmanı. Kontrol akışı kodda, muhakeme ajanda: deterministik bir JavaScript script'i, her biri temiz context'le başlayan ajanları çağırır, sonuçlarını birleştirir, oylatır ve tekrar dağıtır. Script'i ana ajan yazar, çalıştıran LLM değil düz bir runtime'dır.
 
 Tasarım ve sözleşmeler [docs/spec.md](docs/spec.md) içinde (v0.3.1). Spec'in açık bıraktığı noktalarda alınan kararlar [docs/decisions.md](docs/decisions.md) içinde. Script yazmayı modele öğreten skill [skill/SKILL.md](skill/SKILL.md) içinde.
 
@@ -16,7 +16,7 @@ npm install
 npm run build
 ```
 
-Paket ESM'dir ve tek bağımlılık katmanı Anthropic TypeScript SDK'sıdır (`@anthropic-ai/sdk`), yanında `zod`, `acorn` ve MCP sunucusu için `@modelcontextprotocol/sdk` gelir. Gerçek ajanlar için `ANTHROPIC_API_KEY` ortam değişkeni gerekir; testler ve `--dry-run` ağa hiç çıkmaz.
+Paket ESM'dir ve tek bağımlılık katmanı Anthropic TypeScript SDK'sıdır (`@anthropic-ai/sdk`), yanında `zod`, `acorn` ve MCP sunucusu için `@modelcontextprotocol/sdk` gelir. Varsayılan Anthropic runner için `ANTHROPIC_API_KEY` ortam değişkeni gerekir; Codex runner kurulu ve giriş yapılmış Codex CLI'ı kullanır. Testler ve `--dry-run` ağa hiç çıkmaz.
 
 Run'lar çalışılan dizinde `.maestro/` altında tutulur (`runs/<runId>/`, `worktrees/`, `workflows/`). Bu dizini kendi reponda `.gitignore`'a ekle.
 
@@ -81,6 +81,33 @@ detach();
 ```
 
 `run()` hemen `{ runId, runDir, promise, events, stop, skip }` döner. `events` üzerinden `agent_start`, `agent_end`, `phase`, `log` ve `budget_tick` olayları akar.
+
+## Codex ile ajan çalıştırma
+
+Codex CLI kurulu ve ChatGPT hesabıyla giriş yapılmışsa ajanlar Codex planından çalışabilir; `ANTHROPIC_API_KEY` gerekmez. Her ajan için ayrı bir `codex exec` süreci açılır:
+
+```bash
+node bin/maestro run review.js --runner codex --args '{"diffRef":"main...HEAD"}' --concurrency 4
+node bin/maestro mcp --runner codex --concurrency 4
+```
+
+Kütüphane olarak:
+
+```ts
+import { CodexRunner, run } from 'maestro-orchestrator';
+
+const result = await run({ scriptPath: 'review.js', runner: new CodexRunner() }).promise;
+```
+
+`--runner` varsayılanı `anthropic`'tir; `--dry-run` seçilen runner'ın önüne geçer. Model önceliği `new CodexRunner({ model })`, sonra workflow'un `model` seçeneği (`--model` dahil), sonra Codex config varsayılanıdır. Workflow modeli `claude-` ile başlıyorsa Codex'e gönderilmez; böylece Maestro'nun varsayılan Claude modeli Codex modelini değiştirmez. `effort: 'low' | 'medium' | 'high' | 'xhigh'` aynen, `'max'` ise `'xhigh'` olarak gider; verilmezse Codex varsayılanı kullanılır.
+
+Codex kendi shell araçlarını kullanır; Maestro'nun özel `ToolDef` araçları Codex'e aktarılmaz ve istenen özel araçlar bir log satırında adlandırılır. İzolasyonsuz ajan `read-only`, worktree içindeki ajan `workspace-write` sandbox'ıyla koşar. Writer, Codex içinde commit atmaz; değişikliklerini working tree'de bırakır. 2026-11-07 tarihli gerçek çalıştırmada Codex sandbox'ının `.git` metadata'sını salt okunur tuttuğu, ortak Git dizinini `--add-dir` ile vermenin bunu değiştirmediği görüldü. Başarılı ve iptal edilmemiş izole çalıştırmadan sonra runner değişiklik varsa kullanıcının Git kimliğiyle commit atar; mesaj `maestro(codex): ` ile başlar ve görev prompt'unun ilk satırından toplam 72 karaktere kısaltılır. Başarısız çalıştırmalar commit edilmez; kirli worktree inceleme için kalır. Runner'ın commit'i başarısız olursa sonuç da hata bilgisiyle `null` olur.
+
+Kullanıcı Codex config'i varsayılan olarak okunur; API'de `ignoreUserConfig: true` ile kapatılabilir. Her eşzamanlı ajan ayrı bir süreç olduğu için yüksek `--concurrency` değerlerinde bellek kullanımını gözetin. Prompt stdin üzerinden gönderilir ve stdin hemen kapatılır; büyük prompt'lar komut satırı argüman sınırına takılmaz.
+
+Usage her `turn.completed` olayında bütçeye bildirilir. CLI'ın bu olayı kendi içindeki bütün model çağrılarını tek turda toplayabilir; Anthropic runner'ın model çağrısı başına tur ve token sınırları Codex runner'da uygulanmaz.
+
+Sonuç ancak `turn.completed` görülmüşse, ardından başarısızlık gelmemişse, hiçbir `error` olayı kaydedilmemişse ve süreç 0 ile çıkmışsa kullanılabilir. İlerleme mesajı bu koşullar olmadan başarılı sonuç sayılmaz. İptal, Codex'in açtığı alt süreçleri de kapsayan süreç grubunu durdurur.
 
 ## Host API
 
@@ -186,18 +213,20 @@ Script yazma rehberini bütün projelerde görünen bir skill olarak ekle:
 mkdir -p ~/.claude/skills/maestro-workflow-authoring && cp skill/SKILL.md ~/.claude/skills/maestro-workflow-authoring/SKILL.md
 ```
 
-Sunucu Claude Code'un ortamındaki `ANTHROPIC_API_KEY`'i kullanır. Ajanların maliyeti bu anahtarın hesabına yazılır.
+Varsayılan runner ile sunucu Claude Code'un ortamındaki `ANTHROPIC_API_KEY`'i kullanır. Ajanların maliyeti bu anahtarın hesabına yazılır. `mcp --runner codex` ise Codex CLI oturumunu kullanır.
 
-`maestro mcp` sunucusu `--cwd`, `--state-dir`, `--tools-dir`, `--budget`, `--concurrency`, `--model` ve `--dry-run` seçeneklerini alır. `--budget` oturumun tamamı için tek havuzdur: sunucunun başlattığı bütün run'lar aynı `Budget` örneğinden harcar. stdout MCP kanalıdır, tanılar stderr'e gider. İstemci bağlantıyı kapatınca (stdin biter) sunucu kapanır, süren run'lar durdurulur (journal'ları resume için kalır) ve komut 0 ile çıkar.
+`maestro mcp` sunucusu `--cwd`, `--state-dir`, `--tools-dir`, `--budget`, `--concurrency`, `--model`, `--runner` ve `--dry-run` seçeneklerini alır. `--budget` oturumun tamamı için tek havuzdur: sunucunun başlattığı bütün run'lar aynı `Budget` örneğinden harcar. stdout MCP kanalıdır, tanılar stderr'e gider. İstemci bağlantıyı kapatınca (stdin biter) sunucu kapanır, süren run'lar durdurulur (journal'ları resume için kalır) ve komut 0 ile çıkar.
 
 ## CLI
 
 ```text
 maestro run <script.js> [--args <json>] [--args-file f] [--resume <runId>] [--budget 500k]
                         [--dry-run] [--cwd d] [--state-dir d] [--tools-dir d] [--concurrency n] [--model m]
+                        [--runner <anthropic|codex>]
 maestro gc [--delete] [--force] [--cwd d]
 maestro show <runId> [label] [--cwd d] [--state-dir d]
-maestro mcp [--cwd d] [--state-dir d] [--tools-dir d] [--budget 500k] [--concurrency n] [--model m] [--dry-run]
+maestro mcp [--cwd d] [--state-dir d] [--tools-dir d] [--budget 500k] [--concurrency n] [--model m]
+            [--runner <anthropic|codex>] [--dry-run]
 ```
 
 `maestro run` sonucu stdout'a JSON olarak yazar, ilerleme stderr'e gider; Ctrl-C run'ı durdurur ve resume komutunu gösterir. `maestro mcp`, stdin bitince 0 ile çıkar; `--budget` orada her run için değil, oturum boyunca paylaşılan tek havuz içindir.
@@ -275,12 +304,12 @@ npm run lint
 npm run build
 ```
 
-Testler Vitest'tir ve ağa çıkmaz. Runner testleri gerçek SDK `toolRunner` ve `parse` kodunu sahte bir `fetch` üstünde koşturur. İzolasyon testleri geçici git repolarında gerçek worktree açar. Diğer her şey `FakeRunner` (`src/testing/fake-runner.ts`) ile koşar.
+Testler Vitest'tir ve ağa çıkmaz. Anthropic runner testleri gerçek SDK `toolRunner` ve `parse` kodunu sahte bir `fetch` üstünde koşturur; Codex runner testleri JSONL üreten sahte bir executable kullanır, gerçek Codex çağrılmaz. İzolasyon testleri geçici git repolarında gerçek worktree açar. Diğer her şey `FakeRunner` (`src/testing/fake-runner.ts`) ile koşar.
 
 | Bileşen | Kaynak | Spec |
 |---|---|---|
 | Journal | `src/journal.ts` | 3.1 |
-| Agent runner, araçlar | `src/runner.ts`, `src/tools.ts`, `src/custom-tools.ts` | 3.2 |
+| Agent runner, araçlar | `src/runner.ts`, `src/codex-runner.ts`, `src/tools.ts`, `src/custom-tools.ts` | 3.2 |
 | Script runtime, schema | `src/runtime.ts`, `src/schema.ts` | 3.3 |
 | Scheduler | `src/scheduler.ts` | 3.4 |
 | Budget | `src/budget.ts` | 3.5 |

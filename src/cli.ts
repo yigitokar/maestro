@@ -9,6 +9,7 @@ import type { Readable, Writable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { parseBudgetDirective } from './budget.js';
+import { CodexRunner } from './codex-runner.js';
 import { gc } from './isolation.js';
 import { readEntries, readTrace } from './journal.js';
 import { serveMcp } from './mcp.js';
@@ -22,18 +23,19 @@ import { run } from './workflow.js';
 export const USAGE = `usage:
   maestro run <script.js> [--args <json>] [--args-file <file>] [--resume <runId>] [--budget <500k>]
                           [--dry-run] [--cwd <dir>] [--state-dir <dir>] [--tools-dir <dir>] [--concurrency <n>]
-                          [--model <model>]
+                          [--model <model>] [--runner <anthropic|codex>]
   maestro run --resume <runId> [options]     resume with the stored script.js and args.json
   maestro gc [--delete] [--force] [--cwd <dir>]
   maestro show <runId> [label] [--cwd <dir>] [--state-dir <dir>]
                                              list a run's agents; with a label (or key prefix), print
                                              that agent's trace: tool calls, final text, result, error
   maestro mcp [--cwd <dir>] [--state-dir <dir>] [--tools-dir <dir>] [--budget <500k>] [--concurrency <n>]
-              [--model <model>] [--dry-run]
+              [--model <model>] [--runner <anthropic|codex>] [--dry-run]
                                              serve the Workflow tool over stdio as an MCP server
                                              (--budget is one pool for the whole session; exits 0 when stdin ends)
 
   --dry-run   run every agent with an in-memory fake runner (schema stubs, no network)
+  --runner    agent runner: anthropic (default) or codex; --dry-run takes precedence
   --tools-dir custom tools agents may name in opts.tools: *.js files that default-export a tool
               (default <state-dir>/tools)
   gc          lists dirty worktrees and merged / unmerged wf/* branches; deletes only with --delete
@@ -68,6 +70,7 @@ const VALUE_FLAGS = new Set([
   'tools-dir',
   'concurrency',
   'model',
+  'runner',
 ]);
 const BOOL_FLAGS = new Set(['dry-run', 'delete', 'force', 'help']);
 
@@ -103,6 +106,14 @@ function parseArgv(argv: string[]): Parsed {
 function str(p: Parsed, name: string): string | undefined {
   const v = p.flags.get(name);
   return typeof v === 'string' ? v : undefined;
+}
+
+function runnerName(p: Parsed): 'anthropic' | 'codex' {
+  const name = str(p, 'runner') ?? 'anthropic';
+  if (name !== 'anthropic' && name !== 'codex') {
+    throw new UsageError(`invalid --runner "${name}" (expected anthropic or codex)`);
+  }
+  return name;
 }
 
 export async function main(argv: string[], ioOverrides: Partial<CliIO> = {}): Promise<number> {
@@ -179,8 +190,10 @@ async function runCommand(p: Parsed, io: CliIO): Promise<number> {
   }
 
   const dryRun = p.flags.has('dry-run');
+  const selectedRunner = runnerName(p);
   let runner: AgentRunner;
   if (dryRun) runner = new FakeRunner();
+  else if (selectedRunner === 'codex') runner = new CodexRunner();
   else {
     if (!io.env.ANTHROPIC_API_KEY) {
       io.stderr.write(
@@ -262,8 +275,9 @@ async function mcpCommand(p: Parsed, io: CliIO): Promise<number> {
     throw new UsageError(`--concurrency must be a positive integer, got "${concArg}"`);
   }
   const dryRun = p.flags.has('dry-run');
+  const selectedRunner = runnerName(p);
   // stdout is the MCP channel: diagnostics go to stderr only.
-  if (!dryRun && !io.env.ANTHROPIC_API_KEY) {
+  if (!dryRun && selectedRunner === 'anthropic' && !io.env.ANTHROPIC_API_KEY) {
     io.stderr.write('maestro mcp: ANTHROPIC_API_KEY is not set; Workflow runs will fail until it is.\n');
   }
   const cwd = path.resolve(io.cwd, str(p, 'cwd') ?? '.');
@@ -272,7 +286,11 @@ async function mcpCommand(p: Parsed, io: CliIO): Promise<number> {
   // A numeric budget becomes one Budget shared by every run of this server (createMcpServer).
   const server = await serveMcp(
     {
-      runner: dryRun ? new FakeRunner() : new AnthropicRunner(),
+      runner: dryRun
+        ? new FakeRunner()
+        : selectedRunner === 'codex'
+          ? new CodexRunner()
+          : new AnthropicRunner(),
       cwd,
       budget,
       ...(stateDir !== undefined ? { stateDir: path.resolve(io.cwd, stateDir) } : {}),
