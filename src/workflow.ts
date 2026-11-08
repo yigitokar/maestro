@@ -9,6 +9,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Budget, type BudgetLease } from './budget.js';
 import { EMPTY_TOOL_REGISTRY, loadCustomTools, type ToolRegistry } from './custom-tools.js';
+import { EVENT_LOG_PROMPT_CHARS, EventLog } from './event-log.js';
 import { Isolation, type WorktreeLease } from './isolation.js';
 import { hashCall, Journal, makeKey, Occurrences } from './journal.js';
 import { AnthropicRunner, systemPrompt } from './runner.js';
@@ -127,8 +128,12 @@ export function run(opts: RunOptions): RunHandle {
   const occurrences = new Occurrences();
   let runner: AgentRunner | undefined;
   const model = opts.model ?? DEFAULT_MODEL;
+  const startedAt = Date.now();
+  // Timestamps for `maestro viz`; audit-only, so a write failure is a log line, never a failed run.
+  const eventLog = new EventLog((m) => emitLog(m));
 
   const emit = (ev: WorkflowEvent): void => {
+    eventLog.record(ev);
     try {
       events.emit('event', ev);
       events.emit(ev.type, ev);
@@ -175,6 +180,7 @@ export function run(opts: RunOptions): RunHandle {
       const id = nextId++;
       const base = eventBase(frame, id, key, o);
       emit({ type: 'agent_start', ...base });
+      recordPrompt(id, prompt, o, tools);
       emit({ type: 'agent_end', ...base, status: 'ok', cached: true, usage: hit.usage });
       return Promise.resolve(copyValue(hit.result));
     }
@@ -201,6 +207,7 @@ export function run(opts: RunOptions): RunHandle {
     const signal = AbortSignal.any([lease.signal, runController.signal, skipController.signal]);
     const base = eventBase(frame, id, key, o);
     emit({ type: 'agent_start', ...base });
+    recordPrompt(id, a.prompt, o, a.tools);
 
     const abortText = (): string =>
       lease.signal.aborted
@@ -240,27 +247,26 @@ export function run(opts: RunOptions): RunHandle {
       } else {
         try {
           // Step 5-6: the slot covers only the live runner call.
-          res = await scheduler!.withSlot(
-            () =>
-              getRunner().run({
-                prompt: a.prompt,
-                system: systemPrompt({ cwd: agentCwd, writer }),
-                tools: a.tools,
-                schema: o.schema,
-                model: o.model ?? model,
-                effort: o.effort,
-                cwd: agentCwd,
-                signal,
-                isolated,
-                onUsage: (u) => {
-                  addUsage(turnUsage, u);
-                  addUsage(liveUsage, u);
-                  lease.report(finite(u.output_tokens));
-                },
-                log: (m) => emitLog(m, frame.group),
-              }),
-            signal,
-          );
+          res = await scheduler!.withSlot(() => {
+            eventLog.record({ type: 'agent_running', id });
+            return getRunner().run({
+              prompt: a.prompt,
+              system: systemPrompt({ cwd: agentCwd, writer }),
+              tools: a.tools,
+              schema: o.schema,
+              model: o.model ?? model,
+              effort: o.effort,
+              cwd: agentCwd,
+              signal,
+              isolated,
+              onUsage: (u) => {
+                addUsage(turnUsage, u);
+                addUsage(liveUsage, u);
+                lease.report(finite(u.output_tokens));
+              },
+              log: (m) => emitLog(m, frame.group),
+            });
+          }, signal);
           status = res.status;
           result = res.status === 'ok' ? (res.result ?? null) : null;
           if (res.raw !== undefined) raw = res.raw;
@@ -335,6 +341,24 @@ export function run(opts: RunOptions): RunHandle {
 
   function eventBase(frame: Frame, id: number, key: string, o: AgentOpts) {
     return withDefined({ runId, id, key, label: o.label, phase: o.phase ?? frame.phase, group: frame.group });
+  }
+
+  /** What the agent was asked, for the viewer only (the journal keys on a hash of it). */
+  function recordPrompt(id: number, prompt: string, o: AgentOpts, tools: ToolDef[]): void {
+    const truncated = prompt.length > EVENT_LOG_PROMPT_CHARS;
+    eventLog.record(
+      withDefined({
+        type: 'agent_prompt' as const,
+        id,
+        prompt: truncated ? prompt.slice(0, EVENT_LOG_PROMPT_CHARS) : prompt,
+        truncated: truncated ? (true as const) : undefined,
+        model: o.model,
+        effort: o.effort,
+        isolation: o.isolation,
+        tools: tools.map((t) => t.name),
+        schema: o.schema !== undefined,
+      }),
+    );
   }
 
   function getRunner(): AgentRunner {
@@ -461,6 +485,20 @@ export function run(opts: RunOptions): RunHandle {
 
     // spec 3.1: if the journal cannot be written the run does not start.
     journal = await Journal.open(runDir, { log: (m) => emitLog(m) });
+    await eventLog.open(runDir, {
+      t: startedAt,
+      line: {
+        type: 'run_start',
+        resume,
+        name: parsed.meta.name,
+        description: parsed.meta.description,
+        phases: (parsed.meta.phases ?? []).map((ph) => ph.title),
+        runner: getRunner().constructor.name,
+        model,
+        concurrency: opts.concurrency ?? defaultConcurrency(),
+        budget: opts.budget instanceof Budget ? opts.budget.total : (opts.budget ?? null),
+      },
+    });
     try {
       await writeFile(scriptFile, source);
       await writeFile(argsFile, `${JSON.stringify(args)}\n`);
@@ -515,8 +553,12 @@ export function run(opts: RunOptions): RunHandle {
   const finish = (ok: boolean, v: unknown) => {
     if (settled) return;
     settled = true;
-    if (ok) settle.resolve(v);
-    else settle.reject(v);
+    eventLog.record(withDefined({ type: 'run_end' as const, ok, error: ok ? undefined : errorText(v) }));
+    // Settle once the event log is on disk: a resume started right after must not interleave with it.
+    void eventLog.close().then(() => {
+      if (ok) settle.resolve(v);
+      else settle.reject(v);
+    });
   };
   promise.catch(() => {});
 

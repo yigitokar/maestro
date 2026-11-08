@@ -2,8 +2,9 @@
 // `maestro` CLI: a thin shell over run() and gc(). The script's return value goes to stdout as JSON,
 // progress and diagnostics go to stderr. main() returns the exit code and never calls process.exit.
 
-import { realpathSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { spawn } from 'node:child_process';
+import { existsSync, realpathSync } from 'node:fs';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
@@ -18,6 +19,7 @@ import { AnthropicRunner } from './runner.js';
 import { FakeRunner } from './testing/fake-runner.js';
 import type { AgentRunner, Entry } from './types.js';
 import { cacheReadRatio, totalInput } from './usage.js';
+import { exportVizHtml, serveViz } from './viz.js';
 import { run } from './workflow.js';
 
 export const USAGE = `usage:
@@ -29,6 +31,9 @@ export const USAGE = `usage:
   maestro show <runId> [label] [--cwd <dir>] [--state-dir <dir>]
                                              list a run's agents; with a label (or key prefix), print
                                              that agent's trace: tool calls, final text, result, error
+  maestro viz <runId> [--cwd <dir>] [--state-dir <dir>] [--port <n>] [--no-open] [--out <file.html>]
+                                             open a run's timeline in the browser; it follows a live run
+                                             (--out writes the page as one self-contained HTML file instead)
   maestro mcp [--cwd <dir>] [--state-dir <dir>] [--tools-dir <dir>] [--budget <500k>] [--concurrency <n>]
               [--model <model>] [--runner <anthropic|codex>] [--dry-run]
                                              serve the Workflow tool over stdio as an MCP server
@@ -71,8 +76,10 @@ const VALUE_FLAGS = new Set([
   'concurrency',
   'model',
   'runner',
+  'out',
+  'port',
 ]);
-const BOOL_FLAGS = new Set(['dry-run', 'delete', 'force', 'help']);
+const BOOL_FLAGS = new Set(['dry-run', 'delete', 'force', 'help', 'no-open']);
 
 function parseArgv(argv: string[]): Parsed {
   const positionals: string[] = [];
@@ -140,6 +147,7 @@ export async function main(argv: string[], ioOverrides: Partial<CliIO> = {}): Pr
     if (command === 'run') return await runCommand(parsed, io);
     if (command === 'gc') return await gcCommand(parsed, io);
     if (command === 'show') return await showCommand(parsed, io);
+    if (command === 'viz') return await vizCommand(parsed, io);
     if (command === 'mcp') return await mcpCommand(parsed, io);
     throw new UsageError(`unknown command "${command}"`);
   } catch (e) {
@@ -343,6 +351,61 @@ async function showCommand(p: Parsed, io: CliIO): Promise<number> {
   }
   for (const row of picked) io.stdout.write(`${await showRow(runDir, row)}\n`);
   return 0;
+}
+
+const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+
+async function vizCommand(p: Parsed, io: CliIO): Promise<number> {
+  const [runId, ...extra] = p.positionals;
+  if (runId === undefined) throw new UsageError('viz needs a runId');
+  if (extra.length > 0) throw new UsageError(`unexpected arguments: ${extra.join(' ')}`);
+  if (!SAFE_RUN_ID.test(runId)) throw new UsageError(`invalid runId "${runId}"`);
+  const cwd = path.resolve(io.cwd, str(p, 'cwd') ?? '.');
+  const stateDirArg = str(p, 'state-dir');
+  const stateDir = stateDirArg !== undefined ? path.resolve(io.cwd, stateDirArg) : path.join(cwd, '.maestro');
+  const runDir = path.join(stateDir, 'runs', runId);
+  if (!existsSync(runDir)) {
+    io.stderr.write(`maestro: no run ${runId} in ${path.dirname(runDir)}\n`);
+    return 1;
+  }
+  const out = str(p, 'out');
+  if (out !== undefined) {
+    const file = path.resolve(io.cwd, out);
+    await writeFile(file, await exportVizHtml(runDir, runId));
+    io.stdout.write(`${file}\n`);
+    return 0;
+  }
+  const portArg = str(p, 'port');
+  const port = portArg === undefined ? 0 : Number(portArg);
+  if (!Number.isInteger(port) || port < 0 || port > 65_535)
+    throw new UsageError(`invalid --port "${portArg}"`);
+  const server = await serveViz({ runDir, runId, port });
+  io.stderr.write(`maestro viz: ${server.url}  (Ctrl-C to stop)\n`);
+  if (!p.flags.has('no-open')) openBrowser(server.url);
+  await new Promise<void>((resolve) => {
+    const stop = () => resolve();
+    process.once('SIGINT', stop);
+    process.once('SIGTERM', stop);
+  });
+  await server.close();
+  return 0;
+}
+
+/** Best effort: a missing opener only means the user opens the printed URL themselves. */
+function openBrowser(url: string): void {
+  const [cmd, args] =
+    process.platform === 'darwin'
+      ? ['open', [url]]
+      : process.platform === 'win32'
+        ? ['cmd', ['/c', 'start', '', url]]
+        : ['xdg-open', [url]];
+  try {
+    const child = spawn(cmd as string, args as string[], { detached: true, stdio: 'ignore' });
+    child.on('error', () => {});
+    child.unref();
+  } catch {
+    // Printed URL is enough.
+  }
 }
 
 const SHOW_RESULT_CHARS = 2_000;
