@@ -7,6 +7,8 @@ export type { CodexRunnerOptions } from './codex-runner.js';
 export { CodexRunner } from './codex-runner.js';
 export type { ToolRegistry } from './custom-tools.js';
 export { checkToolDef, loadCustomTools, loadToolsDir, makeToolRegistry } from './custom-tools.js';
+export type { EventLogExtra, EventLogLine } from './event-log.js';
+export { EVENT_LOG_FILE } from './event-log.js';
 export type {
   CloseResult,
   GcOptions,
@@ -56,5 +58,7 @@ export {
 } from './tool.js';
 export { buildTools, READ_TOOL_NAMES, WRITE_TOOL_NAMES } from './tools.js';
 export * from './types.js';
+export type { VizEntryDetail, VizEntrySummary, VizServer, VizSnapshot } from './viz.js';
+export { exportVizHtml, readEventLines, readSnapshot, serveViz } from './viz.js';
 export type { RunHandle, RunOptions } from './workflow.js';
 export { run } from './workflow.js';

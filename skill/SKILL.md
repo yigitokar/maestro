@@ -141,3 +141,11 @@ Tam hâlleri (`FINDINGS`, `VERDICT`, `BUGS` şemalarıyla): `examples/workflows/
 Her run `.maestro/runs/<runId>/` altında `script.js`, `args.json`, `journal.jsonl` ve `blobs/` tutar. Script'i düzenleyip `resumeFromRunId` ile tekrar koşunca değişmeyen her çağrı cache'den döner. İsabet çağrı başına bakılır: ortadaki bir prompt değişirse yalnızca o çağrı ve sonucunu prompt'una alan çağrılar canlı koşar, bağımsız kardeşler cache'den gelir. Aynı script ve aynı args sıfır canlı çağrı demektir. Yalnızca `ok` kayıtlar cache isabetidir: null (API hatası) ve skipped (bütçe veya atlama) kayıtlar resume'da tekrar koşar. Bütçeyi artırıp resume etmek yarım kalan ajanları böyle canlandırır.
 
 Beklenmedik ya da boş bir sonucu teşhis etmeden önce `journal.jsonl`'i oku. Her satır bir çağrının gerçek dönüş değerini ve status'unu tutar. Cache'teki sonucun dolu olduğunu varsayma.
+
+Kullanıcı run'ı izlemek isterse ona şu komutu ver:
+
+```bash
+node ~/maestro/bin/maestro viz <runId> --cwd <run'ın cwd'si>
+```
+
+Komut tarayıcıda canlı bir zaman çizelgesi açar. `--out rapor.html` ile tek dosyalık bir rapor yazar. Ajanların ne zaman başladığı, slot beklediği ve bittiği `events.jsonl`'de durur.

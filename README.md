@@ -227,6 +227,7 @@ maestro run <script.js> [--args <json>] [--args-file f] [--resume <runId>] [--bu
                         [--runner <anthropic|codex>]
 maestro gc [--delete] [--force] [--cwd d]
 maestro show <runId> [label] [--cwd d] [--state-dir d]
+maestro viz <runId> [--cwd d] [--state-dir d] [--port n] [--no-open] [--out f.html]
 maestro mcp [--cwd d] [--state-dir d] [--tools-dir d] [--budget 500k] [--concurrency n] [--model m]
             [--runner <anthropic|codex>] [--dry-run]
 ```
@@ -238,6 +239,28 @@ maestro mcp [--cwd d] [--state-dir d] [--tools-dir d] [--budget 500k] [--concurr
 ## Run dizini ve resume
 
 `.maestro/runs/<runId>/` dizininde `script.js`, `args.json`, `journal.jsonl` ve `blobs/` bulunur. Journal satır başına bir `agent()` çağrısı tutar (`key = sha256(prompt + "\n" + canonicalJSON(opts \ {label, phase})) + ":" + n`). Yalnızca `status: 'ok'` satırlar cache isabetidir. `null` (API hatası) ve `skipped` (bütçe, atlama, durdurma) satırları resume'da tekrar koşar. Böylece bütçeyi artırıp resume etmek yarım kalan ajanları canlandırır. 64 KB üstü sonuçlar `blobs/<key>.json` dosyasına yazılır. Her canlı satır ayrıca `trace` taşır: ajanın araç çağrıları ve final metninin ilk 2.000 karakteri; `maestro show <runId>` ajanları listeler, `maestro show <runId> <label>` birinin trace'ini okunur basar.
+
+Run dizininde bir de `events.jsonl` vardır: her olay (ajan başladı, slot aldı, bitti, faz, log, bütçe) duvar saati zamanıyla bir satırdır. Ajanın prompt'u (ilk 4.000 karakter), modeli, effort'u ve araçları da buraya yazılır. Dosya yalnızca görüntüleme içindir. Resume ve cache journal'dan çalışır, bu dosyaya bakmaz. Yazılamazsa run durmaz, log'a bir satır düşer. Her başlatma ve resume dosyaya kendi `run_start` satırıyla eklenir.
+
+## Run'ı izlemek: `maestro viz`
+
+```bash
+node ~/maestro/bin/maestro viz <runId> --cwd <repo>
+```
+
+Komut tarayıcıda run'ın zaman çizelgesini açar:
+- **Şeritler:** her faz bir şerittir.
+- **Çubuklar:** her ajan bir çubuktur. Önce gelen ince çizgi, ajanın eşzamanlılık slotu beklediği süredir.
+- **Renkler:** çalışıyor, tamam, null, atlandı ve önbellekten.
+- **Ayrıntı:** bir çubuğa tıklayınca prompt, sonuç, hata, araç çağrıları ve token'lar açılır.
+
+Üstte ajan sayıları, süre, token, önbellek oranı ve bütçe durur. Resume edilmiş bir run'da denemeler arasında geçiş yapılır.
+
+Sayfa dosyaları saniyede bir okur. Bu yüzden başka bir süreçte koşan bir run'ı da canlı izler: bir Claude Code oturumunun MCP sunucusu ya da başka bir terminaldeki `maestro run` olabilir. Sunucu yalnızca `127.0.0.1`'e bağlanır; Ctrl-C ile kapanır.
+
+- `--out rapor.html` sunucu açmadan tek bir HTML dosyası yazar: bütün olaylar ve ajan ayrıntıları gömülüdür, internetsiz açılır, paylaşılabilir.
+- `--port` sabit bir port seçer, `--no-open` tarayıcıyı açmaz.
+- `events.jsonl`'i olmayan eski run'larda yalnızca journal satırları listelenir.
 
 ## Örnekler
 
@@ -331,7 +354,7 @@ Spec'ten koda birebir geçmeyen maddeler ve gerekçeleri aşağıdadır. Spec'in
 - **Örnek script'ler çalıştırıcı + script olarak ikiye ayrıldı (Seviye 4).** Spec script'i (`export const meta` + en üstte `return`) ne geçerli bir ES modülüdür ne de CommonJS script'i. Bu yüzden `node examples/<ad>.js` dosyası, `examples/workflows/<ad>.js` script'ini `run()` ile koşturan bir çalıştırıcıdır.
 - **`fanout-writers` örneği hiç branch gelmezse koordinatörü çağırmaz (Seviye 4).** Spec parçacığı koordinatörü boş listeyle çağırırdı. O çağrı commit edecek bir şey bulamaz ve "no handoff" ile null döner.
 - **`workflow gc` komutu `maestro gc` adını taşır (3.6).** Ayrıca "birleşmiş" tespiti ata ilişkisinin yanında `git cherry` ile patch-eşdeğerliğine de bakar, çünkü koordinatör kalıbı cherry-pick kullanır ve `git branch --merged` cherry-pick'lenmiş branch'leri birleşmemiş gösterir.
-- **`/workflows` paneli yok (3.7).** Yalnızca terminal ilerleme ağacı (`src/progress.ts`) ve olay akışı (`handle.events`) vardır. Panel host'un arayüzüdür.
+- **`/workflows` paneli yok (3.7).** Terminal ilerleme ağacı (`src/progress.ts`) ve olay akışı (`handle.events`) vardır. Panel host'un arayüzüdür. Buna karşılık tarayıcıda bir run görünümü var (`maestro viz`), çünkü kullanıcı istedi. Non-goals "ajan başına UI yok" der. Görünüm salt-okurdur ve run'ı yönetmez.
 - **Policy bileşeni ayrı bir modül değil (Seviye 2).** Opt-in kuralı metin olarak Workflow tool açıklamasında (`WORKFLOW_TOOL_DESCRIPTION`) ve skill'de yaşar. Sayısal sınırlar koddadır (`meta.maxAgents`, global tavan, bütçe).
 - **İç içe workflow'da çocuğun `meta.maxAgents` değeri uygulanmaz (3.4).** Sayaç paylaşıldığı için üst run'ın tavanı geçerlidir; çocuğun değeri log'a yazılır.
 - **Determinizm ezmesi saldırgana dayanıklı değildir (3.3).** `Object.getPrototypeOf(Date)` hâlâ özgün `Date`'e ulaşır. Spec'in de söylediği gibi `vm` bir güvenlik sınırı değildir. Buna karşılık saati okuyan argümansız `Intl.DateTimeFormat#format` da ezilmiştir.

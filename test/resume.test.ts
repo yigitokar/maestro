@@ -57,7 +57,13 @@ return { a, b, args };`;
     expect(r1.liveCalls).toBe(4);
 
     const runDir = first.handle.runDir;
-    expect(readdirSync(runDir).sort()).toEqual(['args.json', 'blobs', 'journal.jsonl', 'script.js']);
+    expect(readdirSync(runDir).sort()).toEqual([
+      'args.json',
+      'blobs',
+      'events.jsonl',
+      'journal.jsonl',
+      'script.js',
+    ]);
     expect(statSync(path.join(runDir, 'blobs')).isDirectory()).toBe(true);
     expect(readFileSync(path.join(runDir, 'script.js'), 'utf8')).toBe(script);
 

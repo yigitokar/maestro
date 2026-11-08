@@ -232,7 +232,7 @@ Codex `detached: true` ile kendi süreç grubunda açılır; parent'ın erken ç
 
 ## Gözlemlenebilirlik ve CLI
 
-**`/workflows` paneli.** Spec 3.7 tüketici olarak terminal ağacını ve `/workflows` panelini sayar (satır 287). Seçim: kütüphane yalnızca terminal ilerleme ağacını içerir; `/workflows` paneli bir host arayüzüdür ve kapsam dışıdır. Olaylar herhangi bir arayüz için `RunHandle.events` üzerinden açıktır. Sebep: Non-goals "ajan başına UI yok, ilerleme ağacı yeter" der (satır 19).
+**`/workflows` paneli.** Spec 3.7 tüketici olarak terminal ağacını ve `/workflows` panelini sayar (satır 287). Seçim: kütüphane yalnızca terminal ilerleme ağacını içerir; `/workflows` paneli bir host arayüzüdür ve kapsam dışıdır. Olaylar herhangi bir arayüz için `RunHandle.events` üzerinden açıktır. Sebep: Non-goals "ajan başına UI yok, ilerleme ağacı yeter" der (satır 19). 7 Kasım 2026'da kullanıcı isteğiyle salt-okur bir tarayıcı görünümü eklendi (aşağıda `maestro viz`). Panel hâlâ kapsam dışıdır.
 
 **Olay sözleşmesi.** Spec olay adlarını sayar (satır 286), içeriklerini ve zamanlarını vermez. Seçim: `agent_start` ajan kabul edildiğinde veya cache isabetinde yayılır; `agent_end` `status`, `cached` ve `usage` taşır. Cache isabetleri iki olayı da `cached: true` ve saklanan usage ile yayar. `budget_tick` her tur başı usage bildiriminde `Budget.onTick` üzerinden gelir. `phase` olayları yalnızca `phase()`'ten gelir. Bir ajanın aşaması `opts.phase`, yoksa çerçevenin son `phase()` başlığıdır ve bu etkin aşama journal satırına da yazılır. Olaylar `'event'` adıyla ve kendi tip adlarıyla yayılır; yayıcının dinleyici sınırı kaldırılmıştır ve hata atan bir dinleyici run'ı bozamaz. Runner ve Isolation teşhisleri `log` olayı olarak gelir. Tip tanımı `src/types.ts` içindeki `WorkflowEvent`'tir.
 
@@ -243,6 +243,38 @@ Codex `detached: true` ile kendi süreç grubunda açılır; parent'ın erken ç
 **Cache görünürlüğü (v1.1).** Seçim: `agent_end.usage` cache alanlarını taşır; ilerleme ağacı ve satır akışı canlı ajanın token sayısının yanına "cached N%" (cache okuması / toplam girdi) ekler. Cache bilgisi yoksa ve journal isabetlerinde ek yazılmaz, çünkü isabetin usage'ı eski koşudandır. Run sonunda, script bittikten ve kalan ajanlar journal'a yazıldıktan sonra, canlı turların toplamı tek bir `log` olayıyla yazılır: toplam girdi, cache'ten okunan (yüzdesiyle), cache'e yazılan, cache'siz ve çıktı. Satır yalnızca en az bir tur cache bildirdiyse yazılır, böylece kuru koşuların log'u değişmez.
 
 **`maestro show`.** Seçim: `maestro show <runId>` bir run'ın journal satırlarını listeler (sıra, label, durum, toplam girdi ve cache oranı, çıktı, araç çağrısı sayısı, hata). `maestro show <runId> <label>` o label'lı bütün satırları (resume tekrarları dahil) trace, sonuç, `raw` ve hata ile basar; label eşleşmezse anahtar öneki denenir. Journal salt-okur okunur (`readEntries`): `Journal.open` yırtık satırı keserdi, bir görüntüleme komutu dosyayı değiştirmemeli. Sonuç 2.000 karakterde kesilir.
+
+**`events.jsonl` (7 Kasım 2026).** Kullanıcı tarayıcıda bir run görünümü istedi. Ne journal satırı ne de `WorkflowEvent` zaman taşıyordu. Seçim: run her olayı `t` (epoch ms) ile `<runDir>/events.jsonl`'e ekler (`src/event-log.ts`). Dosyaya yalnızca bu dosyada bulunan dört satır türü de yazılır:
+- `run_start`: meta, runner, model, eşzamanlılık, bütçe.
+- `agent_prompt`: prompt'un ilk 4.000 karakteri, model, effort, izolasyon, araçlar, şema var mı.
+- `agent_running`: ajan slotu aldı ve runner çağrısı başlıyor.
+- `run_end`: ok ve hata.
+
+Satırlarda runId yoktur, çünkü dosya tek bir run'a aittir. Olaylar yayıcıdan önce kaydedilir; run dizini açılmadan gelenler bellekte bekler ve `run_start`'tan sonra yazılır. Her başlatma ve resume dosyaya ekler, yani bir dosya birden çok deneme tutabilir.
+
+Run'ın promise'i, `run_end` diske yazıldıktan sonra sonuçlanır. Yoksa hemen arkasından başlatılan bir resume satırları karıştırıyordu; testte yakalandı.
+
+Zaman damgası script'e değil runtime'a aittir, bu yüzden determinizm kuralını bozmaz.
+
+Sebep, alanların neden journal'a eklenmediği:
+- journal satırlarını tam karşılaştıran testler kırılırdı;
+- cache isabetleri resume'da eski zamanı taşırdı;
+- başka bir süreç (`maestro viz`) MCP sunucusunun olay yayıcısına erişemez, ama bir dosyanın sonunu okuyabilir.
+
+Dosya yalnızca görüntüleme içindir. Yazma hatası bir kez log'a düşer ve run'ı düşürmez.
+
+**`maestro viz`.** Seçim: komut `127.0.0.1`'de küçük bir HTTP sunucusu açar (`src/viz.ts`):
+- `/` dış istek yapmayan tek bir HTML sayfası döner (`src/viz-page.ts`).
+- `/api/poll?from=<bayt>` bayt ofsetinden itibaren yeni olay satırlarını ve journal özetlerini döner. Yırtık son satır bir sonraki okumaya kalır.
+- `/api/entry?key=&status=` bir ajanın sonucunu (20.000 karakter), `raw`'ı, trace'i ve kirli worktree bilgisini döner.
+
+Sayfa canlıyken saniyede bir, run bitince üç saniyede bir yoklar. Çalışan ajanları sunucunun saatine göre uzatır. Beş dakika olay gelmezse "süreç kapanmış olabilir" uyarısı gösterir. `--out` aynı sayfayı, veriler `<script>` içine güvenli biçimde gömülü olarak tek dosyaya yazar: `<`, `>`, `&`, U+2028 ve U+2029 kaçırılır.
+
+Kuyruk süresi ayrı çizilir. `agent_start` slot beklemeden önce yayılır; `agent_running` olmadan eşzamanlılık 4 iken "8 çalışıyor" görünüyordu. İnce çizgi slot beklemeyi, renkli çubuk runner çağrısını gösterir.
+
+Arayüz Türkçedir, açık ve koyu temaya uyar, telefon genişliğinde çalışır. Kütüphane kullanılmadı.
+
+Sebep: kullanıcı canlı izleme artı paylaşılabilir rapor seçti. Polling, SSE'ye göre daha az kod ister ve kopan bağlantıyı kendiliğinden toparlar. Yerel dosya okuyan bir sayfa için saniyede bir istek önemsizdir.
 
 ## Tool adaptörü ve MCP
 
