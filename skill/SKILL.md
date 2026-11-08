@@ -149,3 +149,11 @@ node ~/maestro/bin/maestro viz <runId> --cwd <run'ın cwd'si>
 ```
 
 Komut tarayıcıda canlı bir zaman çizelgesi açar. `--out rapor.html` ile tek dosyalık bir rapor yazar. Ajanların ne zaman başladığı, slot beklediği ve bittiği `events.jsonl`'de durur.
+
+Run bittiğinde oturumda satır içi bir widget aracı varsa (Claude masaüstündeki `show_widget` gibi) zaman çizelgesini sohbette göster:
+
+```bash
+node ~/maestro/bin/maestro viz <runId> --cwd <run'ın cwd'si> --widget
+```
+
+Komutun stdout'unu hiç değiştirmeden widget koduna ver. Aracın kendi kuralı ilk kullanımdan önce bir hazırlık çağrısı istiyorsa önce onu yap. Parça bir anlık görüntüdür. Run sürerken göstermek istersen bittiğinde yeniden üret. Çok büyük run'larda (yüzlerce ajan) parça uzar; kullanıcı istemedikçe tarayıcı komutunu öner.
