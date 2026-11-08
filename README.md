@@ -180,6 +180,8 @@ messages.push({ role: 'user', content: [toToolResultBlock(toolUse.id, res)] });
 
 Girdide `script`, `scriptPath` veya `name` alanlarından tam biri verilir. `name`, `.maestro/workflows/<name>.js` dosyasına çözülür. `resumeFromRunId` ile düzenlenmiş script cache'ten devam eder; script verilmezse run dizinindeki `script.js` ve `args.json` yeniden kullanılır. Strict şema keyfi JSON değeri ifade edemediği için `args` JSON-string olarak gönderilir. Geçersiz girdi, eksik veya saf olmayan `meta`, syntax hatası ve var olmayan (ya da `script.js`'i olmayan) bir run'ı resume etme throw etmez; hemen `{ is_error: true, content }` döner.
 
+İsteğe bağlı `cwd` alanı run'ı başka bir dizine taşır. Mutlak yol ya da sunucunun dizinine göre göreli yol olabilir. Ajanlar o dizinde çalışır, yazan ajanlar o dizinin git reposundan branch açar ve run `<cwd>/.maestro` altına yazılır. `scriptPath` da bu dizine göre çözülür. Böylece tek bir sunucu (örneğin `scratchpad`'de açılmış bir Claude Code oturumu) başka bir repo üzerinde çalışabilir. Başkasının kullandığı ana checkout yerine o reponun bir worktree'sini vermek daha güvenlidir. Resume ederken aynı `cwd` verilir, yoksa run bulunamaz. `null` ya da boş string sunucunun dizini demektir. Var olmayan ya da dizin olmayan bir `cwd` hemen `is_error` döner.
+
 Tool ile başlatılan run'lar runId ile kontrol edilir (spec Seviye 1, null/throw tablosundaki kullanıcı satırları):
 
 ```ts
@@ -196,7 +198,7 @@ stopWorkflowRun(runId, 'yeter'); // canlı ajanlar 'skipped' yazılır, onComple
 
 Aynı Workflow aracı stdio üzerinden bir MCP sunucusu olarak açılır ve `tools/list` dört araç döner:
 
-- `Workflow`: run'ı başlatır, hemen `{ runId, scriptPath, status: 'started' }` döner.
+- `Workflow`: run'ı başlatır, hemen `{ runId, scriptPath, status: 'started' }` döner. `cwd` verilirse run oturumun dizini yerine o repoda çalışır (yukarıdaki `cwd` paragrafı).
 - `WorkflowResult({ runId, wait? })`: Run sürerken `{ status: 'running', liveAgents }`, sonra `done` ya da `failed` döner. `wait: true` ile çağrı run bitene kadar açık kalır ve yoklamaya gerek kalmaz: Claude Code 2 dakikadan uzun süren bir MCP çağrısını arka plana alır, sonucu modele bildirim olarak verir. Bekleyen çağrı, istemci `progressToken` gönderdiyse 30 saniyede bir canlı ajanların adlarıyla `notifications/progress` yollar; böylece boşta kalan çağrı zaman aşımı çağrıyı kesmez. Tek seferlik `claude -p` oturumu tur bitince kapandığı için arka plandaki sonucu beklemez; sonucu almak için etkileşimli bir oturum kullanın.
 - `WorkflowStop({ runId })`: run'ı durdurur. Script `run_stopped` ile reddeder, journal kalır ve run sonradan `resumeFromRunId` ile sürdürülebilir.
 - `WorkflowSkip({ runId, agentId })`: `liveAgents` içindeki bir ajanı atlar; o `agent()` çağrısı `null` döner.

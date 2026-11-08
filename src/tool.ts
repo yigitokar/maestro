@@ -21,7 +21,9 @@ The script is plain JavaScript (no TypeScript) and must start with a pure-litera
 The body may use top-level await and return; its return value is the run result. Globals: agent(prompt, opts) → value | null, parallel(thunks) (barrier, never rejects; a throwing thunk becomes null), pipeline(items, ...stages) (no barrier; the default for multi-stage work), phase(title), log(message), args, budget { total, spent(), remaining() }, workflow(nameOrRef, args) (one nesting level). Date.now(), Math.random() and argless new Date() throw: they would break resume. Pass timestamps via args.
 agent opts: label, phase, schema (JSON Schema with root type object; returns the validated object), model, effort ('low'|'medium'|'high'|'xhigh'|'max'), isolation: 'worktree', tools. Write tools (write_file, edit_file, shell, git_commit) require isolation: 'worktree'; a writer commits to the branch wf/<runId>/<label> that the runtime opens and gets branchName added to its result. tools may also name custom tools defined outside the script (.maestro/tools/*.js); when any exist, they are listed at the end of this description.
 
-Give the script inline in "script" (preferred), or "scriptPath", or a registered "name" (.maestro/workflows/<name>.js): exactly one. "args" is the JSON-encoded value the script sees as args. The call returns a runId at once; the result arrives later. To edit and re-run cheaply, pass the edited script with "resumeFromRunId": unchanged agent() calls return their journaled results.`;
+Give the script inline in "script" (preferred), or "scriptPath", or a registered "name" (.maestro/workflows/<name>.js): exactly one. "args" is the JSON-encoded value the script sees as args. The call returns a runId at once; the result arrives later. To edit and re-run cheaply, pass the edited script with "resumeFromRunId": unchanged agent() calls return their journaled results.
+
+A run works in the server's working directory unless "cwd" names another one (absolute, or relative to the server's): agents work there, writers branch from its git repository, and the run is journaled under <cwd>/.maestro. Point it at the repository the work is about, ideally a worktree of it rather than a checkout someone is using. Resume with the same cwd.`;
 
 /** Input as the model sends it. Under strict mode every field is present and absent ones are null. */
 export interface WorkflowToolInput {
@@ -31,6 +33,8 @@ export interface WorkflowToolInput {
   /** JSON-encoded args (strict schemas cannot express "any JSON"); a non-string value is taken as is. */
   args?: unknown;
   resumeFromRunId?: string | null;
+  /** Directory of this run (agents' cwd, writers' git repo, .maestro); relative to ctx.cwd. */
+  cwd?: string | null;
 }
 
 export type WorkflowOutcome = { ok: true; result: unknown } | { ok: false; error: string };
@@ -114,8 +118,11 @@ export function maestroToolDefinition(custom: CustomToolListing[] = [], loadErro
         resumeFromRunId: nullableString(
           'runId of an earlier run to resume; unchanged agent() calls are cached.',
         ),
+        cwd: nullableString(
+          "Directory the run works in (absolute, or relative to the server's working directory); null for the server's own.",
+        ),
       },
-      required: ['script', 'scriptPath', 'name', 'args', 'resumeFromRunId'],
+      required: ['script', 'scriptPath', 'name', 'args', 'resumeFromRunId', 'cwd'],
       additionalProperties: false,
     },
   } as Anthropic.Tool;
@@ -177,8 +184,17 @@ export async function handleWorkflowToolCall(
     args = inp.args;
   }
 
-  const cwd = ctx.cwd ?? process.cwd();
-  const stateDir = ctx.stateDir ?? path.join(cwd, '.maestro');
+  // A cwd in the input moves the whole run (agents, writers' repo, .maestro) to that directory; the
+  // context's directories then resolve against it the way run() resolves them against its cwd.
+  if (inp.cwd !== undefined && inp.cwd !== null && typeof inp.cwd !== 'string')
+    return fail('cwd must be a string or null');
+  const serverCwd = path.resolve(ctx.cwd ?? process.cwd());
+  const cwd = present(inp.cwd) ? path.resolve(serverCwd, inp.cwd) : serverCwd;
+  if (cwd !== serverCwd) {
+    const stat = await fs.stat(cwd).catch(() => null);
+    if (!stat?.isDirectory()) return fail(`cwd is not a directory: ${cwd}`);
+  }
+  const stateDir = path.resolve(cwd, ctx.stateDir ?? '.maestro');
   let script: string | undefined;
   try {
     if (present(inp.script)) script = inp.script;
@@ -186,7 +202,7 @@ export async function handleWorkflowToolCall(
     else if (present(inp.name)) {
       if (!/^[A-Za-z0-9._-]+$/.test(inp.name) || inp.name.startsWith('.'))
         return fail(`invalid workflow name: ${inp.name}`);
-      const dir = ctx.workflowsDir ?? path.join(stateDir, 'workflows');
+      const dir = path.resolve(cwd, ctx.workflowsDir ?? path.join(stateDir, 'workflows'));
       script = await fs.readFile(path.join(dir, `${inp.name}.js`), 'utf8');
     }
   } catch (err) {

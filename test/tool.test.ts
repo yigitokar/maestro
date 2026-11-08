@@ -85,7 +85,7 @@ describe('maestroToolDefinition', () => {
     expect(def.input_schema.type).toBe('object');
     assertStrict(def.input_schema);
     expect(Object.keys(def.input_schema.properties).sort()).toEqual(
-      ['args', 'name', 'resumeFromRunId', 'script', 'scriptPath'].sort(),
+      ['args', 'cwd', 'name', 'resumeFromRunId', 'script', 'scriptPath'].sort(),
     );
     // Policy text lives in the description: when to use, when not, meta, inline script.
     expect(def.description).toMatch(/Do not use it/);

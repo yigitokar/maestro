@@ -9,6 +9,8 @@ Kontrol akışı kodda, muhakeme ajanda. Script'i sen yazarsın, çalıştıran 
 
 Script'i Workflow tool'una `script` alanında inline ver (`scriptPath` ya da kayıtlı `name` de olur). Tool hemen `runId` döner; sonuç bitince gelir.
 
+Run, MCP sunucusunun dizininde (oturumun açıldığı klasörde) çalışır. İş başka bir repo üzerindeyse `cwd` ile o dizini ver. Tercihen o reponun bir worktree'sini ver, birinin kullandığı ana checkout'u değil. Ajanlar orada çalışır, yazanlar oranın git reposundan branch açar, `.maestro/` de oraya yazılır. Resume ederken aynı `cwd`'yi ver.
+
 ## Meta bloğu
 
 Her script `export const meta = {...}` ile başlar. **Saf literal** olmalı: değişken, fonksiyon çağrısı, spread, ifadeli template string yok.
