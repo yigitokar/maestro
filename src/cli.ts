@@ -19,7 +19,7 @@ import { AnthropicRunner } from './runner.js';
 import { FakeRunner } from './testing/fake-runner.js';
 import type { AgentRunner, Entry } from './types.js';
 import { cacheReadRatio, totalInput } from './usage.js';
-import { exportVizHtml, serveViz } from './viz.js';
+import { exportVizHtml, exportVizWidget, serveViz } from './viz.js';
 import { run } from './workflow.js';
 
 export const USAGE = `usage:
@@ -31,9 +31,10 @@ export const USAGE = `usage:
   maestro show <runId> [label] [--cwd <dir>] [--state-dir <dir>]
                                              list a run's agents; with a label (or key prefix), print
                                              that agent's trace: tool calls, final text, result, error
-  maestro viz <runId> [--cwd <dir>] [--state-dir <dir>] [--port <n>] [--no-open] [--out <file.html>]
+  maestro viz <runId> [--cwd <dir>] [--state-dir <dir>] [--port <n>] [--no-open] [--out <file.html>] [--widget]
                                              open a run's timeline in the browser; it follows a live run
-                                             (--out writes the page as one self-contained HTML file instead)
+                                             (--out writes the page as one self-contained HTML file instead;
+                                             --widget prints a snapshot fragment for a chat's inline widget tool)
   maestro mcp [--cwd <dir>] [--state-dir <dir>] [--tools-dir <dir>] [--budget <500k>] [--concurrency <n>]
               [--model <model>] [--runner <anthropic|codex>] [--dry-run]
                                              serve the Workflow tool over stdio as an MCP server
@@ -79,7 +80,7 @@ const VALUE_FLAGS = new Set([
   'out',
   'port',
 ]);
-const BOOL_FLAGS = new Set(['dry-run', 'delete', 'force', 'help', 'no-open']);
+const BOOL_FLAGS = new Set(['dry-run', 'delete', 'force', 'help', 'no-open', 'widget']);
 
 function parseArgv(argv: string[]): Parsed {
   const positionals: string[] = [];
@@ -369,6 +370,16 @@ async function vizCommand(p: Parsed, io: CliIO): Promise<number> {
     return 1;
   }
   const out = str(p, 'out');
+  if (p.flags.has('widget')) {
+    const fragment = await exportVizWidget(runDir, runId);
+    if (out === undefined) io.stdout.write(fragment);
+    else {
+      const file = path.resolve(io.cwd, out);
+      await writeFile(file, fragment);
+      io.stdout.write(`${file}\n`);
+    }
+    return 0;
+  }
   if (out !== undefined) {
     const file = path.resolve(io.cwd, out);
     await writeFile(file, await exportVizHtml(runDir, runId));

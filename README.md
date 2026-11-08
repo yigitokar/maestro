@@ -227,7 +227,7 @@ maestro run <script.js> [--args <json>] [--args-file f] [--resume <runId>] [--bu
                         [--runner <anthropic|codex>]
 maestro gc [--delete] [--force] [--cwd d]
 maestro show <runId> [label] [--cwd d] [--state-dir d]
-maestro viz <runId> [--cwd d] [--state-dir d] [--port n] [--no-open] [--out f.html]
+maestro viz <runId> [--cwd d] [--state-dir d] [--port n] [--no-open] [--out f.html] [--widget]
 maestro mcp [--cwd d] [--state-dir d] [--tools-dir d] [--budget 500k] [--concurrency n] [--model m]
             [--runner <anthropic|codex>] [--dry-run]
 ```
@@ -261,6 +261,7 @@ Sayfa dosyaları saniyede bir okur. Bu yüzden başka bir süreçte koşan bir r
 - `--out rapor.html` sunucu açmadan tek bir HTML dosyası yazar: bütün olaylar ve ajan ayrıntıları gömülüdür, internetsiz açılır, paylaşılabilir.
 - `--port` sabit bir port seçer, `--no-open` tarayıcıyı açmaz.
 - `events.jsonl`'i olmayan eski run'larda yalnızca journal satırları listelenir.
+- `--widget`, son denemenin anlık görüntüsünü bir sohbet arayüzünün satır içi widget aracı için HTML parçası olarak stdout'a basar (Claude masaüstü uygulamasında `show_widget`). Parça şunlara uyar: doctype, `html` ve `body` yok; arka plan saydam; host'un `--text-*`, `--surface-*` ve `--border*` değişkenleri; 400/500 ağırlık; 11px altı yazı yok; sabit konum ve iç kaydırma yok. Çubuğa tıklayınca bekleme ve çalışma süresi, token'lar, hata ve sonucun ilk 280 karakteri görünür. Canlı değildir, veri gömülüdür. En çok 400 ajan çizilir; fazlası yazıyla belirtilir. Claude Code'da skill, run bitince bu parçayı sohbette göstermeyi söyler.
 
 ## Örnekler
 

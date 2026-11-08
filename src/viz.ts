@@ -11,6 +11,7 @@ import { EVENT_LOG_FILE, type EventLogLine } from './event-log.js';
 import { readEntries, readTrace } from './journal.js';
 import type { Entry, EntryStatus, Trace, Usage } from './types.js';
 import { vizPage } from './viz-page.js';
+import { vizWidget, widgetModel } from './viz-widget.js';
 
 /** A journal row without its result, for the timeline (sent on every poll, so kept small). */
 export interface VizEntrySummary {
@@ -153,6 +154,22 @@ export async function exportVizHtml(runDir: string, runId: string): Promise<stri
   for (const row of rows) details[`${row.key}|${row.status}`] = await detail(runDir, row);
   for (const row of rows) details[row.key] = details[`${row.key}|${row.status}`]!;
   return vizPage({ mode: 'static', runId, snapshot, details });
+}
+
+/** The latest attempt as a fragment for a chat host's inline widget tool (see viz-widget.ts). */
+export async function exportVizWidget(runDir: string, runId: string): Promise<string> {
+  const snapshot = await readSnapshot(runDir, runId);
+  const previews: Record<string, { result: string; error?: string }> = {};
+  for (const row of await readRows(runDir)) {
+    const d = await detail(runDir, row);
+    const v = {
+      result: row.status === 'ok' ? d.result : '',
+      ...(d.error !== undefined ? { error: d.error } : {}),
+    };
+    previews[`${row.key}|${row.status}`] = v;
+    previews[row.key] = v;
+  }
+  return vizWidget(widgetModel(snapshot, previews));
 }
 
 export interface VizServer {

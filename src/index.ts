@@ -59,6 +59,8 @@ export {
 export { buildTools, READ_TOOL_NAMES, WRITE_TOOL_NAMES } from './tools.js';
 export * from './types.js';
 export type { VizEntryDetail, VizEntrySummary, VizServer, VizSnapshot } from './viz.js';
-export { exportVizHtml, readEventLines, readSnapshot, serveViz } from './viz.js';
+export { exportVizHtml, exportVizWidget, readEventLines, readSnapshot, serveViz } from './viz.js';
+export type { WidgetAgent, WidgetModel } from './viz-widget.js';
+export { vizWidget, widgetModel } from './viz-widget.js';
 export type { RunHandle, RunOptions } from './workflow.js';
 export { run } from './workflow.js';
