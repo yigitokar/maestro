@@ -42,7 +42,8 @@ if (!reportOnly) {
   if (!existsSync(path.join(benchDir, 'node_modules'))) {
     die(`the judge is not installed: run "npm ci" in ${benchDir} first`);
   }
-  // The judge's model registry may not list the model yet; this is the configuration its docs give.
+  // The judge's model registry may not list the model yet; this is the configuration its docs give,
+  // plus forceAdaptiveThinking. It carries no price, so the judge's own cost is not reported in dollars.
   const judgeConfig = path.join(outDir, 'judge-config');
   mkdirSync(judgeConfig, { recursive: true });
   writeFileSync(
@@ -52,7 +53,17 @@ if (!reportOnly) {
         providers: {
           [provider]: {
             apiKey: 'ANTHROPIC_API_KEY',
-            models: [{ id: model, reasoning: true, contextWindow: 1000000, maxTokens: 64000 }],
+            // forceAdaptiveThinking: without it the judge's SDK sends thinking.type "enabled", which
+            // the API rejects for this model, and every PR fails with "matcher returned invalid JSON".
+            models: [
+              {
+                id: model,
+                reasoning: true,
+                contextWindow: 1000000,
+                maxTokens: 64000,
+                compat: { forceAdaptiveThinking: true },
+              },
+            ],
           },
         },
       },
