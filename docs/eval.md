@@ -307,6 +307,8 @@ Kullanıcının zamanı: etiket onayı yok (karar 8), hakem kontrolü için 1–
 
 `eval/data/` `.gitignore`'dadır. Hiçbiri pakete (`files`) girmez.
 
+**Güncelleme:** kol koşusu, hakem ve rapor ReviewBench üzerinde yazıldı (bölüm 10); aşağıdaki not lula seti için geçerlidir.
+
 **Durum (2026-11-14):** set hazırlığı (madencilik, eleme, doğrulama, set seçimi) yazıldı ve koştu. Kolları koşturan, puanlayan ve raporlayan beş dosya henüz yazılmadı; bölüm 3-6 onları planlandığı haliyle anlatır, A/B'nin kendisi daha koşmadı.
 
 Sıra:
@@ -332,3 +334,45 @@ Sıra:
 6. **Madencilik:** geniş fix deseni ve aynı gün hotfix'ler (bölüm 2.1, 2.2).
 7. **Pilot:** ters-fix `2a877f1a` ve setin dışındaki 2 temiz PR (bölüm 5).
 8. **Etiket onayı:** insan yerine Opus 5.5 `high` ile doğrulama (bölüm 2.3), çünkü kullanıcı adayları okumaya zaman ayıramadı. Etiketler böylece iki modelin süzgecinden geçer: eleme Sonnet, doğrulama Opus. Rapor bunu sınır olarak yazar. Hakem de Opus'tur, ama hakemin işi bulguyu etiketle eşleştirmektir, etiketin doğruluğuna karar vermek değil.
+
+## 10. ReviewBench ile A/B (2026-11-14)
+
+Ana ölçüm lula seti yerine açık bir benchmark üzerinde yapılır: [ReviewBench](https://github.com/review-bench/ReviewBench) (GitHub, 219 PR, 187 repo, 19 dil; 25 PR'lık hazır bir test seti). Lula seti küçük bir private kontrol olarak kalır. Gerekçe: doğru cevaplar (golden set) bizden bağımsızdır ve kıdemli mühendislerle %96,6 uyumludur, hakemi hazırdır, sonuç başkalarının rakamlarıyla yan yana konabilir. Bölüm 2'deki madencilik, eleme ve doğrulama adımları bu ölçüm için gerekmez.
+
+**Kollar.** Model, salt-okur araçlar ve çıktı şeması üçünde de aynıdır.
+
+| Kol | Script | Ne ölçer |
+|---|---|---|
+| A | `eval/workflows/single-review.js` | tek ajan |
+| B | `examples/workflows/review-changes.js`, değişmeden | üç bulucu, bulgu başına üç skeptik, sentez |
+| C | `eval/workflows/finders-only.js` | B'nin üç bulucusu, skeptik ve sentez yok |
+
+C bir ablasyondur: B yaklaşık 15 kat pahalıdır, bu yüzden B ile A arasındaki farkın üç ayrı bakıştan mı skeptiklerden mi geldiğini C gösterir.
+
+**Sızıntı.** Golden set'in bir kısmı PR'dan sonraki düzeltme commit'lerinden çıkarılmıştır. `eval/reviewbench/prepare.ts` her PR'ı yalnızca head ve base commit'lerinin atalarını taşıyan, remote'u ve ref'i olmayan taze bir repoya kurar (bölüm 3'teki kural). Ajanların ağ erişimi yoktur. PR'lar açık olduğu için model onları eğitimde görmüş olabilir; iki kol aynı modeli kullandığından bu, kollar arasındaki farkı değil mutlak skorları etkiler.
+
+**Koşu.**
+
+```bash
+git clone https://github.com/review-bench/ReviewBench eval/data/reviewbench
+```
+
+```bash
+npm run build && node eval/reviewbench/run.js --out eval/data/rb/pilot --limit 3 --repeats 1
+```
+
+Çalıştırıcı her PR × kol × tekrarı ayrı bir Maestro run'ı olarak, sabit tohumla karıştırılmış sırada koşar ve her hücrenin bulgularını `findings/<kol>-r<tekrar>/<pr>.json` dosyasına benchmark'ın hakem girdisi biçiminde yazar. Biten hücreler `results.jsonl`'dadır ve aynı komut kaldığı yerden devam eder. `--max-dollars` (varsayılan 50) o dizinin harcaması o tutara ulaşınca yeni hücre başlatmaz. `--dry-run` ağa çıkmaz. Hiç inceleme döndürmeyen bir hücre (ajan null) başarısız yazılır ve bulgu dosyası almaz, böylece hakem bozuk bir koşuyu "inceledi, bir şey bulmadı" diye puanlamaz.
+
+**Puanlama.**
+
+```bash
+node eval/reviewbench/judge.js --out eval/data/rb/pilot
+```
+
+Benchmark'ın kendi hakemini (`npm run judge`, önce checkout'ta bir kez `npm ci`) her kol ve tekrar için koşar ve `report.md` yazar: kol başına grounded precision, recall ve F1 (tekrarların ortalaması ve en düşük–en yüksek F1), high ciddiyetli ve correctness/security kategorili bulgularda recall, PR başına bulgu sayısı ve dolar, başarısız hücreler; ayrıca PR başına eşleştirilmiş recall karşılaştırması. Hakem modeli varsayılan olarak liderlik tablosununkidir (`claude-sonnet-5`). Golden set değiştirilmez (`--ingest` verilmez).
+
+**Bilinen sınır.** Golden set yalnızca hata değil, test, dokümantasyon ve bakım bulguları da içerir (test setinde 352 gerçek bulgu). Üç kol da yalnızca mantık, güvenlik ve veri kaybı arar, bu yüzden toplam recall üçünde de düşük çıkar; karşılaştırma için high ciddiyet ve correctness/security satırları daha anlamlıdır.
+
+**Maliyet tahmini (ölçülmedi).** B hücresi ~$3 (README'deki tek ölçümden), A ~$0,20, C ~$0,30, hakem hücre başına ~$0,10. 25 PR × 3 kol × 3 tekrar ≈ $300; 3 PR'lık tek tekrarlı pilot ≈ $12. Pilot gerçek birim maliyeti verir.
+
+**Durum.** Kod yazıldı ve kuru koşuda denendi; gerçek API ile hiçbir hücre koşmadı, hakem hiç çalıştırılmadı.
