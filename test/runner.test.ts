@@ -649,6 +649,21 @@ describe('systemPrompt and schema helpers', () => {
     expect(validateValue(closed, { a: 'x', toString: 1 }).join()).toContain('additional property');
   });
 
+  it('a node with anyOf and oneOf keeps the anyOf and states the oneOf, in either key order', () => {
+    const any = [{ type: 'string' }, { type: 'number' }];
+    const one = [{ type: 'number' }];
+    for (const node of [
+      { anyOf: any, oneOf: one },
+      { oneOf: one, anyOf: any },
+    ]) {
+      const out = toStructuredOutputSchema(node) as { anyOf: unknown; oneOf?: unknown; description: string };
+      expect(out.anyOf).toEqual(any);
+      expect(out.oneOf).toBeUndefined();
+      expect(out.description).toContain('oneOf: [{"type":"number"}]');
+    }
+    expect((toStructuredOutputSchema({ oneOf: one }) as { anyOf: unknown }).anyOf).toEqual(one);
+  });
+
   it('validateValue checks anyOf and oneOf when a schema has both', () => {
     const schema = { anyOf: [{ type: 'string' }, { type: 'number' }], oneOf: [{ type: 'number' }] };
     expect(validateValue(schema, 1)).toEqual([]);

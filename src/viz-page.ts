@@ -325,6 +325,9 @@ const SCRIPT = `
   function buildAttempts(lines) {
     var attempts = [];
     var cur = null;
+    // How many live rows each "key|status" has written so far: the nth live agent_end with a key and
+    // status wrote the nth journal row with them, across attempts.
+    var written = {};
     for (var i = 0; i < lines.length; i++) {
       var l = lines[i];
       if (l.type === 'run_start') {
@@ -334,7 +337,7 @@ const SCRIPT = `
           cur.end = { t: cur.last, ok: false, error: 'Yarıda kaldı: bu deneme bitiş kaydı yazmadan kesildi.' };
           for (var k = 0; k < cur.order.length; k++) {
             var open = cur.agents[cur.order[k]];
-            if (open.end === null || open.end === undefined) { open.end = cur.last; open.status = 'skipped'; }
+            if (open.end === null || open.end === undefined) { open.end = cur.last; open.status = 'skipped'; open.noRow = true; }
           }
         }
         cur = newAttempt(l, l.t);
@@ -368,6 +371,15 @@ const SCRIPT = `
           noteLane(a, l.group, l.phase).agents.push(e);
         }
         e.end = l.t; e.status = l.status; e.cached = !!l.cached; e.usage = l.usage || null;
+        if (e.cached) {
+          // A cache hit writes no row: it shows the latest ok row written before it.
+          var prior = written[l.key + '|ok'] || 0;
+          e.nth = prior > 0 ? prior - 1 : null;
+        } else {
+          var name = l.key + '|' + l.status;
+          e.nth = written[name] || 0;
+          written[name] = e.nth + 1;
+        }
       } else if (l.type === 'phase') {
         noteLane(a, l.group, l.title);
       } else if (l.type === 'log') {
@@ -777,14 +789,17 @@ const SCRIPT = `
   function pre(text) { return el('pre', null, text); }
 
   function detailFor(g) {
-    var key = g.key + '|' + g.status;
-    if (!LIVE) return state.details[key] || state.details[g.key] || null;
+    if (g.noRow) return { missing: true };
+    var base = g.key + '|' + g.status;
+    var hasNth = g.nth !== null && g.nth !== undefined;
+    var key = hasNth ? base + '|' + g.nth : base;
+    if (!LIVE) return state.details[key] || state.details[base] || state.details[g.key] || null;
     var c = state.detailCache[key];
     // A missing row is asked for again after a while: the journal row lands after the agent_end event.
     if (c && !(c.missing && Date.now() - c.at > 3000)) return c;
     if (!state.detailCache['pending:' + key]) {
       state.detailCache['pending:' + key] = true;
-      fetch('api/entry?key=' + encodeURIComponent(g.key) + '&status=' + encodeURIComponent(g.status))
+      fetch('api/entry?key=' + encodeURIComponent(g.key) + '&status=' + encodeURIComponent(g.status) + (hasNth ? '&nth=' + g.nth : ''))
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (d) {
           delete state.detailCache['pending:' + key];

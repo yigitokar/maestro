@@ -3,7 +3,7 @@
 // process (an MCP server, a terminal `maestro run`) is executing; exportVizHtml() writes the same page
 // as one self-contained file with the data embedded. The server binds to 127.0.0.1 only.
 
-import { readFile } from 'node:fs/promises';
+import { type FileHandle, open, readFile, stat } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
@@ -53,16 +53,27 @@ export async function readEventLines(
   runDir: string,
   from = 0,
 ): Promise<{ lines: EventLogLine[]; offset: number }> {
-  let data: Buffer;
+  // Only the bytes after `from` are read: a live page polls every second and the file only grows.
+  let fh: FileHandle;
   try {
-    data = await readFile(join(runDir, EVENT_LOG_FILE));
+    fh = await open(join(runDir, EVENT_LOG_FILE), 'r');
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { lines: [], offset: 0 };
     throw err;
   }
-  const start = from > 0 && from <= data.length ? from : 0;
+  let data: Buffer;
+  let start: number;
+  try {
+    const { size } = await fh.stat();
+    start = from > 0 && from <= size ? from : 0;
+    data = Buffer.alloc(size - start);
+    const { bytesRead } = await fh.read(data, 0, data.length, start);
+    data = data.subarray(0, bytesRead);
+  } finally {
+    await fh.close();
+  }
   const lines: EventLogLine[] = [];
-  let pos = start;
+  let pos = 0;
   while (pos < data.length) {
     const nl = data.indexOf(0x0a, pos);
     if (nl === -1) break;
@@ -74,7 +85,7 @@ export async function readEventLines(
     }
     pos = nl + 1;
   }
-  return { lines, offset: pos };
+  return { lines, offset: start + pos };
 }
 
 function summary(row: Entry): VizEntrySummary {
@@ -85,9 +96,17 @@ function summary(row: Entry): VizEntrySummary {
   return s;
 }
 
+/** Journal rows per run dir, kept while the file's size and mtime stay the same (it is append-only). */
+const rowCache = new Map<string, { size: number; mtimeMs: number; rows: Entry[] }>();
+
 async function readRows(runDir: string): Promise<Entry[]> {
   try {
-    return await readEntries(runDir);
+    const { size, mtimeMs } = await stat(join(runDir, 'journal.jsonl'));
+    const hit = rowCache.get(runDir);
+    if (hit && hit.size === size && hit.mtimeMs === mtimeMs) return hit.rows;
+    const rows = await readEntries(runDir);
+    rowCache.set(runDir, { size, mtimeMs, rows });
+    return rows;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
     throw err;
@@ -100,16 +119,21 @@ export async function readSnapshot(runDir: string, runId: string, from = 0): Pro
 }
 
 /**
- * The row behind an agent: the last row with this key, preferring one with the given status (a key
- * re-run on resume has several rows).
+ * The row behind an agent. A key re-run on resume has several rows: `nth` picks the nth row (0-based)
+ * with this key and status, which is the row the nth live agent_end with that key and status wrote.
+ * Without `nth`, or when there is no such row, the last row with the key, preferring the status.
  */
-function pickRow(rows: Entry[], key: string, status?: string): Entry | undefined {
+function pickRow(rows: Entry[], key: string, status?: string, nth?: number): Entry | undefined {
   let any: Entry | undefined;
   let matching: Entry | undefined;
+  let seen = 0;
   for (const row of rows) {
     if (row.key !== key) continue;
     any = row;
-    if (status === undefined || row.status === status) matching = row;
+    if (status === undefined || row.status === status) {
+      matching = row;
+      if (status !== undefined && nth === seen++) return row;
+    }
   }
   return matching ?? any;
 }
@@ -140,8 +164,9 @@ export async function readEntryDetail(
   runDir: string,
   key: string,
   status?: string,
+  nth?: number,
 ): Promise<VizEntryDetail | undefined> {
-  const row = pickRow(await readRows(runDir), key, status);
+  const row = pickRow(await readRows(runDir), key, status, nth);
   return row ? detail(runDir, row) : undefined;
 }
 
@@ -150,8 +175,16 @@ export async function exportVizHtml(runDir: string, runId: string): Promise<stri
   const snapshot = await readSnapshot(runDir, runId);
   const rows = await readRows(runDir);
   const details: Record<string, VizEntryDetail> = {};
-  // Last row per key, the one pickRow would return without a status.
-  for (const row of rows) details[`${row.key}|${row.status}`] = await detail(runDir, row);
+  // Three names per row, as pickRow resolves them: "key|status|nth" for the attempt that wrote it, and
+  // "key|status" and "key" for the last such row.
+  const seen = new Map<string, number>();
+  for (const row of rows) {
+    const name = `${row.key}|${row.status}`;
+    const n = seen.get(name) ?? 0;
+    seen.set(name, n + 1);
+    details[name] = await detail(runDir, row);
+    details[`${name}|${n}`] = details[name];
+  }
   for (const row of rows) details[row.key] = details[`${row.key}|${row.status}`]!;
   return vizPage({ mode: 'static', runId, snapshot, details });
 }
@@ -214,7 +247,9 @@ export async function serveViz(opts: {
       const status = url.searchParams.get('status') ?? undefined;
       if (!KEY.test(key) || (status !== undefined && !STATUSES.has(status)))
         return send(res, 400, 'text/plain; charset=utf-8', 'bad key');
-      const d = await readEntryDetail(runDir, key, status);
+      const nthParam = url.searchParams.get('nth');
+      const nth = nthParam !== null && /^\d{1,6}$/.test(nthParam) ? Number(nthParam) : undefined;
+      const d = await readEntryDetail(runDir, key, status, nth);
       if (!d) return send(res, 404, 'text/plain; charset=utf-8', 'no row yet');
       return send(res, 200, 'application/json; charset=utf-8', JSON.stringify(d));
     }
