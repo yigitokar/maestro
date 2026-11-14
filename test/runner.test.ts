@@ -348,9 +348,18 @@ describe('AnthropicRunner: tool loop', () => {
       reply([toolUse('t1', 'read_file', { path: 'notes.txt', offset: null, limit: null })], 'tool_use'),
       reply([text('never')], 'end_turn'),
     ]);
-    const { req } = makeReq({ signal: ac.signal, onUsage: () => ac.abort() });
+    const usages: Usage[] = [];
+    const { req } = makeReq({
+      signal: ac.signal,
+      onUsage: (u) => {
+        usages.push(u);
+        ac.abort(); // budget exceeded on this turn
+      },
+    });
     const res = await runnerFor(client).run(req);
     expect(res).toMatchObject({ result: null, status: 'skipped', turns: 1 });
+    // Usage is reported before the abort check: the aborting turn is still counted.
+    expect(usages).toEqual([{ input_tokens: 10, output_tokens: 5 }]);
     expect(res.usage.output_tokens).toBe(5);
     expect(bodies).toHaveLength(1);
   });
@@ -365,10 +374,10 @@ describe('AnthropicRunner: tool loop', () => {
             sawAbort = true;
             reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
           });
+          ac.abort(); // the request is in flight: its fetch is pending on the signal
         }),
     ]);
     const { req } = makeReq({ signal: ac.signal });
-    setTimeout(() => ac.abort(), 20);
     const res = await runnerFor(client).run(req);
     expect(res).toMatchObject({ result: null, status: 'skipped', turns: 0 });
     expect(sawAbort).toBe(true);
@@ -389,8 +398,8 @@ describe('AnthropicRunner: tool loop', () => {
     const tools = buildTools(['read_file', 'write_file'], true);
     const runner = runnerFor(client);
     await expect(runner.run(makeReq({ tools, isolated: false }).req)).rejects.toThrowError(MaestroError);
-    await runner.run(makeReq({ tools, isolated: false }).req).catch((e) => {
-      expect(e.code).toBe('write_tool_without_isolation');
+    await expect(runner.run(makeReq({ tools, isolated: false }).req)).rejects.toMatchObject({
+      code: 'write_tool_without_isolation',
     });
     expect(bodies).toHaveLength(0);
     const ok = await runner.run(makeReq({ tools, isolated: true }).req);
@@ -590,7 +599,8 @@ describe('AnthropicRunner: structured final (stage 2)', () => {
 describe('systemPrompt and schema helpers', () => {
   it('contains the return contract and CLAUDE.md; writer gets the commit instruction', async () => {
     const reader = systemPrompt({ cwd, writer: false });
-    expect(reader).toContain('Son mesajın bu çağrının dönüş değeridir');
+    expect(reader).toContain('Son mesajın bu çağrının dönüş değeridir. Açıklama, selamlama, özet ekleme.');
+    expect(reader).toContain(RETURN_CONTRACT);
     expect(reader).toContain('return value');
     expect(reader).toContain('Always answer in lowercase.');
     expect(reader).not.toContain('git_commit');

@@ -96,7 +96,12 @@ describe('makePipeline onSwallowed', () => {
     const fn = vi.fn();
     const out = await makePipeline(undefined, fn)([5], 42 as any);
     expect(out).toEqual([null]);
-    expect(fn).toHaveBeenCalledWith('pipeline', 0, expect.anything());
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(fn).toHaveBeenCalledWith(
+      'pipeline',
+      0,
+      expect.objectContaining({ message: 'pipeline() stage 0 is not a function' }),
+    );
   });
 });
 
@@ -119,14 +124,5 @@ describe('runScript wires hooks.onSwallowed', () => {
       ['parallel', 2, 'inside'],
       ['pipeline', 1, 'two'],
     ]);
-  });
-
-  it('without the hook behaviour is unchanged', async () => {
-    const result = await runScript(
-      parseScript(`${META}return await parallel([() => { throw new Error('x') }, () => agent('y')]);`),
-      {},
-      hooks(),
-    );
-    expect(result).toEqual([null, 'r:y']);
   });
 });

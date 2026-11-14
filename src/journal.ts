@@ -198,7 +198,8 @@ export class Journal {
   get(key: string): Entry | undefined {
     const row = this.latestOk.get(key);
     if (!row) return undefined;
-    if (row.blob !== true) return { ...row };
+    // A deep copy: the caller's edits to a result must not reach the row later reads are served from.
+    if (row.blob !== true) return structuredClone(row);
     const blobPath = this.blobPath(key);
     let result: unknown;
     try {
@@ -221,7 +222,7 @@ export class Journal {
   }
 
   entries(): readonly Entry[] {
-    return this.rows.slice();
+    return this.rows.map((row) => structuredClone(row));
   }
 
   async close(): Promise<void> {
@@ -250,7 +251,10 @@ export class Journal {
         await writeDurable(traceBlobPath(this.blobDir, entry.key), traceJson);
         row = { ...row, trace: { blob: entry.key }, traceBlob: true };
       }
-      buf = Buffer.from(`${JSON.stringify(row)}\n`);
+      const line = JSON.stringify(row);
+      buf = Buffer.from(`${line}\n`);
+      // Keep what went to disk, not the caller's object: a resume reads back exactly this.
+      row = JSON.parse(line) as Entry;
       const { bytesWritten } = await fh.write(buf);
       if (bytesWritten !== buf.length) {
         throw new Error(`short write (${bytesWritten}/${buf.length} bytes)`);

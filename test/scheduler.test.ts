@@ -1,4 +1,5 @@
 // Scheduler tests (spec 3.4): slot bound, FIFO, abort handling, agent cap, item limit, nested no-deadlock.
+import { getEventListeners } from 'node:events';
 import { describe, expect, it } from 'vitest';
 import { defaultConcurrency, Scheduler } from '../src/scheduler.js';
 import { abortableSleep } from '../src/testing/fake-runner.js';
@@ -220,6 +221,9 @@ describe('Scheduler.withSlot', () => {
     await Promise.all(Array.from({ length: 10 }, () => s.withSlot(() => sleep(1), ac.signal)));
     expect(added.length).toBe(8);
     expect(removed.length).toBe(8);
+    expect(getEventListeners(ac.signal, 'abort')).toHaveLength(0);
+    expect(s.active()).toBe(0);
+    expect(s.queued()).toBe(0);
   });
 });
 
@@ -237,6 +241,9 @@ describe('Scheduler.admit', () => {
     }
     expect(caught).toBeInstanceOf(MaestroError);
     expect((caught as MaestroError).code).toBe('agent_cap');
+    expect(s.admitted()).toBe(1000);
+    // A refused admit does not consume the counter and keeps refusing.
+    expect(() => s.admit()).toThrow(expect.objectContaining({ code: 'agent_cap' }));
     expect(s.admitted()).toBe(1000);
   });
 
@@ -260,7 +267,9 @@ describe('Scheduler.checkItems', () => {
   it('allows 4096 items and rejects 4097 with item_limit', () => {
     const s = new Scheduler({ concurrency: 1 });
     expect(() => s.checkItems(4096, 'parallel')).not.toThrow();
+    expect(() => s.checkItems(4096, 'pipeline')).not.toThrow();
     expect(() => s.checkItems(0, 'pipeline')).not.toThrow();
+    expect(() => s.checkItems(0, 'parallel')).not.toThrow();
     for (const where of ['parallel', 'pipeline'] as const) {
       let caught: unknown;
       try {
