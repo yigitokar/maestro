@@ -61,7 +61,7 @@ export interface RunOptions {
 
 export interface RunHandle {
   runId: string;
-  /** <stateDir>/runs/<runId>/ holding script.js, args.json, journal.jsonl, blobs/. */
+  /** <stateDir>/runs/<runId>/ holding script.js, args.json, run.json, journal.jsonl, events.jsonl, blobs/. */
   runDir: string;
   /** The script's return value; rejects on setup error, script throw or stop(). */
   promise: Promise<unknown>;
@@ -501,6 +501,23 @@ export function run(opts: RunOptions): RunHandle {
     try {
       await writeFile(scriptFile, source);
       await writeFile(argsFile, `${JSON.stringify(args)}\n`);
+      // The cache key covers the prompt and the agent's own opts, not the run's default model or its
+      // runner (changing the key would orphan every existing journal). So a resume that changes either
+      // says so: its cache hits were produced by the earlier configuration.
+      const configFile = path.join(runDir, 'run.json');
+      const config = { model, runner: getRunner().constructor.name };
+      if (resume) {
+        const before = await readFile(configFile, 'utf8').then(JSON.parse, () => null);
+        for (const k of ['model', 'runner'] as const) {
+          if (typeof before?.[k] === 'string' && before[k] !== config[k]) {
+            emitLog(
+              `resume changes the ${k} from ${before[k]} to ${config[k]}: journaled results came from ` +
+                `${before[k]} and are reused as they are; start a new run to redo them`,
+            );
+          }
+        }
+      }
+      await writeFile(configFile, `${JSON.stringify(config)}\n`);
 
       scheduler = new Scheduler({
         concurrency: opts.concurrency ?? defaultConcurrency(),

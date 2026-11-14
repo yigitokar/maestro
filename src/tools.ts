@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { ToolRegistry } from './custom-tools.js';
-import { childGitEnv } from './git-env.js';
+import { agentCommandEnv } from './git-env.js';
 import { MaestroError, type ToolDef } from './types.js';
 
 export const READ_TOOL_NAMES = ['read_file', 'grep', 'glob', 'bash'] as const;
@@ -280,6 +280,33 @@ const FIND_FORBIDDEN = new Set([
 const RG_FORBIDDEN = new Set(['--pre', '--pre-glob', '--hostname-bin']);
 const GIT_SUBCOMMANDS = new Set(['log', 'diff', 'status', 'show']);
 
+/** rg flags whose next argument is a pattern, not a path. */
+const RG_PATTERN_FLAGS = new Set(['-e', '--regexp']);
+
+/**
+ * Like read_file, the read-only commands stay inside cwd: every argument that can name a path (and the
+ * value of a `--flag=value`) is resolved against cwd and refused when it leaves it. `skip` holds the
+ * indexes of arguments that are patterns. Symlinks are not followed, as in resolveInside.
+ */
+function confineArgs(args: string[], cwd: string, skip: ReadonlySet<number> = new Set()): void {
+  for (const [i, a] of args.entries()) {
+    if (skip.has(i)) continue;
+    if (!a.startsWith('-')) resolveInside(cwd, a);
+    else if (a.startsWith('--') && a.includes('=')) resolveInside(cwd, a.slice(a.indexOf('=') + 1));
+  }
+}
+
+/** Indexes of rg's pattern arguments: the values of -e/--regexp, or else the first positional. */
+function rgPatternArgs(args: string[]): Set<number> {
+  const patterns = new Set<number>();
+  for (const [i, a] of args.entries()) if (RG_PATTERN_FLAGS.has(a)) patterns.add(i + 1);
+  if (patterns.size === 0 && !args.some((a) => a.startsWith('--regexp=') || a === '--files')) {
+    const first = args.findIndex((a) => !a.startsWith('-'));
+    if (first !== -1) patterns.add(first);
+  }
+  return patterns;
+}
+
 /** Validate a read-only command line; returns argv or throws "not allowed: …". */
 export function checkReadOnlyCommand(command: string, cwd: string): string[] {
   const argv = shellWords(command.trim());
@@ -288,15 +315,18 @@ export function checkReadOnlyCommand(command: string, cwd: string): string[] {
   switch (cmd) {
     case 'ls':
     case 'cat':
+      confineArgs(args, cwd);
       return argv;
     case 'find':
       for (const a of args) if (FIND_FORBIDDEN.has(a)) throw new Error(`not allowed: find ${a}`);
+      confineArgs(args, cwd);
       return argv;
     case 'rg':
       for (const a of args) {
         const flag = a.split('=')[0]!;
         if (RG_FORBIDDEN.has(flag)) throw new Error(`not allowed: rg ${flag}`);
       }
+      confineArgs(args, cwd, rgPatternArgs(args));
       return argv;
     case 'git': {
       let i = 0;
@@ -322,6 +352,7 @@ export function checkReadOnlyCommand(command: string, cwd: string): string[] {
           throw new Error(`not allowed: git ${sub} ${a.split('=')[0]}`);
         }
       }
+      confineArgs(args.slice(i + 1), cwd);
       return argv;
     }
     default:
@@ -330,7 +361,7 @@ export function checkReadOnlyCommand(command: string, cwd: string): string[] {
 }
 
 function gitEnv(): NodeJS.ProcessEnv {
-  const env = childGitEnv({ GIT_PAGER: 'cat', PAGER: 'cat', GIT_TERMINAL_PROMPT: '0' });
+  const env = agentCommandEnv({ GIT_PAGER: 'cat', PAGER: 'cat', GIT_TERMINAL_PROMPT: '0' });
   delete env.GIT_EXTERNAL_DIFF;
   return env;
 }
@@ -442,7 +473,8 @@ const globTool: ToolDef = {
 const bashTool: ToolDef = {
   name: 'bash',
   description:
-    'Run ONE read-only command without a shell: ls, cat, git log|diff|status|show, rg, find. Quoting works; ' +
+    'Run ONE read-only command without a shell: ls, cat, git log|diff|status|show, rg, find. Paths must stay ' +
+    'inside the working directory. Quoting works; ' +
     'pipes, redirections, ;, &, $, backticks and subshells are rejected, as are find -exec/-delete, ' +
     'rg --pre/--hostname-bin and git -c/--output/--ext-diff.',
   inputSchema: strictObject({ command: { type: 'string' } }),
@@ -453,7 +485,7 @@ const bashTool: ToolDef = {
       cwd: ctx.cwd,
       timeout: BASH_TIMEOUT_MS,
       signal: ctx.signal,
-      env: cmd === 'git' ? gitEnv() : process.env,
+      env: cmd === 'git' ? gitEnv() : agentCommandEnv(),
     });
     if (r.timedOut) throw new Error(`command timed out after ${BASH_TIMEOUT_MS} ms`);
     if (cmd === 'rg' && r.code === 1 && r.stdout === '' && r.stderr === '') return 'No matches.';
@@ -513,7 +545,7 @@ const shellTool: ToolDef = {
       timeout: SHELL_TIMEOUT_MS,
       signal: ctx.signal,
       // The command may run git: it must act on the worktree, not on a repo the parent's env names.
-      env: childGitEnv(),
+      env: agentCommandEnv(),
     });
     if (r.timedOut) throw new Error(`command timed out after ${SHELL_TIMEOUT_MS} ms\n${formatProc(r)}`);
     if (r.code !== 0) throw new Error(`exit code ${r.code}\n${formatProc(r)}`);

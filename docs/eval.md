@@ -1,6 +1,6 @@
 # Eval: kurulum önerisi
 
-> Spec Seviye 4 "Eval planı"nı uygulanabilir hale getirir. Durum: kabul edildi, 2026-10-26 (kararlar bölüm 9). Kollar koşmadan önce bu belge, set ve kol script'leri dondurulur (bölüm 5); ondan sonra yapılan her değişiklik yeni bir tam koşu demektir.
+> Spec Seviye 4 "Eval planı"nı uygulanabilir hale getirir. Durum: kabul edildi, 2026-10-26 (kararlar bölüm 9); set hazırlığı yazıldı, kol koşusu, hakem ve rapor henüz yazılmadı (bölüm 8). Kollar koşmadan önce bu belge, set ve kol script'leri dondurulur (bölüm 5); ondan sonra yapılan her değişiklik yeni bir tam koşu demektir.
 
 ## Özet
 
@@ -299,13 +299,15 @@ Kullanıcının zamanı: etiket onayı yok (karar 8), hakem kontrolü için 1–
 | `eval/materialize.ts` | tek commit'i ve atalarını taşıyan taze repo (bölüm 3) (yazıldı) |
 | `eval/review.ts` | onay listesi ve sırası → `eval/data/review.md`; kararlar `eval/data/labels.json`'dan → `eval/data/set.json` (yazıldı) |
 | `eval/workflows/verify.js`, `eval/verify.js` | aday başına doğrulama ajanı ve çalıştırıcısı → `eval/data/verify.json`, kararlar `eval/data/labels.json`'a (yazıldı) |
-| `eval/prepare.js` | hücre repolarını kurar, CLAUDE.md'yi yol için tarar |
-| `eval/workflows/single-review.js` | A kolu |
-| `eval/run.js` | 150 hücreyi koşar, `results.jsonl`'a yazar, trace'leri denetler |
-| `eval/workflows/judge.js` | hakem |
-| `eval/report.js` | metrikler, eşleştirilmiş tablo, karar |
+| `eval/prepare.js` | hücre repolarını kurar, CLAUDE.md'yi yol için tarar (yazılmadı) |
+| `eval/workflows/single-review.js` | A kolu (yazılmadı) |
+| `eval/run.js` | 150 hücreyi koşar, `results.jsonl`'a yazar, trace'leri denetler (yazılmadı) |
+| `eval/workflows/judge.js` | hakem (yazılmadı) |
+| `eval/report.js` | metrikler, eşleştirilmiş tablo, karar (yazılmadı) |
 
-`eval/data/` `.gitignore`'a eklenir. Hiçbiri pakete (`files`) girmez.
+`eval/data/` `.gitignore`'dadır. Hiçbiri pakete (`files`) girmez.
+
+**Durum (2026-11-14):** set hazırlığı (madencilik, eleme, doğrulama, set seçimi) yazıldı ve koştu. Kolları koşturan, puanlayan ve raporlayan beş dosya henüz yazılmadı; bölüm 3-6 onları planlandığı haliyle anlatır, A/B'nin kendisi daha koşmadı.
 
 Sıra:
 

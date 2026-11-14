@@ -46,9 +46,13 @@ export const RETURN_CONTRACT =
   'Your final message IS the return value of this call: it is raw data for the program that called you, ' +
   'not a message to a human. Do not add greetings, explanations or summaries around it.';
 
+/** The commit sentence of WRITER_INSTRUCTION; a runner that commits for the agent replaces it. */
+export const WRITER_COMMIT_INSTRUCTION =
+  'When finished, commit your changes with git_commit. Uncommitted work is not handed off.';
+
 export const WRITER_INSTRUCTION =
   'You are on a branch prepared for you; work only in the current working directory. ' +
-  'When finished, commit your changes with git_commit. Uncommitted work is not handed off.\n' +
+  `${WRITER_COMMIT_INSTRUCTION}\n` +
   // spec 3.6: node_modules and build artifacts are not copied into the worktree; the agent does not install.
   'Do not run npm install or any other package install (npm/pnpm/yarn/bun/pip install, npm ci): ' +
   'node_modules and build artifacts are not copied into this worktree (at most symlinked from the main checkout).';

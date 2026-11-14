@@ -20,8 +20,8 @@ import { materialize } from './materialize.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const MODEL = 'claude-sonnet-5-5'; // docs/eval.md bölüm 9
-/** Sonnet 5.5, $ per million tokens (README "Maliyet ve effort"). */
-const PRICE = { input: 2, cacheWrite: 2.5, cacheRead: 0.2, output: 10 };
+/** Sonnet 5.5, $ per million tokens (README "Maliyet ve effort"); cache reads are 0.05 x input. */
+const PRICE = { input: 2, cacheWrite: 2.5, cacheRead: 0.1, output: 10 };
 
 const argv = process.argv.slice(2);
 const flag = (name) => {

@@ -159,6 +159,44 @@ describe('shell-words and the bash allowlist', () => {
     );
   });
 
+  it('keeps read-only commands inside the working directory, patterns excepted', async () => {
+    const b = tool('bash');
+    const outside = path.join(path.dirname(repo), 'elsewhere.txt');
+    for (const command of [
+      `cat ${outside}`,
+      'cat ../elsewhere.txt',
+      'ls /',
+      'find / -name x',
+      'find . -newer /etc/hosts',
+      `rg hello ${outside}`,
+      'rg -e hello ..',
+      'rg --file=/etc/hosts .',
+      'git diff --no-index a.txt /etc/hosts',
+      `git log -- ${outside}`,
+    ]) {
+      await expect(b.run({ command }, ctx()), command).rejects.toThrow(
+        /outside the working directory|not allowed/,
+      );
+    }
+    // A pattern may look like an absolute path; only path arguments are confined.
+    expect(await b.run({ command: 'rg /no/such/text a.txt' }, ctx())).toBe('No matches.');
+    expect(await b.run({ command: 'rg -e /no/such/text a.txt' }, ctx())).toBe('No matches.');
+    expect(await b.run({ command: 'git log --oneline HEAD -- a.txt' }, ctx())).toContain('init');
+    expect(await b.run({ command: "find . -name '*.txt' -maxdepth 1" }, ctx())).toContain('a.txt');
+  });
+
+  it('agent commands do not see the runner credentials', async () => {
+    const saved = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'sk-test-not-a-key';
+    try {
+      const out = await tool('shell').run({ command: 'echo "key=[$ANTHROPIC_API_KEY]"' }, ctx());
+      expect(out).toContain('key=[]');
+    } finally {
+      if (saved === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = saved;
+    }
+  });
+
   it('runs allowed commands without a shell', async () => {
     const b = tool('bash');
     expect(await b.run({ command: 'ls' }, ctx())).toContain('a.txt');

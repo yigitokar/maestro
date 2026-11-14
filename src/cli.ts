@@ -45,7 +45,8 @@ export const USAGE = `usage:
   --tools-dir custom tools agents may name in opts.tools: *.js files that default-export a tool
               (default <state-dir>/tools)
   gc          lists dirty worktrees and merged / unmerged wf/* branches; deletes only with --delete
-              (--force also deletes unmerged branches)`;
+              (clean worktrees and merged branches; --force also deletes dirty worktrees and
+              unmerged branches)`;
 
 export interface CliIO {
   /** MCP channel input for `maestro mcp` (default process.stdin); the server ends when it ends. */
@@ -267,7 +268,7 @@ async function gcCommand(p: Parsed, io: CliIO): Promise<number> {
   if (p.flags.has('delete')) list('removed', res.removed);
   else
     out.push(
-      '(nothing deleted; pass --delete to remove worktrees and merged branches, --force for unmerged)',
+      '(nothing deleted; pass --delete to remove clean worktrees and merged branches, --force for dirty and unmerged)',
     );
   io.stdout.write(`${out.join('\n')}\n`);
   return 0;

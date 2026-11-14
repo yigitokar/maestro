@@ -10,3 +10,13 @@ export function childGitEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   for (const k of REPO_VARS) delete env[k];
   return env;
 }
+
+/** Credentials of the runner itself: an agent's commands have no use for them and could print them. */
+const CREDENTIAL_VARS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'];
+
+/** childGitEnv() for the commands an agent runs through the bash and shell tools: no runner credentials. */
+export function agentCommandEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env = childGitEnv(extra);
+  for (const k of CREDENTIAL_VARS) delete env[k];
+  return env;
+}

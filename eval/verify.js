@@ -22,10 +22,10 @@ import { applyVerdicts, confirmed } from './review.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const MODEL = 'claude-opus-5-5'; // docs/eval.md bölüm 9, karar 8
-/** $ per million tokens (claude-api skill, cached 2026-10-06; cache write is 1.25 x input). */
+/** $ per million tokens (claude-api skill, cached 2026-11-03; cache write is 1.25 x input). */
 const PRICES = {
   'claude-opus-5-5': { input: 4, cacheWrite: 5, cacheRead: 0.2, output: 20 },
-  'claude-sonnet-5-5': { input: 2, cacheWrite: 2.5, cacheRead: 0.2, output: 10 },
+  'claude-sonnet-5-5': { input: 2, cacheWrite: 2.5, cacheRead: 0.1, output: 10 },
 };
 
 const argv = process.argv.slice(2);

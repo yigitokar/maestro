@@ -545,7 +545,9 @@ export interface GcOptions {
   repoDir: string;
   /** default <toplevel>/.maestro/worktrees */
   worktreeRoot?: string;
+  /** Remove clean leftover worktrees and merged wf/* branches. */
   delete?: boolean;
+  /** With delete: also dirty worktrees and unmerged branches. */
   force?: boolean;
 }
 
@@ -613,8 +615,11 @@ export async function gc(opts: GcOptions): Promise<GcResult> {
 
   if (opts.delete) {
     await withRepoLock(info.commonDir, async () => {
-      // Clean leftovers (crashed runs) go too: they would otherwise pin their branches.
+      // Clean leftovers (crashed runs) go: they would otherwise pin their branches. A dirty worktree holds
+      // work nobody committed, so it goes only with force (spec 3.6: never deleted automatically).
+      const dirty = new Set(dirtyWorktrees.map((w) => w.path));
       for (const wt of ours) {
+        if (dirty.has(wt) && !opts.force) continue;
         await unlinkNodeModules(wt);
         await git(info.toplevel, ['worktree', 'remove', '--force', wt]);
         removed.push(wt);
