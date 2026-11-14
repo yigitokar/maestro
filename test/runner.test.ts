@@ -631,6 +631,19 @@ describe('systemPrompt and schema helpers', () => {
     expect(validateValue(schema, { k: 'c' }).join()).toContain('enum');
     expect(validateValue(schema, { k: 'a', xs: [1.5] }).join()).toContain('integer');
   });
+
+  it('validateValue does not take inherited Object.prototype names for properties', () => {
+    const strict = { type: 'object', properties: {}, required: ['constructor'], additionalProperties: false };
+    expect(validateValue(strict, {}).join()).toContain('required');
+    const closed = { type: 'object', properties: { a: { type: 'string' } }, additionalProperties: false };
+    expect(validateValue(closed, { a: 'x', toString: 1 }).join()).toContain('additional property');
+  });
+
+  it('validateValue checks anyOf and oneOf when a schema has both', () => {
+    const schema = { anyOf: [{ type: 'string' }, { type: 'number' }], oneOf: [{ type: 'number' }] };
+    expect(validateValue(schema, 1)).toEqual([]);
+    expect(validateValue(schema, 'x').join()).toContain('matches no alternative');
+  });
 });
 
 describe('AnthropicRunner: stage-2 max_tokens (spec 3.2)', () => {

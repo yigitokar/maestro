@@ -279,6 +279,13 @@ describe('maestro mcp', () => {
 });
 
 describe('maestro (no command / unknown command / help)', () => {
+  it('show refuses a runId that is a path, like viz does', async () => {
+    const dir = await tmp();
+    const r = await cli(['show', '../../etc'], dir);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('invalid runId');
+  });
+
   it('unknown command → exit 1 with usage; help → exit 0', async () => {
     const dir = await tmp();
     const unknown = await cli(['frob'], dir);

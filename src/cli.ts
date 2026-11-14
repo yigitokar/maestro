@@ -20,7 +20,7 @@ import { FakeRunner } from './testing/fake-runner.js';
 import type { AgentRunner, Entry } from './types.js';
 import { cacheReadRatio, totalInput } from './usage.js';
 import { exportVizHtml, exportVizWidget, serveViz } from './viz.js';
-import { run } from './workflow.js';
+import { run, SAFE_ID } from './workflow.js';
 
 export const USAGE = `usage:
   maestro run <script.js> [--args <json>] [--args-file <file>] [--resume <runId>] [--budget <500k>]
@@ -329,6 +329,7 @@ async function showCommand(p: Parsed, io: CliIO): Promise<number> {
   const [runId, label, ...extra] = p.positionals;
   if (runId === undefined) throw new UsageError('show needs a runId');
   if (extra.length > 0) throw new UsageError(`unexpected arguments: ${extra.join(' ')}`);
+  if (!SAFE_ID.test(runId)) throw new UsageError(`invalid runId "${runId}"`);
   const cwd = path.resolve(io.cwd, str(p, 'cwd') ?? '.');
   const stateDirArg = str(p, 'state-dir');
   const stateDir = stateDirArg !== undefined ? path.resolve(io.cwd, stateDirArg) : path.join(cwd, '.maestro');
@@ -354,13 +355,11 @@ async function showCommand(p: Parsed, io: CliIO): Promise<number> {
   return 0;
 }
 
-const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-
 async function vizCommand(p: Parsed, io: CliIO): Promise<number> {
   const [runId, ...extra] = p.positionals;
   if (runId === undefined) throw new UsageError('viz needs a runId');
   if (extra.length > 0) throw new UsageError(`unexpected arguments: ${extra.join(' ')}`);
-  if (!SAFE_RUN_ID.test(runId)) throw new UsageError(`invalid runId "${runId}"`);
+  if (!SAFE_ID.test(runId)) throw new UsageError(`invalid runId "${runId}"`);
   const cwd = path.resolve(io.cwd, str(p, 'cwd') ?? '.');
   const stateDirArg = str(p, 'state-dir');
   const stateDir = stateDirArg !== undefined ? path.resolve(io.cwd, stateDirArg) : path.join(cwd, '.maestro');

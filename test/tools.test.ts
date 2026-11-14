@@ -289,4 +289,30 @@ describe('write tools', () => {
     expect(git(wt, 'status', '--porcelain')).toBe('');
     await expect(c.run({ message: 'again' }, wctx())).rejects.toThrow(/nothing to commit/);
   });
+
+  it('git tools work in cwd even when the environment points git at another repo (hooks set GIT_DIR)', async () => {
+    const other = await makeRepo();
+    const saved = { dir: process.env.GIT_DIR, tree: process.env.GIT_WORK_TREE };
+    process.env.GIT_DIR = path.join(other, '.git');
+    process.env.GIT_WORK_TREE = other;
+    try {
+      await fs.writeFile(path.join(wt, 'hooked.txt'), 'x');
+      await tool('git_commit').run({ message: 'under a hook' }, wctx());
+      expect(await tool('bash').run({ command: 'git log --oneline -1' }, wctx())).toContain('under a hook');
+      expect(await tool('shell').run({ command: 'git rev-parse --show-toplevel' }, wctx())).toContain(
+        path.basename(wt),
+      );
+    } finally {
+      for (const [k, v] of [
+        ['GIT_DIR', saved.dir],
+        ['GIT_WORK_TREE', saved.tree],
+      ] as const) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
+    expect(git(other, 'log', '--oneline')).not.toContain('under a hook');
+    expect(git(wt, 'log', '--oneline')).toContain('under a hook');
+    await fs.rm(other, { recursive: true, force: true });
+  });
 });

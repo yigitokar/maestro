@@ -104,6 +104,10 @@ const cwd = dryRun
   : materialize(data.repo, data.tip, path.resolve('eval/data/repos', `${path.basename(data.repo)}-tip`));
 const stateDir = dryRun ? tmp('maestro-verify-state-') : path.resolve('eval/data/state');
 const budget = parseBudgetDirective(flag('--budget') ?? '400k');
+if (budget === null) {
+  console.error(`verify: invalid --budget "${flag('--budget')}" (e.g. 500k, 1.5m, 20000)`);
+  process.exit(1);
+}
 const resume = flag('--resume');
 const handle = run({
   script: readFileSync(path.join(here, 'workflows', 'verify.js'), 'utf8'),

@@ -279,7 +279,7 @@ const SCRIPT = `
   var STATUS_TEXT = { queued: 'sırada', running: 'çalışıyor', ok: 'tamam', null: 'null', skipped: 'atlandı', cached: 'önbellekten' };
   var state = {
     lines: [], offset: 0, entries: [], skew: 0, attempt: null, selected: null, selectedRow: null, zoomIndex: 0,
-    details: BOOT.details || {}, detailCache: {}, pollError: null, rendered: '', snapNow: null
+    details: BOOT.details || {}, detailCache: {}, pollError: null, snapNow: null
   };
 
   function $(id) { return document.getElementById(id); }
@@ -902,9 +902,14 @@ const SCRIPT = `
       })
       .catch(function () {
         state.pollError = 'Sunucuya ulaşılamıyor (maestro viz kapandı mı?). Tekrar deneniyor…';
-        render();
+        // A render that throws (a malformed line) must not end the polling chain.
+        try { render(); } catch (e) {}
       })
-      .then(function () { setTimeout(poll, running() ? 1000 : 3000); });
+      .then(function () {
+        var live = false;
+        try { live = running(); } catch (e) {}
+        setTimeout(poll, live ? 1000 : 3000);
+      });
   }
 
   if (BOOT.snapshot) ingest(BOOT.snapshot, true);

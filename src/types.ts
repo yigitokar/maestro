@@ -125,7 +125,10 @@ export interface RunResult {
   trace?: Trace;
 }
 
-/** Spec 3.2. Implementations: AnthropicRunner (src/runner.ts), FakeRunner (src/testing/fake-runner.ts). */
+/**
+ * Spec 3.2. Implementations: AnthropicRunner (src/runner.ts), CodexRunner (src/codex-runner.ts),
+ * FakeRunner (src/testing/fake-runner.ts).
+ */
 export interface AgentRunner {
   run(req: RunRequest): Promise<RunResult>;
 }

@@ -173,9 +173,15 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
   server.setRequestHandler(CallToolRequestSchema, async (req, extra): Promise<CallResult> => {
     const { name, arguments: input } = req.params;
     if (name === WORKFLOW_TOOL_NAME) {
+      // A resume reuses its runId, so this server may still hold the outcome of the earlier attempt.
+      const resumed = (input as { resumeFromRunId?: unknown } | undefined)?.resumeFromRunId;
+      const earlier = typeof resumed === 'string' ? outcomes.get(resumed) : undefined;
       const res = await handleWorkflowToolCall(input ?? {}, { ...runCtx, onComplete: settle });
       if ('is_error' in res) return text(res.content, true);
-      if (!outcomes.has(res.runId)) outcomes.set(res.runId, 'running');
+      // The run can settle before this line (settle already stored its outcome): only an absent entry
+      // or the earlier attempt's outcome becomes 'running'.
+      const now = outcomes.get(res.runId);
+      if (now === undefined || now === earlier) outcomes.set(res.runId, 'running');
       return text(res);
     }
     if (

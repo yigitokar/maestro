@@ -1,6 +1,7 @@
 // JSON Schema helpers for agent() (spec Level 1 null/throw table, 3.2).
 // assertSatisfiableSchema: the "schema cannot be satisfied" check that makes agent() throw at call time.
-// validateAgainstSchema: a small structural validator used by runners and FakeRunner-based tests.
+// validateAgainstSchema: a small structural validator, exported for hosts and custom runners. The built-in
+// runners check stage-2 output with validateValue (src/runner.ts), which also covers length/range keywords.
 // Schemas usually come from the vm context (another realm): never use instanceof here.
 
 import type { JSONSchema } from './types.js';

@@ -1,6 +1,6 @@
 # Uygulama kararları
 
-Bu belge, `docs/spec.md` (v0.3.1) metninin açık bıraktığı veya birden fazla okumaya izin verdiği yerlerde kodun bugün ne yaptığını ve neden öyle yaptığını kaydeder; satır numaraları `docs/spec.md` dosyasına aittir.
+Bu belge, `docs/spec.md` (v0.3.1) metninin açık bıraktığı veya birden fazla okumaya izin verdiği yerlerde kodun bugün ne yaptığını ve neden öyle yaptığını kaydeder; satır numaraları spec'in v0.3.1 metnine aittir. v0.3.2 eklemeleri satırları aşağı kaydırdı: bugünkü `docs/spec.md`'de aynı yer, baştaki bölümlerde bir, sondakilerde on beş satır kadar aşağıdadır.
 
 ## Genel
 

@@ -2,7 +2,7 @@
 
 Çok-ajanlı orkestrasyon katmanı. Kontrol akışı kodda, muhakeme ajanda: deterministik bir JavaScript script'i, her biri temiz context'le başlayan ajanları çağırır, sonuçlarını birleştirir, oylatır ve tekrar dağıtır. Script'i ana ajan yazar, çalıştıran LLM değil düz bir runtime'dır.
 
-Tasarım ve sözleşmeler [docs/spec.md](docs/spec.md) içinde (v0.3.1). Spec'in açık bıraktığı noktalarda alınan kararlar [docs/decisions.md](docs/decisions.md) içinde. Script yazmayı modele öğreten skill [skill/SKILL.md](skill/SKILL.md) içinde.
+Tasarım ve sözleşmeler [docs/spec.md](docs/spec.md) içinde (v0.3.2). Spec'in açık bıraktığı noktalarda alınan kararlar [docs/decisions.md](docs/decisions.md) içinde. Script yazmayı modele öğreten skill [skill/SKILL.md](skill/SKILL.md) içinde.
 
 ## Kurulum
 
@@ -18,7 +18,7 @@ npm run build
 
 Paket ESM'dir ve tek bağımlılık katmanı Anthropic TypeScript SDK'sıdır (`@anthropic-ai/sdk`), yanında `zod`, `acorn` ve MCP sunucusu için `@modelcontextprotocol/sdk` gelir. Varsayılan Anthropic runner için `ANTHROPIC_API_KEY` ortam değişkeni gerekir; Codex runner kurulu ve giriş yapılmış Codex CLI'ı kullanır. Testler ve `--dry-run` ağa hiç çıkmaz.
 
-Run'lar çalışılan dizinde `.maestro/` altında tutulur (`runs/<runId>/`, `worktrees/`, `workflows/`). Bu dizini kendi reponda `.gitignore`'a ekle.
+Run'lar çalışılan dizinde `.maestro/` altında tutulur (`runs/<runId>/`, `worktrees/`, `workflows/`, `tools/`). Bu dizini kendi reponda `.gitignore`'a ekle.
 
 ## İlk script
 
@@ -58,13 +58,13 @@ return confirmed
 Çalıştır:
 
 ```bash
-npx maestro run review.js --args '{"diffRef":"main...HEAD"}' --budget 300k
+node bin/maestro run review.js --args '{"diffRef":"main...HEAD"}' --budget 300k
 ```
 
 Ağa çıkmadan akışı görmek için `--dry-run` ekle; her ajan şemadan üretilmiş sahte bir cevap döner. Script'i düzenleyip ucuza tekrar koşmak için:
 
 ```bash
-npx maestro run review.js --resume <runId>
+node bin/maestro run review.js --resume <runId>
 ```
 
 Değişmeyen her `agent()` çağrısı journal'dan gelir; yalnızca değişen çağrı ve onun sonucundan türeyenler canlı koşar.
@@ -146,7 +146,7 @@ export default {
 const papers = await agent('DML üzerine makaleleri bul', { tools: ['read_file', 'arxiv_search'] })
 ```
 
-- Dizin varsayılan olarak `.maestro/tools/`'tur, `--tools-dir` ile değişir. Her `*.js`/`*.mjs` dosyası bir aracı ya da bir araç dizisini `export default` eder; `_` ile başlayan dosyalar yardımcıdır ve araç olarak yüklenmez. Kütüphane olarak `run({ tools: [...] })` de olur.
+- Dizin varsayılan olarak `.maestro/tools/`'tur, `--tools-dir` ile değişir. Her `*.js`/`*.mjs` dosyası bir aracı ya da bir araç dizisini `export default` eder; `_` ya da `.` ile başlayan dosyalar yardımcıdır ve araç olarak yüklenmez. Kütüphane olarak `run({ tools: [...] })` de olur.
 - Denetimler run başlamadan yapılır ve bozuk bir tanım run'ı `tool_invalid` ile başlatmaz: ad yerleşik bir araçla ya da başka bir tanımla çakışmaz, `write` açıkça yazılır ve girdi şeması strict'tir (her objede `additionalProperties: false`, her özellik `required` içinde; opsiyonel alan nullable yapılır).
 - `write: true` olan araç yazma aracıdır ve yalnızca `isolation: 'worktree'` ile verilir.
 - Araç kodu Maestro'nun kendi sürecinde koşar, script'in sandbox'ında değil; ağa çıkabilir. Okuyan bir ajana ağa çıkan bir araç vermek, okuduğunu dışarı gönderebilmesi demektir.
@@ -234,7 +234,7 @@ maestro mcp [--cwd d] [--state-dir d] [--tools-dir d] [--budget 500k] [--concurr
 
 `maestro run` sonucu stdout'a JSON olarak yazar, ilerleme stderr'e gider; Ctrl-C run'ı durdurur ve resume komutunu gösterir. `maestro mcp`, stdin bitince 0 ile çıkar; `--budget` orada her run için değil, oturum boyunca paylaşılan tek havuz içindir.
 
-`maestro gc` kirli worktree'leri ve `wf/*` branch'lerini listeler; birleşmiş sayılan branch'ler, HEAD'in atası olanlar ya da tüm commit'leri cherry-pick ile alınmış olanlardır. `--delete` kirli worktree'leri ve birleşmiş branch'leri siler. Birleşmemiş branch'ler yalnızca `--force` ile silinir.
+`maestro gc` kirli worktree'leri ve `wf/*` branch'lerini listeler; birleşmiş sayılan branch'ler, HEAD'in atası olanlar ya da tüm commit'leri cherry-pick ile alınmış olanlardır. `--delete`, `.maestro/worktrees` altındaki bütün worktree'leri (kirli olanlar dahil, `--force` gerekmeden) ve birleşmiş branch'leri siler. Birleşmemiş branch'ler yalnızca `--force` ile silinir.
 
 ## Run dizini ve resume
 
@@ -340,7 +340,7 @@ Testler Vitest'tir ve ağa çıkmaz. Anthropic runner testleri gerçek SDK `tool
 | Scheduler | `src/scheduler.ts` | 3.4 |
 | Budget | `src/budget.ts` | 3.5 |
 | Isolation | `src/isolation.ts` | 3.6 |
-| Observability | `src/progress.ts` | 3.7 |
+| Observability | `src/progress.ts`, `src/event-log.ts`, `src/viz.ts`, `src/viz-page.ts`, `src/viz-widget.ts` | 3.7 |
 | Tool yüzeyi | `src/workflow.ts`, `src/tool.ts`, `src/mcp.ts`, `src/cli.ts` | Seviye 2 |
 
 ## Spec'ten sapmalar

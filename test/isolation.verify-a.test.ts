@@ -1,5 +1,5 @@
 // Adversarial spec-contract suite for Isolation (spec 3.6, Seviye 4 fan-out writers pattern).
-// Tests assert SPEC behaviour; the ones marked "VIOLATION" fail against the current src/isolation.ts.
+// Tests assert SPEC behaviour; the ones marked "VIOLATION" failed when written and pass since the fixes.
 
 import { execFileSync } from 'node:child_process';
 import { existsSync, promises as fs } from 'node:fs';
