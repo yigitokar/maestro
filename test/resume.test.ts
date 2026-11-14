@@ -62,6 +62,7 @@ return { a, b, args };`;
       'blobs',
       'events.jsonl',
       'journal.jsonl',
+      'run.json',
       'script.js',
     ]);
     expect(statSync(path.join(runDir, 'blobs')).isDirectory()).toBe(true);
@@ -97,6 +98,28 @@ return { a, b, args };`;
     ]);
     expect([v2[0], v2[1], v2[3], v2[4]]).toEqual([v1[0], v1[1], v1[3], v1[4]]);
     expect(v2[2]).not.toBe(v1[2]);
+  });
+
+  it('a resume with another model reuses the journal and says whose results they are', async () => {
+    const dir = await tmp();
+    const script = `${META()}return await agent('only');`;
+    const first = start(dir, { script, runner: new FakeRunner(), model: 'model-a', runId: 'cfg' });
+    await first.handle.promise;
+    expect(JSON.parse(readFileSync(path.join(first.handle.runDir, 'run.json'), 'utf8'))).toEqual({
+      model: 'model-a',
+      runner: 'FakeRunner',
+    });
+
+    const runner = new FakeRunner();
+    const same = start(dir, { runner, model: 'model-a', resumeFromRunId: 'cfg' });
+    await same.handle.promise;
+    expect(same.events.some((e) => e.type === 'log' && e.message.includes('resume changes'))).toBe(false);
+
+    const other = start(dir, { runner, model: 'model-b', resumeFromRunId: 'cfg' });
+    await other.handle.promise;
+    expect(runner.liveCalls).toBe(0);
+    const logs = other.events.flatMap((e) => (e.type === 'log' ? [e.message] : []));
+    expect(logs.join('\n')).toMatch(/resume changes the model from model-a to model-b/);
   });
 
   it('a label/phase-only edit is still a cache hit', async () => {

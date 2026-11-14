@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { promisify } from 'node:util';
 import { childGitEnv } from './git-env.js';
-import { toStructuredOutputSchema, validateValue } from './runner.js';
+import { toStructuredOutputSchema, validateValue, WRITER_COMMIT_INSTRUCTION } from './runner.js';
 import { READ_TOOL_NAMES, WRITE_TOOL_NAMES } from './tools.js';
 import {
   type AgentRunner,
@@ -36,6 +36,9 @@ const TRACE_INPUT_CHARS = 200;
 const TRACE_TEXT_CHARS = 2_000;
 const STDERR_CHARS = 500;
 const PIPE_CLOSE_GRACE_MS = 100;
+const CODEX_COMMIT_INSTRUCTION =
+  'Do not run git commit or git_commit: the Codex sandbox makes .git read-only. ' +
+  'Leave your changes in the working tree; Maestro commits them when you finish successfully.';
 
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -191,11 +194,11 @@ export class CodexRunner implements AgentRunner {
         await writeFile(schemaPath, JSON.stringify(schema));
         args.push('--output-schema', schemaPath);
       }
-      let prompt = `System instructions:\n${req.system}\n\nTask:\n${req.prompt}`;
-      if (req.isolated)
-        prompt +=
-          '\n\nDo not run git commit or git_commit: the Codex sandbox makes .git read-only. ' +
-          'Leave your changes in the working tree; Maestro commits them when you finish successfully.';
+      // One instruction about committing, not two that disagree: the system prompt's "commit with
+      // git_commit" is replaced, since here the runner commits.
+      const system = req.system.replace(WRITER_COMMIT_INSTRUCTION, CODEX_COMMIT_INSTRUCTION);
+      let prompt = `System instructions:\n${system}\n\nTask:\n${req.prompt}`;
+      if (req.isolated && system === req.system) prompt += `\n\n${CODEX_COMMIT_INSTRUCTION}`;
       args.push('-o', outputPath, ...(this.opts.extraArgs ?? []), '-');
       req.signal.throwIfAborted();
       const exit = await this.execute(args, prompt, req, st, env);

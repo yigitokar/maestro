@@ -152,4 +152,26 @@ describe('applyVerdicts', () => {
     expect(d!.decision).toBeNull();
     expect(pickSet(labels)).toMatchObject({ rejected: 2, next: { id: 'd' } });
   });
+
+  it('leaves a candidate undecided when the answer does not cover its claims one to one', () => {
+    const labels: Labels = {
+      repo: 'lula',
+      seed: 1,
+      target: 2,
+      candidates: [entry('a', 1, [3]), entry('b', 2, [4]), entry('c', 3, [5, 6]), entry('d', 4, [7, 8])],
+    };
+    const written = applyVerdicts(
+      labels,
+      [
+        { id: 'a', verify: { bugs: [] } }, // no verdict at all
+        { id: 'b', verify: { bugs: [v(1, true, 4)] } }, // 1-based index
+        { id: 'c', verify: { bugs: [v(0, true, 5), v(0, true, 6)] } }, // one claim twice
+        { id: 'd', verify: { bugs: [v(1, false, 8), v(0, true, 7)] } }, // complete, any order
+      ],
+      'run-2',
+    );
+    expect(written).toEqual(['d']);
+    expect(labels.candidates.map((c) => c.decision)).toEqual([null, null, null, 'accept']);
+    expect(labels.candidates[0]!.note).toBe(entry('a', 1, [3]).note);
+  });
 });

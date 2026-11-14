@@ -1,7 +1,7 @@
 // CLI (bin "maestro") tested in-process through main(argv, io): dry runs, resume, gc, mcp, usage errors.
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -184,8 +184,14 @@ describe('maestro gc', () => {
     expect(del.code).toBe(0);
     expect(del.stdout).toMatch(/removed:\n/);
     expect(del.stdout).toContain('wf/r1/merged');
-    // Unmerged branches survive without --force.
+    // Unmerged branches and the dirty worktree survive without --force.
     expect(git(repo, 'branch', '--list', 'wf/*', '--format=%(refname:short)')).toBe('wf/r1/open');
+    expect(existsSync(path.join(wt, 'dirty.txt'))).toBe(true);
+
+    const forced = await cli(['gc', '--delete', '--force'], repo);
+    expect(forced.code).toBe(0);
+    expect(existsSync(wt)).toBe(false);
+    expect(git(repo, 'branch', '--list', 'wf/*')).toBe('');
   });
 });
 

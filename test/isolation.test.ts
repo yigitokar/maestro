@@ -386,21 +386,24 @@ describe('gc', () => {
     expect(existsSync(d.path)).toBe(true);
 
     const del = await gc({ repoDir: repo, delete: true });
-    expect(del.removed).toContain(d.path);
-    expect(del.removed).toContain('wf/gc/merged');
-    expect(del.removed).toContain('wf/gc/dirty');
-    expect(del.removed).not.toContain('wf/gc/unmerged');
-    expect(existsSync(d.path)).toBe(false);
-    expect(existsSync(path.join(repo, 'node_modules', 'dep', 'index.js'))).toBe(true);
-    expect(sh(repo, 'branch', '--list', 'wf/*', '--format=%(refname:short)')).toBe('wf/gc/unmerged');
-    expect(worktreeCount(repo)).toBe(1);
+    // Without force the dirty worktree (uncommitted work) and the branch it holds stay.
+    expect(del.removed).toEqual(['wf/gc/merged']);
+    expect(existsSync(path.join(d.path, 'wip.txt'))).toBe(true);
+    expect(sh(repo, 'branch', '--list', 'wf/*', '--format=%(refname:short)').split('\n').sort()).toEqual([
+      'wf/gc/dirty',
+      'wf/gc/unmerged',
+    ]);
+    expect(worktreeCount(repo)).toBe(2);
 
     const after = await gc({ repoDir: repo });
-    expect(after.dirtyWorktrees).toEqual([]);
+    expect(after.dirtyWorktrees).toHaveLength(1);
     expect(after.unmergedBranches).toEqual(['wf/gc/unmerged']);
 
     const forced = await gc({ repoDir: repo, delete: true, force: true });
-    expect(forced.removed).toEqual(['wf/gc/unmerged']);
+    expect(forced.removed.sort()).toEqual([d.path, 'wf/gc/dirty', 'wf/gc/unmerged'].sort());
+    expect(existsSync(d.path)).toBe(false);
+    expect(existsSync(path.join(repo, 'node_modules', 'dep', 'index.js'))).toBe(true);
+    expect(worktreeCount(repo)).toBe(1);
     expect(sh(repo, 'branch', '--list', 'wf/*')).toBe('');
     expect(sh(repo, 'branch', '--list', 'feature')).toContain('feature');
   });

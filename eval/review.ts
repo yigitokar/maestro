@@ -209,8 +209,9 @@ export function labelsSkeleton(order: ReviewItem[], repo: string, seed = SEED): 
 /**
  * Writes the verifier's verdicts into `labels` as decisions (docs/eval.md 2.3): a candidate with a confirmed
  * bug is accepted with its confirmed bugs only, in the verifier's wording; one without is rejected. A
- * decision already written is never touched, and a null verdict leaves the candidate undecided. Returns the
- * ids written.
+ * decision already written is never touched. A null verdict leaves the candidate undecided, and so does a
+ * malformed one (not exactly one verdict per claimed bug, by index): a broken answer is an infrastructure
+ * failure, not a rejection. Returns the ids written.
  */
 export function applyVerdicts(labels: Labels, results: VerifyResult[], runId: string): string[] {
   const byId = new Map(labels.candidates.map((c) => [c.id, c]));
@@ -218,6 +219,12 @@ export function applyVerdicts(labels: Labels, results: VerifyResult[], runId: st
   for (const { id, verify } of results) {
     const c = byId.get(id);
     if (!c || c.decision !== null || !verify) continue;
+    const indexes = new Set(verify.bugs.map((v) => v.index));
+    const complete =
+      verify.bugs.length === c.bugs.length &&
+      indexes.size === c.bugs.length &&
+      c.bugs.every((_, i) => indexes.has(i));
+    if (!complete) continue;
     const kept = new Map<string, LabelBug>();
     for (const v of verify.bugs.filter(confirmed)) {
       const claimed = c.bugs[v.index];

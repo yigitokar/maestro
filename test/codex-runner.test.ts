@@ -469,8 +469,10 @@ describe('CodexRunner: arguments, tools and isolation', () => {
     expect(flag(call.argv, '-s')).toBe('workspace-write');
     expect(flag(call.argv, '-C')).toBe(worktree);
     expect(call.argv).not.toContain('--add-dir');
-    expect(call.stdin).toContain(WRITER_INSTRUCTION);
-    expect(call.stdin).toMatch(/do not run git commit/i);
+    // One instruction about committing: the system prompt's "commit with git_commit" is replaced.
+    expect(call.stdin).not.toContain('commit your changes with git_commit');
+    expect(call.stdin).toContain('work only in the current working directory');
+    expect(call.stdin.match(/do not run git commit/gi)).toHaveLength(1);
     expect(call.stdin).toMatch(/read-only/i);
     expect(call.stdin).toMatch(/Maestro commits/);
   });

@@ -6,7 +6,7 @@ Tasarım ve sözleşmeler [docs/spec.md](docs/spec.md) içinde (v0.3.2). Spec'in
 
 ## Kurulum
 
-Node 22 veya üstü gerekir.
+Node 22.18 veya üstü gerekir (duman testi ve eval çalıştırıcıları `.ts` dosyalarını doğrudan koşturur).
 
 ```bash
 npm install
@@ -124,7 +124,7 @@ Script'in gördüğü yüzey (spec Seviye 1). Bunların dışında yalnızca JS 
 | `budget` | `{ total, spent(), remaining() }` | `total` yoksa null ve `remaining()` Infinity. |
 | `workflow(nameOrRef, args?)` | Alt workflow'un dönüş değeri | Yalnızca bir seviye iç içe; çocuğun içinde throw eder. Aynı semafor, sayaç ve bütçe paylaşılır. |
 
-`agent` opts: `label`, `phase`, `schema`, `model`, `effort` (`low` … `max`), `isolation: 'worktree'`, `tools`. Varsayılan araçlar salt-okurdur: `read_file`, `grep`, `glob` ve izin listeli `bash` (ls, cat, git log/diff/status/show, rg, find). `write_file`, `edit_file`, `shell` ve `git_commit` yalnızca `isolation: 'worktree'` ile verilir. Yazan ajan, runtime'ın açtığı `wf/<runId>/<label>` branch'ine commit eder; çıkışta branch, temiz status ve en az bir commit Git'ten doğrulanır ve sonuca `branchName` eklenir.
+`agent` opts: `label`, `phase`, `schema`, `model`, `effort` (`low` … `max`), `isolation: 'worktree'`, `tools`. Varsayılan araçlar salt-okurdur: `read_file`, `grep`, `glob` ve izin listeli `bash` (ls, cat, git log/diff/status/show, rg, find). `bash` komutlarının yol argümanları, `read_file` gibi, çalışma dizininin dışına çıkamaz. `bash` ve `shell` ile koşan komutlar `ANTHROPIC_API_KEY` ve `ANTHROPIC_AUTH_TOKEN` değişkenlerini görmez. `write_file`, `edit_file`, `shell` ve `git_commit` yalnızca `isolation: 'worktree'` ile verilir. Yazan ajan, runtime'ın açtığı `wf/<runId>/<label>` branch'ine commit eder; çıkışta branch, temiz status ve en az bir commit Git'ten doğrulanır ve sonuca `branchName` eklenir.
 
 ### Özel araçlar
 
@@ -234,11 +234,11 @@ maestro mcp [--cwd d] [--state-dir d] [--tools-dir d] [--budget 500k] [--concurr
 
 `maestro run` sonucu stdout'a JSON olarak yazar, ilerleme stderr'e gider; Ctrl-C run'ı durdurur ve resume komutunu gösterir. `maestro mcp`, stdin bitince 0 ile çıkar; `--budget` orada her run için değil, oturum boyunca paylaşılan tek havuz içindir.
 
-`maestro gc` kirli worktree'leri ve `wf/*` branch'lerini listeler; birleşmiş sayılan branch'ler, HEAD'in atası olanlar ya da tüm commit'leri cherry-pick ile alınmış olanlardır. `--delete`, `.maestro/worktrees` altındaki bütün worktree'leri (kirli olanlar dahil, `--force` gerekmeden) ve birleşmiş branch'leri siler. Birleşmemiş branch'ler yalnızca `--force` ile silinir.
+`maestro gc` kirli worktree'leri ve `wf/*` branch'lerini listeler; birleşmiş sayılan branch'ler, HEAD'in atası olanlar ya da tüm commit'leri cherry-pick ile alınmış olanlardır. `--delete` temiz kalmış worktree'leri ve birleşmiş branch'leri siler. Kirli worktree'ler (commit edilmemiş iş) ve birleşmemiş branch'ler yalnızca `--delete --force` ile silinir.
 
 ## Run dizini ve resume
 
-`.maestro/runs/<runId>/` dizininde `script.js`, `args.json`, `journal.jsonl` ve `blobs/` bulunur. Journal satır başına bir `agent()` çağrısı tutar (`key = sha256(prompt + "\n" + canonicalJSON(opts \ {label, phase})) + ":" + n`). Yalnızca `status: 'ok'` satırlar cache isabetidir. `null` (API hatası) ve `skipped` (bütçe, atlama, durdurma) satırları resume'da tekrar koşar. Böylece bütçeyi artırıp resume etmek yarım kalan ajanları canlandırır. 64 KB üstü sonuçlar `blobs/<key>.json` dosyasına yazılır. Her canlı satır ayrıca `trace` taşır: ajanın araç çağrıları ve final metninin ilk 2.000 karakteri; `maestro show <runId>` ajanları listeler, `maestro show <runId> <label>` birinin trace'ini okunur basar.
+`.maestro/runs/<runId>/` dizininde `script.js`, `args.json`, `run.json`, `journal.jsonl` ve `blobs/` bulunur. `run.json` run'ın modelini ve runner'ını tutar: cache anahtarı bunları içermediği için, resume ederken biri değişirse log'a "journal'daki sonuçlar eski modelden" uyarısı düşer. Journal satır başına bir `agent()` çağrısı tutar (`key = sha256(prompt + "\n" + canonicalJSON(opts \ {label, phase})) + ":" + n`). Yalnızca `status: 'ok'` satırlar cache isabetidir. `null` (API hatası) ve `skipped` (bütçe, atlama, durdurma) satırları resume'da tekrar koşar. Böylece bütçeyi artırıp resume etmek yarım kalan ajanları canlandırır. 64 KB üstü sonuçlar `blobs/<key>.json` dosyasına yazılır. Her canlı satır ayrıca `trace` taşır: ajanın araç çağrıları ve final metninin ilk 2.000 karakteri; `maestro show <runId>` ajanları listeler, `maestro show <runId> <label>` birinin trace'ini okunur basar.
 
 Run dizininde bir de `events.jsonl` vardır: her olay (ajan başladı, slot aldı, bitti, faz, log, bütçe) duvar saati zamanıyla bir satırdır. Ajanın prompt'u (ilk 4.000 karakter), modeli, effort'u ve araçları da buraya yazılır. Dosya yalnızca görüntüleme içindir. Resume ve cache journal'dan çalışır, bu dosyaya bakmaz. Yazılamazsa run durmaz, log'a bir satır düşer. Her başlatma ve resume dosyaya kendi `run_start` satırıyla eklenir.
 
@@ -295,19 +295,19 @@ npm run smoke
 
 ## Maliyet ve effort
 
-`review-changes` gerçek API ile, `MAESTRO_MODEL=claude-sonnet-5-5`, `MAESTRO_BUDGET=250000`. "Bug'lı kurulum": lula reposunda `2a877f1a^1` için açılmış geçici bir worktree, `diffRef: "2a877f1a 2a877f1a^1"`; bu diff `lib/moderation/image-moderation-queue.ts` içinde bilinen bir sayım-upsert yarışı ve `claim_image_moderation` içinde eksik bir `next_attempt_at <= now()` kontrolü içerir. Toplam girdi = cache'siz girdi + cache yazımı + cache okuması. Dolar, Sonnet 5.5 fiyatıyla hesaplanır: girdi $2/M, cache yazımı $2,50/M (5 dakika), cache okuması $0,20/M, çıktı $10/M.
+`review-changes` gerçek API ile, `MAESTRO_MODEL=claude-sonnet-5-5`, `MAESTRO_BUDGET=250000`. "Bug'lı kurulum": lula reposunda `2a877f1a^1` için açılmış geçici bir worktree, `diffRef: "2a877f1a 2a877f1a^1"`; bu diff `lib/moderation/image-moderation-queue.ts` içinde bilinen bir sayım-upsert yarışı ve `claim_image_moderation` içinde eksik bir `next_attempt_at <= now()` kontrolü içerir. Toplam girdi = cache'siz girdi + cache yazımı + cache okuması. Dolar, Sonnet 5.5 fiyatıyla hesaplanır: girdi $2/M, cache yazımı $2,50/M (5 dakika), cache okuması $0,10/M, çıktı $10/M.
 
 | Koşu | Skeptik effort | Toplam girdi | Cache'ten okunan | Çıktı | Dolar | Bulgu → skeptik → geçen → sentez |
 |---|---|---:|---:|---:|---:|---|
 | v1, temiz PR diff'i, cache yok | high | ölçülmedi | yok | ölçülmedi | $0,77 | 0 bulgu |
 | v1, bug'lı kurulum, cache yok | high | 3,36M | yok | 135k | $8,08 | 13 → 39 → 11 → 6, iki bug da bulundu |
-| v1.1, bug'lı kurulum, cache | high | 2,97M | 2,02M (%68) | 102k | $3,56 | 10 → 30 → 9 → 6, iki bug da (2. ve 3. sıra) |
-| v1.1, bug'lı kurulum, cache | medium | 2,28M | 1,64M (%72) | 79k | $2,55 | 11 → 33 → 10 → 5, iki bug da (1. ve 2. sıra) |
+| v1.1, bug'lı kurulum, cache | high | 2,97M | 2,02M (%68) | 102k | $3,36 | 10 → 30 → 9 → 6, iki bug da (2. ve 3. sıra) |
+| v1.1, bug'lı kurulum, cache | medium | 2,28M | 1,64M (%72) | 79k | $2,39 | 11 → 33 → 10 → 5, iki bug da (1. ve 2. sıra) |
 
 v1.1 koşuları 2026-10-25'te yapıldı (run `20261025-212908-d1a8b7` ve `20261025-213146-43651c`). Okuma notları:
 
-- **Cache.** Girdi maliyeti v1'de $6,72 (3,36M × $2), v1.1 high koşusunda $2,54: %62 düşüş. Bulucular her koşuda farklı sayıda bulgu üretir (13 yerine 10), bu yüzden ajan başına bakmak daha adil: girdi maliyeti ajan başına $0,156'dan $0,075'e iner (%52). Tek turlu sentez ajanı cache'ten yalnızca araçlar + sistem prefix'ini okur (%16); çok turlu skeptikler %70 civarı okur.
-- **Effort.** Skeptik başına maliyet high'da $0,103, medium'da $0,064 (%38 düşüş); skeptik başına çıktı 2,9k'dan 2,0k tokene iner. İki koşuda da tam olarak bir bulgu çürütüldü ve iki bilinen bug geçti. Medium'da oylar daha sık bölündü (11 bulgudan 3'ünde 2-1, high'da 10'dan 1'inde), yani medium skeptikler daha az otomatik onay verdi; bu tek bir koşu, istatistik değil.
+- **Cache.** Girdi maliyeti v1'de $6,72 (3,36M × $2), v1.1 high koşusunda $2,34: %65 düşüş. Bulucular her koşuda farklı sayıda bulgu üretir (13 yerine 10), bu yüzden ajan başına bakmak daha adil: girdi maliyeti ajan başına $0,156'dan $0,069'a iner (%56). Tek turlu sentez ajanı cache'ten yalnızca araçlar + sistem prefix'ini okur (%16); çok turlu skeptikler %70 civarı okur.
+- **Effort.** Skeptik başına maliyet high'da $0,103, medium'da $0,064 (%38 düşüş; bu iki rakam cache okuması $0,20/M sayılarak hesaplandı, doğru fiyat $0,10/M olduğu için ikisi de birkaç sent yüksektir); skeptik başına çıktı 2,9k'dan 2,0k tokene iner. İki koşuda da tam olarak bir bulgu çürütüldü ve iki bilinen bug geçti. Medium'da oylar daha sık bölündü (11 bulgudan 3'ünde 2-1, high'da 10'dan 1'inde), yani medium skeptikler daha az otomatik onay verdi; bu tek bir koşu, istatistik değil.
 - Sonuç: cache her koşuda açık. Bu ölçümde `medium` skeptikler bulgu kalitesini kaybetmeden daha ucuz; tek koşuya dayanarak varsayılan `high` bırakıldı.
 
 Skeptik effort'u `args.skepticEffort` ile değişir, varsayılan `high`:
