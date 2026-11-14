@@ -6,6 +6,7 @@ import { execFile } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type { ToolRegistry } from './custom-tools.js';
+import { childGitEnv } from './git-env.js';
 import { MaestroError, type ToolDef } from './types.js';
 
 export const READ_TOOL_NAMES = ['read_file', 'grep', 'glob', 'bash'] as const;
@@ -329,7 +330,7 @@ export function checkReadOnlyCommand(command: string, cwd: string): string[] {
 }
 
 function gitEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, GIT_PAGER: 'cat', PAGER: 'cat', GIT_TERMINAL_PROMPT: '0' };
+  const env = childGitEnv({ GIT_PAGER: 'cat', PAGER: 'cat', GIT_TERMINAL_PROMPT: '0' });
   delete env.GIT_EXTERNAL_DIFF;
   return env;
 }
@@ -511,6 +512,8 @@ const shellTool: ToolDef = {
       cwd: ctx.cwd,
       timeout: SHELL_TIMEOUT_MS,
       signal: ctx.signal,
+      // The command may run git: it must act on the worktree, not on a repo the parent's env names.
+      env: childGitEnv(),
     });
     if (r.timedOut) throw new Error(`command timed out after ${SHELL_TIMEOUT_MS} ms\n${formatProc(r)}`);
     if (r.code !== 0) throw new Error(`exit code ${r.code}\n${formatProc(r)}`);

@@ -1,6 +1,6 @@
 // Adversarial verification of the script runtime (spec 3.3, meta block, determinism rule, null/throw table,
 // ADR-2). Lens: edge cases and failure modes (sparse/boundary inputs, numeric limits, cross-realm objects,
-// parse-before-run, line mapping). Tests marked SPEC-VIOLATION assert the spec behaviour and fail today.
+// parse-before-run, line mapping). Tests marked SPEC-VIOLATION assert the spec behaviour; they failed when written and pass since the fixes.
 
 import { describe, expect, it, vi } from 'vitest';
 import { type HostHooks, makeParallel, makePipeline, parseScript, runScript } from '../src/runtime.js';

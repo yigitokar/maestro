@@ -1,6 +1,6 @@
 // Adversarial verification of the runner component (spec 3.2, Level 1 null/throw table, 3.6
-// "isolation istenmeyen ajan yazma aracı alamaz"). Failing tests assert SPEC behaviour; the passing
-// ones pin tricky invariants as a regression suite. Never hits the real API (scripted fetch).
+// "isolation istenmeyen ajan yazma aracı alamaz"). Tests assert SPEC behaviour and pin tricky
+// invariants as a regression suite; all pass since the fixes. Never hits the real API (scripted fetch).
 
 import { execFileSync } from 'node:child_process';
 import { promises as fs } from 'node:fs';

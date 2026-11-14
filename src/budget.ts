@@ -52,6 +52,10 @@ export class Budget implements BudgetView {
   private readonly listeners = new Set<(s: BudgetTick) => void>();
 
   constructor(opts: BudgetOptions) {
+    // NaN compares false with everything: such a total would never be exceeded, a silent unlimited run.
+    if (opts.total !== null && (typeof opts.total !== 'number' || Number.isNaN(opts.total))) {
+      throw new RangeError(`Budget: total must be a number of output tokens or null, got ${opts.total}`);
+    }
     this.total = opts.total;
     this.reserveFloor = opts.reserveFloor ?? LIMITS.reserveFloor;
     this.window = Math.max(1, opts.window ?? 20);

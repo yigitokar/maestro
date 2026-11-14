@@ -15,6 +15,14 @@ function expectBudgetThrow(fn: () => unknown): void {
   throw new Error('expected budget_exceeded throw');
 }
 
+describe('Budget total', () => {
+  it('rejects a NaN total instead of running unlimited', () => {
+    expect(() => new Budget({ total: Number.NaN })).toThrow(RangeError);
+    expect(() => new Budget({ total: Number('250k') })).toThrow(/total must be a number/);
+    expect(new Budget({ total: null }).remaining()).toBe(Number.POSITIVE_INFINITY);
+  });
+});
+
 describe('parseBudgetDirective', () => {
   it('parses suffixed and plain directives', () => {
     expect(parseBudgetDirective('+500k')).toBe(500_000);

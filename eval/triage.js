@@ -78,6 +78,10 @@ const cwd = dryRun
   : materialize(data.repo, data.tip, path.resolve('eval/data/repos', `${path.basename(data.repo)}-tip`));
 const stateDir = dryRun ? tmp('maestro-triage-state-') : path.resolve('eval/data/state');
 const budget = parseBudgetDirective(flag('--budget') ?? '1.5m');
+if (budget === null) {
+  console.error(`triage: invalid --budget "${flag('--budget')}" (e.g. 500k, 1.5m, 20000)`);
+  process.exit(1);
+}
 const resume = flag('--resume');
 const handle = run({
   script: readFileSync(path.join(here, 'workflows', 'triage.js'), 'utf8'),

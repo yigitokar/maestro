@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { promisify } from 'node:util';
+import { childGitEnv } from './git-env.js';
 import { toStructuredOutputSchema, validateValue } from './runner.js';
 import { READ_TOOL_NAMES, WRITE_TOOL_NAMES } from './tools.js';
 import {
@@ -87,14 +88,6 @@ function requireProperties(value: unknown): void {
     schema.required = Object.keys(object(schema.properties) ?? {});
     schema.additionalProperties = false;
   }
-}
-
-/** As in Isolation: inherited hook variables must not redirect git away from req.cwd. */
-function childEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const key of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX'])
-    delete env[key];
-  return env;
 }
 
 class RunState {
@@ -183,7 +176,7 @@ export class CodexRunner implements AgentRunner {
         '-s',
         req.isolated ? 'workspace-write' : 'read-only',
       ];
-      const env = childEnv();
+      const env = childGitEnv();
       if (this.opts.ignoreUserConfig) args.push('--ignore-user-config');
       const model = this.opts.model ?? (req.model.startsWith('claude-') ? undefined : req.model);
       if (model !== undefined) args.push('-m', model);

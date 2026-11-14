@@ -6,6 +6,7 @@
 import { execFile } from 'node:child_process';
 import { existsSync, promises as fs } from 'node:fs';
 import path from 'node:path';
+import { childGitEnv } from './git-env.js';
 import { MaestroError } from './types.js';
 
 // ---------------------------------------------------------------------------------------------
@@ -13,10 +14,7 @@ import { MaestroError } from './types.js';
 
 /** Environment for every git child: never inherit a foreign repo (hooks / agent runtimes set these). */
 function gitEnv(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' };
-  for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR', 'GIT_PREFIX'])
-    delete env[k];
-  return env;
+  return childGitEnv({ GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C' });
 }
 
 function git(cwd: string, args: string[]): Promise<string> {

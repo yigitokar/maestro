@@ -25,7 +25,6 @@ import type {
   ToolDef,
   Usage,
   WorkflowEvent,
-  WorkflowMeta,
 } from './types.js';
 import { DEFAULT_MODEL, MaestroError } from './types.js';
 import { addUsage, cacheReadRatio, hasCacheInfo, totalInput } from './usage.js';
@@ -77,7 +76,6 @@ export interface RunHandle {
 /** One script execution: the top run (depth 0) or a nested workflow() child (depth 1, "▸ name" group). */
 interface Frame {
   depth: 0 | 1;
-  meta: WorkflowMeta;
   group?: string;
   /** Last phase() title: the default phase of this frame's agents. */
   phase?: string;
@@ -95,7 +93,8 @@ interface LiveAgent {
   lease: BudgetLease;
 }
 
-const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+/** A runId or workflow name: one path component, never a path. */
+export const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 export function run(opts: RunOptions): RunHandle {
   const runId = opts.resumeFromRunId ?? opts.runId ?? generateRunId();
@@ -418,7 +417,7 @@ export function run(opts: RunOptions): RunHandle {
         parsed.meta.name,
       );
     }
-    const child: Frame = { depth: 1, meta: parsed.meta, group: parsed.meta.name };
+    const child: Frame = { depth: 1, group: parsed.meta.name };
     return runScript(parsed, wfArgs, hooksFor(child), { filename: file });
   }
 
@@ -524,7 +523,7 @@ export function run(opts: RunOptions): RunHandle {
           emitLog(`budget: total ${budget.total}, overrun ceiling ${budget.overrunCeiling()}`);
         }
         if (stopped) throw stopError();
-        const top: Frame = { depth: 0, meta: parsed.meta };
+        const top: Frame = { depth: 0 };
         try {
           return await runScript(parsed, args, hooksFor(top), { filename: scriptFile });
         } finally {

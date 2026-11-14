@@ -301,6 +301,35 @@ return { before, after: budget.spent(), total: budget.total };`;
     expect(last).toMatchObject({ runId, status: 'done', result: expect.stringContaining('x 1') });
   });
 
+  it('a resumed run is running again: WorkflowResult does not answer with the earlier outcome', async () => {
+    let slow = false;
+    const { client } = await connect({ handler: () => (slow ? { delayMs: 60_000 } : {}) });
+    const script = (tag: string) =>
+      `export const meta = { name: 'm', description: 'd' };\nreturn await agent('${tag}', { label: 'only' });`;
+    const runId = await startWorkflow(client, script('first'));
+    expect(await poll(client, runId)).toMatchObject({ status: 'done' });
+
+    slow = true;
+    const resumed = await client.callTool({
+      name: 'Workflow',
+      arguments: { script: script('second'), resumeFromRunId: runId },
+    });
+    expect(resumed.isError, textOf(resumed)).toBeFalsy();
+    expect(JSON.parse(textOf(resumed)).runId).toBe(runId);
+    await poll(client, runId, (r) => r.status === 'running' && r.liveAgents.length === 1);
+
+    const stop = await client.callTool({ name: WORKFLOW_STOP_TOOL_NAME, arguments: { runId } });
+    expect(stop.isError, textOf(stop)).toBeFalsy();
+    const waited = await client.callTool({
+      name: WORKFLOW_RESULT_TOOL_NAME,
+      arguments: { runId, wait: true },
+    });
+    expect(JSON.parse(textOf(waited))).toMatchObject({
+      status: 'failed',
+      error: expect.stringContaining('stopped'),
+    });
+  });
+
   it('invalid input comes back as an MCP tool error, not a protocol error', async () => {
     const { client } = await connect();
     const res = await client.callTool({ name: 'Workflow', arguments: { script: 'return 1' } });

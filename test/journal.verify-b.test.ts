@@ -1,5 +1,5 @@
 // Adversarial verification of the journal (spec 3.1, Seviye 2 adım 1/2/7, ADR-4): edge cases and
-// failure modes. Tests assert SPEC behaviour; some fail against the current implementation on purpose.
+// failure modes. Tests assert SPEC behaviour.
 
 import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { mkdtemp, open } from 'node:fs/promises';

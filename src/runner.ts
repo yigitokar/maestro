@@ -291,9 +291,11 @@ export function validateValue(schema: unknown, value: unknown, at = '$'): string
     errs.push(`${at}: not in enum`);
   }
   if ('const' in s && JSON.stringify(s.const) !== JSON.stringify(value)) errs.push(`${at}: const mismatch`);
-  const alts = s.anyOf ?? s.oneOf;
-  if (Array.isArray(alts) && !alts.some((alt) => validateValue(alt, value, at).length === 0)) {
-    errs.push(`${at}: matches no alternative`);
+  // oneOf is checked like anyOf: structured outputs gets it as anyOf (toStructuredOutputSchema).
+  for (const alts of [s.anyOf, s.oneOf]) {
+    if (Array.isArray(alts) && !alts.some((alt) => validateValue(alt, value, at).length === 0)) {
+      errs.push(`${at}: matches no alternative`);
+    }
   }
   if (Array.isArray(s.allOf)) for (const sub of s.allOf) errs.push(...validateValue(sub, value, at));
   if (typeof value === 'string') {
@@ -320,10 +322,10 @@ export function validateValue(schema: unknown, value: unknown, at = '$'): string
     const obj = value as Record<string, unknown>;
     const props = (s.properties ?? {}) as Record<string, unknown>;
     if (Array.isArray(s.required)) {
-      for (const key of s.required) if (!(key in obj)) errs.push(`${at}.${key}: required`);
+      for (const key of s.required) if (!Object.hasOwn(obj, key)) errs.push(`${at}.${key}: required`);
     }
     for (const [key, v] of Object.entries(obj)) {
-      if (key in props) errs.push(...validateValue(props[key], v, `${at}.${key}`));
+      if (Object.hasOwn(props, key)) errs.push(...validateValue(props[key], v, `${at}.${key}`));
       else if (s.additionalProperties === false) errs.push(`${at}.${key}: additional property`);
       else if (s.additionalProperties && typeof s.additionalProperties === 'object') {
         errs.push(...validateValue(s.additionalProperties, v, `${at}.${key}`));
@@ -476,7 +478,7 @@ export class AnthropicRunner implements AgentRunner {
 
     const finalText = carry + textOf(last);
     if (finalText !== '') st.finalText = finalText;
-    if (!req.schema) return st.done(carry + textOf(last), 'ok');
+    if (!req.schema) return st.done(finalText, 'ok');
 
     // ---- Stage 2: structured final ------------------------------------------------------
     const base = betaJSONSchemaOutputFormat(toStructuredOutputSchema(req.schema) as { type: 'object' }, {

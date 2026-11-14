@@ -6,7 +6,13 @@ import { mkdtemp, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { AnthropicRunner, attachTerminalProgress, FakeRunner, run } from '../dist/index.js';
+import {
+  AnthropicRunner,
+  attachTerminalProgress,
+  FakeRunner,
+  parseBudgetDirective,
+  run,
+} from '../dist/index.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
@@ -30,6 +36,15 @@ export async function runExample({ name, args, rules, setup }) {
     process.exitCode = 1;
     return;
   }
+  // Output-token ceiling, same forms as --budget (250000, 250k, 1.5m).
+  const budget = process.env.MAESTRO_BUDGET ? parseBudgetDirective(process.env.MAESTRO_BUDGET) : undefined;
+  if (budget === null) {
+    console.error(
+      `${name}: invalid MAESTRO_BUDGET "${process.env.MAESTRO_BUDGET}" (e.g. 250000, 250k, 1.5m)`,
+    );
+    process.exitCode = 1;
+    return;
+  }
   const { cwd } = setup ? await setup(dryRun) : { cwd: process.cwd() };
   const stateDir = dryRun ? await mkdtemp(path.join(os.tmpdir(), `maestro-${name}-`)) : undefined;
   const script = await readFile(path.join(here, 'workflows', `${name}.js`), 'utf8');
@@ -39,7 +54,7 @@ export async function runExample({ name, args, rules, setup }) {
     cwd,
     ...(stateDir ? { stateDir } : {}),
     model: process.env.MAESTRO_MODEL, // undefined → DEFAULT_MODEL
-    ...(process.env.MAESTRO_BUDGET ? { budget: Number(process.env.MAESTRO_BUDGET) } : {}), // output-token ceiling
+    ...(budget !== undefined ? { budget } : {}),
     runner: dryRun ? new FakeRunner(rules) : new AnthropicRunner(),
     ...(dryRun ? { concurrency: 4 } : {}),
   });

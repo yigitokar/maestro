@@ -8,7 +8,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { loadCustomTools } from './custom-tools.js';
 import { parseScript } from './runtime.js';
 import type { ToolDef, WorkflowEvent } from './types.js';
-import { type RunHandle, type RunOptions, run } from './workflow.js';
+import { type RunHandle, type RunOptions, run, SAFE_ID } from './workflow.js';
 
 export const WORKFLOW_TOOL_NAME = 'Workflow';
 
@@ -80,9 +80,6 @@ export function liveWorkflowAgents(runId: string): LiveWorkflowAgent[] | null {
   const entry = liveRuns.get(runId);
   return entry ? [...entry.agents.values()] : null;
 }
-
-// Same rule as run(): a runId names a directory under <stateDir>/runs, never a path.
-const SAFE_RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 const nullableString = (description: string) => ({ type: ['string', 'null'], description });
 
@@ -200,8 +197,7 @@ export async function handleWorkflowToolCall(
     if (present(inp.script)) script = inp.script;
     else if (present(inp.scriptPath)) script = await fs.readFile(path.resolve(cwd, inp.scriptPath), 'utf8');
     else if (present(inp.name)) {
-      if (!/^[A-Za-z0-9._-]+$/.test(inp.name) || inp.name.startsWith('.'))
-        return fail(`invalid workflow name: ${inp.name}`);
+      if (!SAFE_ID.test(inp.name)) return fail(`invalid workflow name: ${inp.name}`);
       const dir = path.resolve(cwd, ctx.workflowsDir ?? path.join(stateDir, 'workflows'));
       script = await fs.readFile(path.join(dir, `${inp.name}.js`), 'utf8');
     }
@@ -211,7 +207,7 @@ export async function handleWorkflowToolCall(
   // A resume of a run that does not exist is input the handler can see now: is_error, not a
   // 'started' result whose scriptPath does not exist (spec Seviye 2 tool surface).
   if (resume !== undefined) {
-    if (!SAFE_RUN_ID.test(resume)) return fail(`invalid resumeFromRunId "${resume}"`);
+    if (!SAFE_ID.test(resume)) return fail(`invalid resumeFromRunId "${resume}"`);
     const runsDir = path.join(stateDir, 'runs');
     const storedScript = path.join(runsDir, resume, 'script.js');
     if (!existsSync(path.join(runsDir, resume))) return fail(`no run ${resume} under ${runsDir}`);
