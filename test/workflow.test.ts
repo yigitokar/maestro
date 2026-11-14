@@ -44,19 +44,20 @@ const logs = (events: WorkflowEvent[]) =>
   events.filter((e): e is Extract<WorkflowEvent, { type: 'log' }> => e.type === 'log').map((e) => e.message);
 
 describe('scheduler through run()', () => {
-  it('32 agents in parallel with concurrency 16: at most 16 live runner calls, and 16 are reached', async () => {
+  it('32 agents in parallel with an explicit concurrency of 16: exactly 16 live runner calls at the peak', async () => {
     const dir = await tmp();
+    // Explicit, never the machine default (min(16, cpus - 2)).
+    const concurrency = 16;
     const runner = new FakeRunner(() => ({ delayMs: 25 }));
     const { handle } = start(dir, {
       runner,
-      concurrency: 16,
+      concurrency,
       script: `${META()}const r = await parallel(Array.from({ length: 32 }, (_, i) => () => agent('task ' + i)));
 return r.filter(Boolean).length;`,
     });
     expect(await handle.promise).toBe(32);
     expect(runner.liveCalls).toBe(32);
-    expect(runner.maxConcurrent).toBeLessThanOrEqual(16);
-    expect(runner.maxConcurrent).toBe(16);
+    expect(runner.maxConcurrent).toBe(concurrency);
   });
 });
 
@@ -114,7 +115,7 @@ return out;`;
     expect(r2.liveCalls).toBe(3);
   });
 
-  it('an unsatisfiable schema throws immediately; the runner is never called', async () => {
+  it('an invalid or unsatisfiable schema throws schema_invalid; the runner is never called', async () => {
     const dir = await tmp();
     const runner = new FakeRunner();
     const { handle } = start(dir, {
@@ -137,7 +138,7 @@ return codes;`,
     expect(runner.liveCalls).toBe(0);
   });
 
-  it('a write tool without isolation throws; the runner is never called', async () => {
+  it('a write tool without isolation, an unknown tool and a bad isolation value throw; the runner is never called', async () => {
     const dir = await tmp();
     const runner = new FakeRunner();
     const { handle } = start(dir, {
@@ -195,6 +196,8 @@ return out;`,
     expect(runner.liveCalls).toBe(0);
     // A broken script never creates (or replaces) a run dir.
     expect(existsSync(syntax.handle.runDir)).toBe(false);
+    expect(existsSync(noMeta.handle.runDir)).toBe(false);
+    expect(existsSync(badMeta.handle.runDir)).toBe(false);
   });
 
   it('Date.now() / Math.random() in a script reject the run', async () => {
@@ -238,20 +241,32 @@ return r;`,
 
   it('skip(id): that agent() returns null with a skipped row, the others continue', async () => {
     const dir = await tmp();
+    let handle!: RunHandle;
+    let slowId: number | undefined;
+    let skipped: boolean | undefined;
     const runner = new FakeRunner([
-      { match: 'slow', respond: { turns: 100, delayMs: 10 } },
+      {
+        match: 'slow',
+        // Skip from inside the live runner call (one macrotask later): the agent is mid-run by then.
+        respond: () => {
+          setImmediate(() => {
+            skipped = handle.skip(slowId!);
+          });
+          return { turns: 1000, delayMs: 10 };
+        },
+      },
       { match: /./, respond: { delayMs: 30 } },
     ]);
-    const { handle } = start(dir, {
+    ({ handle } = start(dir, {
       runner,
       script: `${META()}return await parallel([() => agent('a'), () => agent('slow', { label: 'S' }), () => agent('c')]);`,
-    });
-    let skipped: boolean | undefined;
+    }));
     handle.events.on('agent_start', (e: Extract<WorkflowEvent, { type: 'agent_start' }>) => {
-      if (e.label === 'S') setTimeout(() => (skipped = handle.skip(e.id)), 20);
+      if (e.label === 'S') slowId = e.id;
     });
     const v = (await handle.promise) as unknown[];
     expect(skipped).toBe(true);
+    expect(runner.calls.map((c) => c.prompt).sort()).toEqual(['a', 'c', 'slow']);
     expect(v[0]).toMatch(/^fake result/);
     expect(v[1]).toBeNull();
     expect(v[2]).toMatch(/^fake result/);
@@ -402,12 +417,17 @@ return agent('c');`;
       script: `${META()}log('x');\nreturn agent('a');`,
     });
     const seen: string[] = [];
+    let thrown = 0;
     handle.events.on('log', (e: { message: string }) => seen.push(e.message));
     handle.events.on('agent_end', () => {
+      thrown++;
       throw new Error('bad listener');
     });
     await expect(handle.promise).resolves.toMatch(/^fake result/);
     expect(seen).toContain('x');
+    expect(thrown).toBe(1);
+    // The row was written although the listener threw.
+    expect(rows(handle.runDir).map((e) => e.status)).toEqual(['ok']);
   });
 });
 

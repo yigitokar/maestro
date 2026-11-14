@@ -116,7 +116,7 @@ describe('determinism overrides', () => {
     expect(typeof console.log).toBe('function');
   });
 
-  it('only the host API is injected as globals', async () => {
+  it('the eight host API names are globals of the expected type', async () => {
     const r = await probe(
       "['agent','parallel','pipeline','phase','log','args','budget','workflow'].map((n) => typeof globalThis[n])",
     );
@@ -162,13 +162,17 @@ describe('script execution', () => {
     await expect(run(`${META}throw new Error('boom')`)).rejects.toThrow('boom');
   });
 
-  it('syntax error rejects before any hook is called', async () => {
-    const { hooks } = makeHooks();
+  it('a syntax error throws a SyntaxError from parseScript with the original line and column', () => {
     const src = `${META}agent('x');\nconst = 1;`;
-    await expect(async () => runScript(parseScript(src), {}, hooks)).rejects.toThrow(SyntaxError);
-    expect(() => parseScript(src)).toThrow(/\(3:6\)/);
-    expect(hooks.agent).not.toHaveBeenCalled();
-    expect(hooks.log).not.toHaveBeenCalled();
+    let err: unknown;
+    try {
+      parseScript(src);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(SyntaxError);
+    expect((err as Error).message).toMatch(/\(3:6\)$/);
+    expect((err as { loc?: unknown }).loc).toEqual({ line: 3, column: 6 });
   });
 
   it('error line numbers point at the original source line', async () => {
@@ -190,7 +194,8 @@ describe('script execution', () => {
     } catch (e) {
       stack = String((e as Error).stack);
     }
-    expect(stack).toMatch(/m\.js:1:/);
+    // V8 reports the 1-based column of the property name.
+    expect(stack).toContain(`m.js:1:${src.indexOf('.x') + 2}`);
   });
 });
 
@@ -381,9 +386,7 @@ describe('parallel', () => {
 });
 
 describe('pipeline', () => {
-  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-  it('4097 items reject with item_limit (stages not called)', async () => {
+  it('4096 items pass, 4097 reject with item_limit (stages not called)', async () => {
     const stage = vi.fn(async () => 1);
     const pipeline = makePipeline();
     expect(
@@ -395,25 +398,35 @@ describe('pipeline', () => {
       ),
     ).toBe('item_limit');
     expect(stage).not.toHaveBeenCalled();
+    expect(await pipeline(Array.from({ length: 4096 }, (_, i) => i))).toHaveLength(4096);
   });
 
-  it('has no barrier: item A reaches stage 2 while item B is still in stage 1', async () => {
+  it('has no barrier: item A finishes stage 2 while item B is still in stage 1', async () => {
     const events: string[] = [];
+    let releaseB!: () => void;
+    const gateB = new Promise<void>((r) => {
+      releaseB = r;
+    });
     const agent = vi.fn(async (prompt: string) => {
       events.push(`start:${prompt}`);
-      await sleep(prompt === 's1:B' ? 120 : 10);
+      if (prompt === 's1:B') await gateB;
       events.push(`done:${prompt}`);
       return prompt;
     });
-    const { result } = await run(
-      `${META}return pipeline(['A', 'B'], (x) => agent('s1:' + x), (prev, x) => agent('s2:' + x))`,
+    const { hooks } = makeHooks({ agent });
+    const p = runScript(
+      parseScript(
+        `${META}return pipeline(['A', 'B'], (x) => agent('s1:' + x), (prev, x) => agent('s2:' + x))`,
+      ),
       {},
-      { agent },
+      hooks,
     );
-    expect(result).toEqual(['s2:A', 's2:B']);
-    expect(events.indexOf('start:s2:A')).toBeGreaterThan(-1);
-    expect(events.indexOf('start:s2:A')).toBeLessThan(events.indexOf('done:s1:B'));
-    expect(events.indexOf('done:s2:A')).toBeLessThan(events.indexOf('done:s1:B'));
+    // Everything that can run while s1:B is blocked has run after one macrotask turn.
+    await new Promise((r) => setImmediate(r));
+    expect(events).toEqual(['start:s1:A', 'done:s1:A', 'start:s1:B', 'start:s2:A', 'done:s2:A']);
+    releaseB();
+    expect(await p).toEqual(['s2:A', 's2:B']);
+    expect(events.slice(5)).toEqual(['done:s1:B', 'start:s2:B', 'done:s2:B']);
   });
 
   it('passes (prev, item, index); stage 1 gets the item as prev', async () => {

@@ -138,6 +138,8 @@ describe('Budget turn-level abort', () => {
     turn++;
     lease.report(1);
     expect(lease.signal.aborted).toBe(true);
+    expect(lease.signal.reason).toBeInstanceOf(MaestroError);
+    expect((lease.signal.reason as MaestroError).code).toBe('budget_exceeded');
     expect(abortedAtTurn).toBe(5);
   });
 
@@ -184,6 +186,7 @@ describe('Budget turn-level abort', () => {
     expect(b.spent()).toBe(15_000);
     b.report(5_001);
     expect(b.spent()).toBe(20_001);
+    expect(b.remaining()).toBe(0);
     expect(lease.signal.aborted).toBe(true);
     expectBudgetThrow(() => b.enter());
   });
@@ -273,6 +276,7 @@ describe('Budget reserve()', () => {
     b.enter();
     b.enter();
     expectBudgetThrow(() => b.enter());
+    expect(b.inflight()).toBe(2);
   });
 });
 
@@ -286,6 +290,9 @@ describe('Budget with total null', () => {
     for (const l of leases) l.report(1_000_000);
     b.report(1e9);
     expect(b.spent()).toBe(100_000_000 + 1e9);
+    expect(b.remaining()).toBe(Number.POSITIVE_INFINITY);
+    expect(b.inflight()).toBe(100);
+    leases[0]?.report(Number.MAX_SAFE_INTEGER);
     expect(b.remaining()).toBe(Number.POSITIVE_INFINITY);
     expect(leases.every((l) => !l.signal.aborted)).toBe(true);
     expect(b.overrunCeiling()).toBeNull();
@@ -344,6 +351,7 @@ describe('Budget view() and onTick()', () => {
 describe('Budget overrunCeiling()', () => {
   it('is total + concurrency × maxTokensPerTurn', () => {
     expect(new Budget({ total: 20_000 }).overrunCeiling()).toBe(20_000 + 16 * 32_000);
+    expect(new Budget({ total: 500_000 }).overrunCeiling()).toBe(500_000 + 16 * 32_000);
     expect(new Budget({ total: 100_000, concurrency: 4, maxTokensPerTurn: 8_000 }).overrunCeiling()).toBe(
       100_000 + 4 * 8_000,
     );

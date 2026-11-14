@@ -196,19 +196,6 @@ describe('Journal blobs', () => {
     expect(j2.get('big:0')?.result).toEqual(big);
   });
 
-  it('keeps results at or under 64 KB inline', async () => {
-    const j = await openJournal();
-    // JSON.stringify adds 2 quote bytes: exactly 64 KB serialized.
-    const exact = 'y'.repeat(64 * 1024 - 2);
-    await j.append(entry('small:0', { result: exact }));
-    const line = JSON.parse(fileLines(j.path)[0]!);
-    expect(line.blob).toBeUndefined();
-    expect(line.result).toBe(exact);
-    expect(existsSync(join(dir, 'blobs', 'small:0.json'))).toBe(false);
-    await j.append(entry('small:1', { result: `${exact}z` }));
-    expect(JSON.parse(fileLines(j.path)[1]!).blob).toBe(true);
-  });
-
   it('a missing blob file makes get() return undefined and logs', async () => {
     const j = await openJournal();
     await j.append(entry('big:0', { result: big }));

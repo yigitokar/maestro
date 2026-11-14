@@ -68,6 +68,7 @@ describe('branchNameFor', () => {
     const repo = await makeRepo();
     expect(branchNameFor('r1', 'fix-auth', H('a'), 0)).toBe('wf/r1/fix-auth');
     expect(branchNameFor('r1', undefined, 'deadbeefcafe', 0)).toBe('wf/r1/agent-deadbeef');
+    expect(branchNameFor('r1', 'fix', H('a'), 1)).toBe('wf/r1/fix');
     expect(branchNameFor('r1', 'fix', H('a'), 2)).toBe('wf/r1/fix');
     expect(branchNameFor('r1', undefined, 'deadbeefcafe', 2)).toBe('wf/r1/agent-deadbeef-2');
     expect(branchNameFor('r1', 'x y//z', H('a'), 0)).toBe('wf/r1/x-y-z');
@@ -384,6 +385,12 @@ describe('gc', () => {
     expect(listed.unmergedBranches).toEqual(['wf/gc/unmerged']);
     expect(listed.removed).toEqual([]);
     expect(existsSync(d.path)).toBe(true);
+    // listing alone deletes no branch either
+    expect(sh(repo, 'branch', '--list', 'wf/*', '--format=%(refname:short)').split('\n').sort()).toEqual([
+      'wf/gc/dirty',
+      'wf/gc/merged',
+      'wf/gc/unmerged',
+    ]);
 
     const del = await gc({ repoDir: repo, delete: true });
     // Without force the dirty worktree (uncommitted work) and the branch it holds stay.
