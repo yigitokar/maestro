@@ -43,6 +43,9 @@ const text = (value: unknown, isError = false): CallResult => ({
 
 const RUN_ID_PROPERTY = { runId: { type: 'string', description: 'runId returned by the Workflow tool.' } };
 
+/** Settled runs whose outcome a server keeps for WorkflowResult; older ones answer "unknown runId". */
+export const MAX_KEPT_OUTCOMES = 200;
+
 /** How often a waiting WorkflowResult call reports progress, well under any idle-call timeout. */
 export const WAIT_PROGRESS_INTERVAL_MS = 30_000;
 
@@ -76,7 +79,18 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
   };
 
   const settle = (runId: string, outcome: WorkflowOutcome) => {
+    // Re-inserted so the map stays ordered by settle time, then the oldest settled results go: a
+    // long-lived server would otherwise keep every result of the session in memory.
+    outcomes.delete(runId);
     outcomes.set(runId, outcome);
+    let settled = 0;
+    for (const o of outcomes.values()) if (o !== 'running') settled++;
+    for (const [id, o] of outcomes) {
+      if (settled <= MAX_KEPT_OUTCOMES) break;
+      if (o === 'running') continue;
+      outcomes.delete(id);
+      settled--;
+    }
     const wakes = waiters.get(runId);
     waiters.delete(runId);
     for (const wake of wakes ?? []) wake();
@@ -193,7 +207,11 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
       if (typeof runId !== 'string' || !runId) return text('runId is required', true);
       const outcome = outcomes.get(runId);
       if (outcome === undefined)
-        return text(`unknown runId ${runId} (runs started by another server process are not tracked)`, true);
+        return text(
+          `unknown runId ${runId} (runs of another server process are not tracked, and only the last ` +
+            `${MAX_KEPT_OUTCOMES} finished runs are kept; the journal is under .maestro/runs/${runId})`,
+          true,
+        );
       if (name === WORKFLOW_STOP_TOOL_NAME) {
         if (outcome !== 'running' || !stopWorkflowRun(runId, 'stopped by user'))
           return text(`run ${runId} is not running`, true);

@@ -12,8 +12,15 @@ function git(...args: string[]): string {
 /** Creates `dir` at `sha` fetched from `source`, or reuses it when it is already there. Returns `dir`. */
 export function materialize(source: string, sha: string, dir: string): string {
   if (existsSync(path.join(dir, '.git'))) {
-    if (git('-C', dir, 'rev-parse', 'HEAD') === sha) return dir;
-    throw new Error(`${dir} is at another commit; remove it first`);
+    let head: string | undefined;
+    try {
+      head = git('-C', dir, 'rev-parse', '--verify', 'HEAD');
+    } catch {
+      // An earlier attempt died between `git init` and the checkout: nothing in it is worth keeping.
+      rmSync(dir, { recursive: true, force: true });
+    }
+    if (head === sha) return dir;
+    if (head !== undefined) throw new Error(`${dir} is at another commit; remove it first`);
   }
   mkdirSync(dir, { recursive: true });
   git('init', '-q', dir);

@@ -95,10 +95,11 @@ export const FIX_PATTERNS: Record<string, string> = {
     'skip|ensure|keep)\\b',
 };
 /** Never blamed, never counted toward size. */
-const NOISE_RE = /(\.lock$|lock\.json$|\.snap$)/;
+export const NOISE_RE = /(\.lock$|\.lockb$|(?:^|[/-])lock\.(?:json|ya?ml)$|\.snap$)/;
 /** Not blamed: prose, and SQL (handled by the function linker). */
 const NO_BLAME_RE = /(\.md$|\.sql$)/;
-const FN_RE = /create\s+or\s+replace\s+function\s+(?:public\.)?"?(\w+)"?/gi;
+// The schema, quoted or not, is skipped: "public"."claim_job" and private.claim_job both name claim_job.
+export const FN_RE = /create\s+or\s+replace\s+function\s+(?:"?\w+"?\s*\.\s*)?"?(\w+)"?/gi;
 const HUNK_RE = /^@@ -(\d+)(?:,(\d+))? \+/;
 const DAY = 86_400;
 
@@ -387,7 +388,16 @@ if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.ar
     console.error('usage: node eval/mine.ts --repo <path> --ref <trunk ref> [--out f] [--max-lines n]');
     process.exit(2);
   }
-  const num = (n: string) => (flag(argv, n) === undefined ? undefined : Number(flag(argv, n)));
+  const num = (n: string) => {
+    const raw = flag(argv, n);
+    if (raw === undefined) return undefined;
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value < 0) {
+      console.error(`mine: ${n} needs a non-negative number, got "${raw}"`);
+      process.exit(2);
+    }
+    return value;
+  };
   const result = mine({
     repo,
     ref,

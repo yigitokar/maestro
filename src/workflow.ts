@@ -598,7 +598,12 @@ export function run(opts: RunOptions): RunHandle {
       stopReason = reason;
       runController.abort(stopError());
       // spec null/throw table: the script rejects, the journal stays (every aborted agent has its row).
-      void drain().then(() => finish(false, stopError()));
+      // The journal is closed before the promise settles: a resume started right after must not find it
+      // still open (agent() throws once stopped, so nothing can append any more).
+      void drain()
+        .then(() => journal?.close())
+        .catch(() => {})
+        .then(() => finish(false, stopError()));
     },
     skip(agentId: number): boolean {
       const c = skipControllers.get(agentId);

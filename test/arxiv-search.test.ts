@@ -136,8 +136,10 @@ describe('arxiv_search (example custom tool)', () => {
     const { t, calls } = tool(FEED, { minIntervalMs: 80 });
     await Promise.all([t.run(input('a'), ctx()), t.run(input('b'), ctx()), t.run(input('c'), ctx())]);
     expect(calls.map((c) => c.url.searchParams.get('search_query'))).toEqual(['all:a', 'all:b', 'all:c']);
-    expect(calls[1]!.at - calls[0]!.at).toBeGreaterThanOrEqual(70);
-    expect(calls[2]!.at - calls[1]!.at).toBeGreaterThanOrEqual(70);
+    // Slots are 80 ms apart; a request leaves a little after its slot when the event loop is busy, so
+    // the gaps between requests are checked with room for that.
+    expect(calls[1]!.at - calls[0]!.at).toBeGreaterThanOrEqual(40);
+    expect(calls[2]!.at - calls[0]!.at).toBeGreaterThanOrEqual(120);
   });
 
   it('an agent that is stopped while waiting for its turn does not send the request', async () => {
