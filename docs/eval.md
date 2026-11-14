@@ -358,10 +358,10 @@ git clone https://github.com/review-bench/ReviewBench eval/data/reviewbench
 ```
 
 ```bash
-npm run build && node eval/reviewbench/run.js --out eval/data/rb/pilot --limit 3 --repeats 1
+npm run build && node eval/reviewbench/run.js --out eval/data/rb/pilot --repeats 1 --only PierreJanineh_TechDebtMCP_135-16a54f0f,AA-Factory_aafactory-prototype_17-a1978cb7,DisciplinedSoftware_Codebase-Conversion_1-4b46d68c
 ```
 
-Çalıştırıcı her PR × kol × tekrarı ayrı bir Maestro run'ı olarak, sabit tohumla karıştırılmış sırada koşar ve her hücrenin bulgularını `findings/<kol>-r<tekrar>/<pr>.json` dosyasına benchmark'ın hakem girdisi biçiminde yazar. Biten hücreler `results.jsonl`'dadır ve aynı komut kaldığı yerden devam eder. `--max-dollars` (varsayılan 50) o dizinin harcaması o tutara ulaşınca yeni hücre başlatmaz. `--dry-run` ağa çıkmaz. Hiç inceleme döndürmeyen bir hücre (ajan null) başarısız yazılır ve bulgu dosyası almaz, böylece hakem bozuk bir koşuyu "inceledi, bir şey bulmadı" diye puanlamaz.
+Çalıştırıcı her PR × kol × tekrarı ayrı bir Maestro run'ı olarak, sabit tohumla karıştırılmış sırada koşar ve her hücrenin bulgularını `findings/<kol>-r<tekrar>/<pr>.json` dosyasına benchmark'ın hakem girdisi biçiminde yazar. Biten hücreler `results.jsonl`'dadır ve aynı komut kaldığı yerden devam eder. `--max-dollars` (varsayılan 50) o dizinin harcaması o tutara ulaşınca yeni hücre başlatmaz. `--dry-run` ağa çıkmaz. Hiç inceleme döndürmeyen bir hücre (ajan null) başarısız yazılır ve bulgu dosyası almaz, böylece hakem bozuk bir koşuyu "inceledi, bir şey bulmadı" diye puanlamaz. Ajanlarından biri null ya da skipped biten hücre (API hatası, bütçe) "degraded" yazılır ve o da bulgu dosyası almaz: eksik bulucu ya da eksik skeptik oyu en çok ajanı olan B'nin aleyhine işlerdi. Aynı komut bu hücreleri resume eder ve yalnızca ölen ajanları yeniden koşar; `--accept-degraded` olduğu gibi puanlatır. Fiyatı `eval/_launcher.js`'te olmayan bir modelle gerçek koşu başlamaz, çünkü harcama sınırı o zaman işlemezdi.
 
 **Puanlama.**
 
@@ -370,6 +370,10 @@ node eval/reviewbench/judge.js --out eval/data/rb/pilot
 ```
 
 Benchmark'ın kendi hakemini (`npm run judge`, önce checkout'ta bir kez `npm ci`) her kol ve tekrar için koşar ve `report.md` yazar: kol başına grounded precision, recall ve F1 (tekrarların ortalaması ve en düşük–en yüksek F1), high ciddiyetli ve correctness/security kategorili bulgularda recall, PR başına bulgu sayısı ve dolar, başarısız hücreler; ayrıca PR başına eşleştirilmiş recall karşılaştırması. Hakem modeli varsayılan olarak liderlik tablosununkidir (`claude-sonnet-5`). Golden set değiştirilmez (`--ingest` verilmez).
+
+**A'nın prompt'u.** A'ya yalnızca B'nin üç bulucu prompt'unun cümleleri verilir, tek istemde. B'de olmayan bir talimat (bulguyu doğrula, satır numarasını şöyle ver) eklenmez. Hakem eşleştirmeyi satır numarasıyla değil anlamla yapar (`scripts/eval/matcher.ts`).
+
+**Pilot için PR seçimi.** Test setinin üçüncü PR'ı 600 MB'lık bir monorepodadır; pilotta `--limit` yerine `--only` ile küçük repolar seçilir. `test.json`'daki `lines_added` ilk PR'da (2 satır) `git diff base...head` ile uyuşmuyor (297 satır); kollar benchmark'ın kendi harness'iyle aynı diff'i (`base...head`) görür.
 
 **Bilinen sınır.** Golden set yalnızca hata değil, test, dokümantasyon ve bakım bulguları da içerir (test setinde 352 gerçek bulgu). Üç kol da yalnızca mantık, güvenlik ve veri kaybı arar, bu yüzden toplam recall üçünde de düşük çıkar; karşılaştırma için high ciddiyet ve correctness/security satırları daha anlamlıdır.
 

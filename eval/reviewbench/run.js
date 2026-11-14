@@ -4,9 +4,11 @@
 //   npm run build && node eval/reviewbench/run.js --out eval/data/rb/<name> [--arms A,B,C] [--repeats 3]
 //     [--set test|full] [--only <prKey,...>] [--limit n] [--model m] [--skeptic-effort high]
 //     [--cell-budget 400k] [--max-dollars 50] [--concurrency n] [--seed n]
-//     [--bench eval/data/reviewbench] [--repos eval/data/rb-repos] [--dry-run]
+//     [--bench eval/data/reviewbench] [--repos eval/data/rb-repos] [--accept-degraded] [--dry-run]
 // Arms: A one agent, B examples/workflows/review-changes.js, C its three finders without skeptics.
-// Cells finished in <out>/results.jsonl are skipped, so the same command continues a stopped run.
+// Cells finished in <out>/results.jsonl are skipped, so the same command continues a stopped run. A cell
+// whose run lost agents (null or skipped rows) is "degraded": it gets no findings file and is resumed by
+// the next run of the command; --accept-degraded scores it as it is.
 // --max-dollars stops starting new cells once the cells of this out directory have cost that much.
 // --dry-run uses FakeRunner and temp dirs: no network, no git fetch, no money.
 // Judge afterwards with eval/reviewbench/judge.js.
@@ -15,7 +17,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, write
 import os from 'node:os';
 import path from 'node:path';
 import { AnthropicRunner, FakeRunner, parseBudgetDirective, run } from '../../dist/index.js';
-import { cost, flagReader } from '../_launcher.js';
+import { cost, deadAgents, flagReader, PRICES } from '../_launcher.js';
 import { ARMS, armResult, cells, loadTasks, prKey, toJudgingInput } from './bench.ts';
 import { prepareTask } from './prepare.ts';
 
@@ -54,6 +56,13 @@ const model = flag('--model') ?? process.env.MAESTRO_MODEL ?? MODEL;
 const skepticEffort = flag('--skeptic-effort') ?? 'high';
 if (!dryRun && !process.env.ANTHROPIC_API_KEY)
   die('ANTHROPIC_API_KEY is not set. Export it, or use --dry-run.');
+// Without a price a cell costs "nothing" and --max-dollars could never stop the run.
+if (!dryRun && !PRICES[model]) {
+  die(
+    `no price for model "${model}" in eval/_launcher.js PRICES (${Object.keys(PRICES).join(', ')}); add it first`,
+  );
+}
+const acceptDegraded = argv.includes('--accept-degraded');
 
 const set = flag('--set') ?? 'test';
 if (set !== 'test' && set !== 'full') die(`--set is test or full, got "${set}"`);
@@ -144,9 +153,16 @@ for (const [i, cell] of todo.entries()) {
     });
     const { findings, failed: armFailed } = armResult(await handle.promise);
     const { tokens, dollars } = cost(handle.runDir, model);
-    Object.assign(row, { tokens, dollars });
+    const dead = deadAgents(handle.runDir);
+    Object.assign(row, { tokens, dollars, dead });
     if (armFailed) {
       row.error = 'the arm returned no review';
+    } else if (dead > 0 && !acceptDegraded) {
+      // Fewer finders or skeptic votes than the arm is meant to have (API error, budget): scoring it
+      // would count infrastructure trouble against the arm. The next run of this command resumes the
+      // cell and re-runs only the dead agents.
+      row.status = 'degraded';
+      row.error = `${dead} agents ended null or skipped`;
     } else {
       const usage = {
         prompt_tokens: tokens.input + tokens.cacheWrite + tokens.cacheRead,
@@ -179,6 +195,6 @@ for (const [i, cell] of todo.entries()) {
   );
 }
 if (failed) {
-  console.error(`rb-run: ${failed} cells failed; run the same command again to retry them`);
+  console.error(`rb-run: ${failed} cells failed or degraded; run the same command again to retry them`);
   process.exitCode ||= 1;
 }
