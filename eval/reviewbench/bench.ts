@@ -192,7 +192,8 @@ export interface CellRow {
   arm: string;
   repeat: number;
   pr: string;
-  status: 'ok' | 'failed';
+  /** 'degraded': the run returned a review but lost agents (null or skipped rows); not scored. */
+  status: 'ok' | 'failed' | 'degraded';
   dollars?: number | null;
   findings?: number;
 }

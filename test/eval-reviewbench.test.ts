@@ -190,6 +190,17 @@ describe('arm workflows', () => {
     expect(runner.calls[0]!.prompt).toContain('"git diff x...y"');
     expect(runner.calls[0]!.tools.map((t) => t.name)).toEqual(['read_file', 'grep', 'glob', 'bash']);
     expect(runner.calls[0]!.schema).toBeDefined();
+    // A gets B's finder wording and nothing more: every sentence after the diff line is in B's script.
+    const b = script('B');
+    for (const part of [
+      'yanlış koşul, sınır değer, null/undefined, sıra, yanlış dönüş değeri',
+      'enjeksiyon, yetki atlama, sır sızıntısı, güvenilmeyen girdinin doğrulanmaması',
+      'silme, üzerine yazma, migration, yarım kalan yazma',
+    ]) {
+      expect(runner.calls[0]!.prompt).toContain(part);
+      expect(b).toContain(part);
+    }
+    expect(runner.calls[0]!.prompt).not.toMatch(/doğrula;|emin olmadığını/);
 
     const dead = await run({
       cwd: await tmp(),

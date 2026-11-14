@@ -25,12 +25,12 @@ const FINDINGS = {
   required: ['findings'],
 }
 
+// Yalnızca B'nin üç bulucu prompt'unun cümleleri, tek istemde: A'ya B'de olmayan bir talimat
+// (doğrulama, satır numarası tarifi) verilmez, yoksa fark orkestrasyonu değil prompt'u ölçer.
 const review = await agent(
   `Diff: ${args.diffRef}. Değişikliği "git diff ${args.diffRef}" ile oku, dokunulan dosyaların çevresini de oku. ` +
-  `Bu değişikliğin getirdiği gerçek sorunları bul: mantık hatası (yanlış koşul, sınır değer, null/undefined, sıra, ` +
-  `yanlış dönüş değeri), güvenlik (enjeksiyon, yetki atlama, sır sızıntısı, güvenilmeyen girdinin doğrulanmaması), ` +
-  `veri kaybı ve geri alınamaz işlem (silme, üzerine yazma, migration, yarım kalan yazma). ` +
-  `Her bulguyu raporlamadan önce kodu okuyarak doğrula; emin olmadığını yazma. ` +
-  `Her bulgu için dosya, head'deki satır numarası, iddia ve hatayı tetikleyen senaryoyu ver. Sorun yoksa boş liste döndür.`,
+  `Üç şeyi ara. Mantık hatası: yanlış koşul, sınır değer, null/undefined, sıra, yanlış dönüş değeri. ` +
+  `Güvenlik: enjeksiyon, yetki atlama, sır sızıntısı, güvenilmeyen girdinin doğrulanmaması. ` +
+  `Veri kaybı ve geri alınamaz işlem: silme, üzerine yazma, migration, yarım kalan yazma.`,
   { label: 'review', phase: 'Review', schema: FINDINGS })
 return review ?? { findings: [], failed: true }

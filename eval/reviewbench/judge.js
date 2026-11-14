@@ -1,9 +1,10 @@
 // Scores the findings of eval/reviewbench/run.js with ReviewBench's own judge and writes the report.
 //   node eval/reviewbench/judge.js --out eval/data/rb/<name> [--model claude-sonnet-5] [--provider anthropic]
-//     [--judge-concurrency 4] [--bench eval/data/reviewbench] [--report-only]
+//     [--judge-concurrency 4] [--group A-r1] [--bench eval/data/reviewbench] [--report-only]
 // For every findings/<arm>-r<k> directory it runs the benchmark's `npm run judge` (an LLM matcher and
 // classifier: this costs money) and stores scoring/<arm>-r<k>/results.json. A directory already scored
 // is skipped; the judge itself resumes a half-done one. Then it writes <out>/report.md.
+// --group judges one directory only (to measure what the judge costs before judging the rest).
 // --report-only skips the judge and rebuilds the report from the scores that are there.
 // Needs `npm ci` run once inside the ReviewBench checkout. The golden set is never changed: --ingest
 // is not passed.
@@ -59,7 +60,7 @@ if (!reportOnly) {
       2,
     )}\n`,
   );
-  for (const group of groups) {
+  for (const group of groups.filter((g) => !flag('--group') || g === flag('--group'))) {
     const output = path.join(outDir, 'scoring', group, 'results.json');
     if (existsSync(output)) {
       console.error(`rb-judge: ${group} already scored`);
