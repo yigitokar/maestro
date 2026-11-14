@@ -365,3 +365,7 @@ Spec'ten koda birebir geçmeyen maddeler ve gerekçeleri aşağıdadır. Spec'in
 - **Codex runner'da yazan ajan commit atmaz (3.6).** Codex sandbox'ı `.git`'i salt-okur tutar; başarılı bir izole koşudan sonra commit'i runner atar ve ajana tek bir talimat gider ("commit atma"). Şema cevabı da tek denemedir, ikinci parse denemesi yoktur.
 - **Spec'te olmayan ekler (kapsam eki).** Workflow aracının `cwd` girdisi, `WorkflowResult`'ın `wait` modu, script dışında tanımlanan özel araçlar (`.maestro/tools`, `--tools-dir`), run dizinindeki `events.jsonl` ve `run.json`, `maestro show` ve `maestro viz`.
 - **Agent SDK binding'i ve tek aşamalı runner yok (Açık soru 1 ve 2).** Spec bunları v2'ye ve sonraki bir optimizasyona bırakır.
+
+## Lisans
+
+Apache-2.0. Ayrıntılar [LICENSE](LICENSE) dosyasında.

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Multi-agent workflow orchestrator: deterministic scripts drive clean-context Claude agents",
   "type": "module",
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "private": true,
   "engines": {
     "node": ">=22.18"
