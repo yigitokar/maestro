@@ -7,7 +7,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { FIX_PATTERNS, type MineResult, mine } from '../eval/mine.js';
+import { FIX_PATTERNS, FN_RE, type MineResult, mine, NOISE_RE } from '../eval/mine.js';
 
 const T0 = Date.parse('2026-01-01T12:00:00Z') / 1000;
 let dir = '';
@@ -164,5 +164,30 @@ describe('fix patterns', () => {
     expect(broad.test('feat(chat): keep the draft when switching tabs')).toBe(false);
     expect(broad.test('fix(chat): keep the draft')).toBe(true);
     expect(broad.test('Add a pricing page')).toBe(false);
+  });
+});
+
+describe('mining patterns', () => {
+  it('lock files of every package manager are noise; a file merely ending in lock.json is not', () => {
+    for (const p of [
+      'package-lock.json',
+      'web/pnpm-lock.yaml',
+      'bun.lockb',
+      'yarn.lock',
+      'a/b.snap',
+      'lock.json',
+    ]) {
+      expect(NOISE_RE.test(p), p).toBe(true);
+    }
+    for (const p of ['src/block.json', 'src/unlock.yaml', 'src/lock.ts'])
+      expect(NOISE_RE.test(p), p).toBe(false);
+  });
+
+  it('a SQL function is named by its function, whatever the schema and quoting', () => {
+    const names = (sql: string) => [...sql.matchAll(FN_RE)].map((m) => m[1]);
+    expect(names('create or replace function claim_job()')).toEqual(['claim_job']);
+    expect(names('CREATE OR REPLACE FUNCTION public.claim_job()')).toEqual(['claim_job']);
+    expect(names('create or replace function "public"."claim_job"()')).toEqual(['claim_job']);
+    expect(names('create or replace function private.other_fn()')).toEqual(['other_fn']);
   });
 });

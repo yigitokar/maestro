@@ -121,7 +121,7 @@ Tool yüzeyi (Workflow) ─▶ Script runtime ─▶ Scheduler ─▶ Agent runn
 1. Script `agent(p, o)` çağırır. Runtime içerik hash'i üretir: `h = hash(p, canonical(o \ {label, phase}))`, sonra bu run'da `h`'nin kaçıncı çağrısı olduğunu sayar: `key = h + ':' + n`. Çağrı sırası anahtara girmez.
 2. Journal'da `key` varsa sonuç anında döner, scheduler'a gidilmez.
 3. Yoksa `meta.maxAgents` ve global tavan kontrol edilir; sonra budget: `spent() + rezervasyon > total` ise throw. Rezervasyon, tamamlanan ajanların hareketli ortalaması, tabanı 5k token.
-4. `o.isolation` yoksa araç listesinden yazma araçları çıkarılır. Varsa Isolation mutex altında worktree açar.
+4. `o.isolation` yoksa yazma aracı isteyen çağrı reddedilir (`write_tool_without_isolation`, 3.2). Varsa Isolation mutex altında worktree açar.
 5. Scheduler slot verir (semafor). Slot yalnızca SDK çağrısı sürerken tutulur.
 6. Runner ajanı koşturur. Her tur sonunda `usage.output_tokens` budget'a eklenir; `spent() > total` olursa AbortSignal tetiklenir, ajan null döner.
 7. Sonuç (veya null) journal'a yazılır, sonra script'e döner. Yazma önce, dönüş sonra; aksi halde kesinti sonrası tekrar koşar.
@@ -202,7 +202,7 @@ interface AgentRunner {
   run(req: {
     prompt: string;
     system: string;                   // dönüş sözleşmesi + proje CLAUDE.md
-    tools: ToolDef[];                 // salt-okur varsayılan: read, grep, glob, bash(ro)
+    tools: ToolDef[];                 // salt-okur varsayılan: read_file, grep, glob, bash(ro)
     schema?: JSONSchema;
     model: string;
     effort: Effort;
@@ -472,7 +472,7 @@ return agent(
 ## Açık sorular
 
 1. Araçlar ve `output_config.format` aynı istekte birlikte çalışıyor mu? Doğrulanmadı. Çalışsa bile iki aşama tercih: ilk aşamada "araştır", ikincisinde "şemaya dök" diye bilişsel yük ayrılır, model erken JSON'a kaçmaz. İkinci çağrının transcript'i prompt cache'ten gelir, maliyet farkı küçük. Soru yalnızca "tek aşama bir optimizasyon olarak sonra eklenir mi" diye açık.
-2. Agent SDK binding'i v2'ye ertelendi. v1 kendi `ToolDef` setini (read, grep, glob, salt-okur bash) runner içinde tutar; token sayımı, abort ve determinizm üzerinde tam kontrol bunu gerektirir.
+2. Agent SDK binding'i v2'ye ertelendi. v1 kendi `ToolDef` setini (read_file, grep, glob, salt-okur bash) runner içinde tutar; token sayımı, abort ve determinizm üzerinde tam kontrol bunu gerektirir.
 3. Occurrence counter'da `n` ataması paralel dallarda yer değiştirebilir. Girdiler birebir aynıysa sorun yok; ama `opts.model` veya `effort` farklı olan iki çağrı zaten farklı hash alır. Kalan risk: aynı prompt, aynı opts, farklı `label` ile iki dal. `label` hash dışı olduğu için bunlar da takas edilebilir sayılır. Bu varsayım yanlış çıkarsa `label` hash'e alınır.
 4. İzole process veya ayrı JS runtime (gerçek sandbox) ne zaman gerekir? Script'i üçüncü taraf yazabildiği gün. O güne kadar `vm` dar globali yeter.
 

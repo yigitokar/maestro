@@ -16,18 +16,14 @@ import {
   parseBudgetDirective,
   run,
 } from '../dist/index.js';
+import { cost, flagReader } from './_launcher.js';
 import { materialize } from './materialize.ts';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const MODEL = 'claude-sonnet-5-5'; // docs/eval.md bölüm 9
-/** Sonnet 5.5, $ per million tokens (README "Maliyet ve effort"); cache reads are 0.05 x input. */
-const PRICE = { input: 2, cacheWrite: 2.5, cacheRead: 0.1, output: 10 };
 
 const argv = process.argv.slice(2);
-const flag = (name) => {
-  const i = argv.indexOf(name);
-  return i === -1 ? undefined : argv[i + 1];
-};
+const flag = flagReader(argv);
 const dryRun = argv.includes('--dry-run');
 const data = JSON.parse(readFileSync(flag('--candidates') ?? 'eval/data/candidates.json', 'utf8'));
 const out = flag('--out') ?? (dryRun ? 'eval/data/triage.dry.json' : 'eval/data/triage.json');
@@ -96,21 +92,6 @@ const handle = run({
 });
 console.error(`triage: ${candidates.length} candidates, ${model}/${effort}, run ${handle.runId} in ${cwd}`);
 
-/** Token totals over the run's journal rows, and dollars when the model is the priced one. */
-function cost(runDir) {
-  const u = { input: 0, cacheWrite: 0, cacheRead: 0, output: 0 };
-  for (const line of readFileSync(path.join(runDir, 'journal.jsonl'), 'utf8').split('\n')) {
-    if (!line.trim()) continue;
-    const e = JSON.parse(line);
-    u.input += e.usage?.input_tokens ?? 0;
-    u.cacheWrite += e.usage?.cache_creation_input_tokens ?? 0;
-    u.cacheRead += e.usage?.cache_read_input_tokens ?? 0;
-    u.output += e.usage?.output_tokens ?? 0;
-  }
-  const dollars = Object.entries(u).reduce((s, [k, n]) => s + (n * PRICE[k]) / 1e6, 0);
-  return { tokens: u, dollars: model === MODEL ? Math.round(dollars * 100) / 100 : null };
-}
-
 const detach = attachTerminalProgress(handle, process.stderr);
 try {
   const results = await handle.promise;
@@ -129,7 +110,7 @@ try {
         new Set(r.triage.fixes.filter(keep).flatMap((f) => f.bugs.map((b) => `${b.file}:${b.line}`))).size,
       0,
     ),
-    ...cost(handle.runDir),
+    ...cost(handle.runDir, model),
   };
   mkdirSync(path.dirname(out), { recursive: true });
   const report = {

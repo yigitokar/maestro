@@ -30,7 +30,7 @@ Her fix commit'i için `git diff -U0 fix^ fix` okunur. Değişen satırların fi
 
 Elenenler: fix'in aynı PR içinde olması, kilit dosyaları, `.md` ve snapshot dosyaları. Başlangıçta merge'den sonraki 24 saat içinde gelen fix'ler de eleniyordu. Bu kural 2026-10-26'da kaldırıldı (`--min-gap-days 0`), çünkü merge'den hemen sonra gelen hotfix, spec'in aradığı şeyin ta kendisidir.
 
-Deneme koşusunun sonucu aşağıda (`python3 eval/probe/szz_probe.py <lula> origin/lula-version`, 2026-10-25, yaklaşık 100 saniye). Bir PR yalnızca en güçlü bağlantı türüne sayılır:
+Deneme koşusunun sonucu aşağıda (2026-10-25, yaklaşık 100 saniye; o günkü tek seferlik Python denemesiyle alındı, deneme script'i yerini `eval/mine.ts`'e bıraktı ve 2026-11-14'te repodan silindi). Bir PR yalnızca en güçlü bağlantı türüne sayılır:
 
 | En güçlü bağlantı | ≤200 satır | 201-800 | 801-2000 | >2000 |
 |---|---:|---:|---:|---:|

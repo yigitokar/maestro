@@ -4,6 +4,8 @@
 // The page script below is plain ES5-style JavaScript inside a TS template literal: it must not use
 // backticks or the dollar-brace sequence.
 
+import { escapeHtml, FORMAT_JS } from './viz-format.js';
+
 /** JSON safe inside a <script> element: no "</script>", no HTML comment openers, no line separators. */
 export function scriptJson(value: unknown): string {
   return JSON.stringify(value)
@@ -12,10 +14,6 @@ export function scriptJson(value: unknown): string {
     .replace(/&/g, '\\u0026')
     .replace(/\u2028/g, '\\u2028')
     .replace(/\u2029/g, '\\u2029');
-}
-
-function escapeHtml(text: string): string {
-  return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
 }
 
 export function vizPage(boot: { mode: 'live' | 'static'; runId: string; [k: string]: unknown }): string {
@@ -272,13 +270,14 @@ pre {
 const SCRIPT = `
 (function () {
   'use strict';
+  ${FORMAT_JS}
   var BOOT = window.__MAESTRO__ || {};
   var LIVE = BOOT.mode === 'live';
   var ROW_H = 26, BAR_H = 20, LANE_PAD = 4, GAP_PX = 2;
   var ZOOMS = [1, 2, 4, 8, 16];
   var STATUS_TEXT = { queued: 'sırada', running: 'çalışıyor', ok: 'tamam', null: 'null', skipped: 'atlandı', cached: 'önbellekten' };
   var state = {
-    lines: [], offset: 0, entries: [], skew: 0, attempt: null, selected: null, selectedRow: null, zoomIndex: 0,
+    lines: [], offset: 0, entries: [], skew: 0, attempt: null, selected: null, selectedT0: null, selectedRow: null, zoomIndex: 0,
     details: BOOT.details || {}, detailCache: {}, pollError: null, snapNow: null
   };
 
@@ -329,6 +328,15 @@ const SCRIPT = `
     for (var i = 0; i < lines.length; i++) {
       var l = lines[i];
       if (l.type === 'run_start') {
+        // An attempt without a run_end that a later one follows died (crash, kill): it ended at its last
+        // event, and so did the agents it left open.
+        if (cur && !cur.end) {
+          cur.end = { t: cur.last, ok: false, error: 'Yarıda kaldı: bu deneme bitiş kaydı yazmadan kesildi.' };
+          for (var k = 0; k < cur.order.length; k++) {
+            var open = cur.agents[cur.order[k]];
+            if (open.end === null || open.end === undefined) { open.end = cur.last; open.status = 'skipped'; }
+          }
+        }
         cur = newAttempt(l, l.t);
         attempts.push(cur);
         var ph = l.phases || [];
@@ -395,17 +403,6 @@ const SCRIPT = `
   // ---------------------------------------------------------------------------------------------
   // formatting
 
-  function fmtDur(ms) {
-    if (ms < 0) ms = 0;
-    if (ms < 1000) return Math.round(ms) + ' ms';
-    var s = ms / 1000;
-    if (s < 60) return (s < 10 ? s.toFixed(1) : Math.round(s)).toString().replace('.', ',') + ' sn';
-    var m = Math.floor(s / 60), rs = Math.round(s % 60);
-    if (rs === 60) { m += 1; rs = 0; }
-    if (m < 60) return m + ' dk ' + (rs < 10 ? '0' : '') + rs + ' sn';
-    var h = Math.floor(m / 60), rm = m % 60;
-    return h + ' sa ' + (rm < 10 ? '0' : '') + rm + ' dk';
-  }
   function fmtTick(ms) {
     if (ms === 0) return '0';
     if (ms < 1000) return ms + 'ms';
@@ -415,11 +412,6 @@ const SCRIPT = `
       return m + 'dk' + (s ? ' ' + s + 'sn' : '');
     }
     return (ms / 3600000).toFixed(1).replace('.', ',') + 'sa';
-  }
-  function fmtTok(n) {
-    if (n < 1000) return String(n);
-    if (n < 1e6) return (n / 1000).toFixed(n < 10000 ? 1 : 0).replace('.', ',') + 'k';
-    return (n / 1e6).toFixed(n < 1e7 ? 2 : 1).replace('.', ',') + 'M';
   }
   function fmtNum(n) { return Number(n || 0).toLocaleString('tr-TR'); }
   function fmtClock(t) {
@@ -458,6 +450,7 @@ const SCRIPT = `
     else renderJournalOnly(host);
     host.scrollLeft = keep;
     renderLogs(a);
+    if (state.selected !== null && a && a.t0 !== state.selectedT0) closeDetail();
     if (state.selected !== null && a && a.agents[state.selected]) renderDetail(a.agents[state.selected], a);
     else if (state.selectedRow) renderDetail(state.selectedRow, null);
     document.title = (a && a.start ? a.start.name : BOOT.runId) + ' · maestro viz';
@@ -760,7 +753,10 @@ const SCRIPT = `
   // detail panel
 
   function openDetail(id) {
+    var at = current(buildAttempts(state.lines));
     state.selected = id;
+    // Agent ids restart at 0 in every attempt: the selection belongs to this attempt only.
+    state.selectedT0 = at ? at.t0 : null;
     $('detail').hidden = false;
     render();
     $('d-close').focus();
@@ -784,14 +780,15 @@ const SCRIPT = `
     var key = g.key + '|' + g.status;
     if (!LIVE) return state.details[key] || state.details[g.key] || null;
     var c = state.detailCache[key];
-    if (c) return c;
+    // A missing row is asked for again after a while: the journal row lands after the agent_end event.
+    if (c && !(c.missing && Date.now() - c.at > 3000)) return c;
     if (!state.detailCache['pending:' + key]) {
       state.detailCache['pending:' + key] = true;
       fetch('api/entry?key=' + encodeURIComponent(g.key) + '&status=' + encodeURIComponent(g.status))
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (d) {
           delete state.detailCache['pending:' + key];
-          state.detailCache[key] = d || { missing: true };
+          state.detailCache[key] = d || { missing: true, at: Date.now() };
           render();
         })
         .catch(function () { delete state.detailCache['pending:' + key]; });

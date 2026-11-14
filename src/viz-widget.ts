@@ -6,6 +6,7 @@
 
 import type { EventLogLine } from './event-log.js';
 import type { VizSnapshot } from './viz.js';
+import { escapeHtml as escapeText, FORMAT_JS, fmtDur, fmtTok } from './viz-format.js';
 import { scriptJson } from './viz-page.js';
 
 /** Agents drawn at most; the rest are counted in the caption, never dropped silently. */
@@ -184,29 +185,6 @@ export function widgetModel(
   };
 }
 
-function escapeText(text: string): string {
-  return text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-}
-
-function fmtDur(ms: number): string {
-  if (ms < 1000) return `${Math.round(ms)} ms`;
-  const s = ms / 1000;
-  if (s < 60) return `${(s < 10 ? s.toFixed(1) : String(Math.round(s))).replace('.', ',')} sn`;
-  let m = Math.floor(s / 60);
-  let r = Math.round(s % 60);
-  if (r === 60) {
-    m += 1;
-    r = 0;
-  }
-  return `${m} dk ${r < 10 ? '0' : ''}${r} sn`;
-}
-
-function fmtTok(n: number): string {
-  if (n < 1000) return String(n);
-  if (n < 1e6) return `${(n / 1000).toFixed(n < 10_000 ? 1 : 0).replace('.', ',')}k`;
-  return `${(n / 1e6).toFixed(2).replace('.', ',')}M`;
-}
-
 /** The fragment to pass as the widget's code. */
 export function vizWidget(model: WidgetModel): string {
   const c = model.counts;
@@ -274,20 +252,13 @@ const STYLE = `
 
 const SCRIPT = `
 (function () {
+  ${FORMAT_JS}
   var ROW = 22, PAD = 4, TEXT = { queued: 'sırada', running: 'çalışıyor', ok: 'tamam', null: 'null', skipped: 'atlandı', cached: 'önbellekten' };
   var tl = document.getElementById('mzw-tl'), det = document.getElementById('mzw-det');
   var dur = Math.max(M.dur, 1000), sel = null;
   function el(tag, cls, text) { var n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = String(text); return n; }
   function pct(ms) { return (ms / dur) * 100; }
-  function sec(ms) {
-    if (ms < 1000) return Math.round(ms) + ' ms';
-    var s = ms / 1000;
-    if (s < 60) return (s < 10 ? s.toFixed(1) : String(Math.round(s))).replace('.', ',') + ' sn';
-    var m = Math.floor(s / 60), r = Math.round(s % 60);
-    if (r === 60) { m += 1; r = 0; }
-    return m + ' dk ' + (r < 10 ? '0' : '') + r + ' sn';
-  }
-  function tok(n) { return n < 1000 ? String(n) : (n / 1000).toFixed(n < 10000 ? 1 : 0).replace('.', ',') + 'k'; }
+  var sec = fmtDur, tok = fmtTok;
   function tick(ms) {
     if (ms === 0) return '0';
     if (ms < 60000) return String(ms / 1000).replace('.', ',') + 'sn';
