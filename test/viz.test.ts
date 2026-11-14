@@ -197,6 +197,68 @@ describe('viz server', () => {
     }
   });
 
+  it('each attempt shows its own journal row: nth picks among rows that share a key and status', async () => {
+    const cwd = await tmp();
+    // The same agent fails twice with different errors, then succeeds: three rows, one key.
+    let call = 0;
+    const runner = new FakeRunner(() => {
+      call++;
+      return call < 3 ? { result: null, status: 'null', error: `boom ${call}` } : { result: `ok ${call}` };
+    });
+    const script = `export const meta = { name: 'retry', description: 'd' };\nreturn await agent('same prompt', { label: 'x' });`;
+    const first = run({ cwd, runId: 'r5', runner, script });
+    await first.promise;
+    await run({ cwd, runner, resumeFromRunId: 'r5' }).promise;
+    await run({ cwd, runner, resumeFromRunId: 'r5' }).promise;
+
+    const { entries } = await readSnapshot(first.runDir, 'r5');
+    expect(entries.map((e) => e.status)).toEqual(['null', 'null', 'ok']);
+    const key = entries[0]!.key;
+    const server = await serveViz({ runDir: first.runDir, runId: 'r5' });
+    try {
+      const get = async (q: string): Promise<{ error?: string; result?: string }> =>
+        (await fetch(`${server.url}api/entry?key=${encodeURIComponent(key)}&${q}`)).json() as Promise<{
+          error?: string;
+          result?: string;
+        }>;
+      expect((await get('status=null&nth=0')).error).toBe('boom 1');
+      expect((await get('status=null&nth=1')).error).toBe('boom 2');
+      expect((await get('status=null')).error).toBe('boom 2'); // without nth: the last such row
+      expect((await get('status=null&nth=7')).error).toBe('boom 2'); // no such row: the last one
+      expect((await get('status=ok&nth=0')).result).toBe('ok 3');
+    } finally {
+      await server.close();
+    }
+
+    const html = await exportVizHtml(first.runDir, 'r5');
+    const boot = JSON.parse(html.split('window.__MAESTRO__ = ')[1]!.split(';</script>')[0]!);
+    expect(boot.details[`${key}|null|0`].error).toBe('boom 1');
+    expect(boot.details[`${key}|null|1`].error).toBe('boom 2');
+    expect(boot.details[`${key}|null`].error).toBe('boom 2');
+    expect(boot.details[`${key}|ok|0`].result).toBe('ok 3');
+  });
+
+  it('a poll from an offset returns only the lines appended since, and rereads a changed journal', async () => {
+    const cwd = await tmp();
+    const runner = new FakeRunner();
+    const handle = run({ cwd, runId: 'r6', runner, script: SCRIPT });
+    await handle.promise;
+    const all = await readSnapshot(handle.runDir, 'r6');
+    expect(all.entries).toHaveLength(4);
+    expect((await readSnapshot(handle.runDir, 'r6', all.offset)).lines).toEqual([]);
+
+    await run({ cwd, runner, resumeFromRunId: 'r6', script: SCRIPT.replace("'judge '", "'judge again '") })
+      .promise;
+    const next = await readSnapshot(handle.runDir, 'r6', all.offset);
+    expect(next.lines[0]).toMatchObject({ type: 'run_start', resume: true });
+    expect(next.offset).toBeGreaterThan(all.offset);
+    expect(next.entries).toHaveLength(5); // the journal grew: the cached rows are not served stale
+    // An offset past the end (a file replaced by a shorter one) starts over.
+    expect((await readSnapshot(handle.runDir, 'r6', next.offset + 10_000)).lines.length).toBe(
+      all.lines.length + next.lines.length,
+    );
+  });
+
   it('a snapshot of a run without events.jsonl still lists its journal rows', async () => {
     const cwd = await tmp();
     const handle = run({ cwd, runId: 'old', runner: new FakeRunner(), script: SCRIPT });

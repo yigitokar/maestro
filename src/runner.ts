@@ -237,7 +237,11 @@ function strictify(node: unknown): unknown {
     } else if (k === 'anyOf' || k === 'allOf' || k === 'prefixItems') {
       out[k] = strictify(v);
     } else if (k === 'oneOf') {
-      out.anyOf = strictify(v);
+      // With an anyOf next to it the node means "one of these AND one of those". Structured outputs
+      // cannot say that (allOf over anyOf is refused), so the model is held to the anyOf and told the
+      // oneOf in the description; validateValue checks both.
+      if ('anyOf' in src) moved.push(`oneOf: ${JSON.stringify(v)}`);
+      else out.anyOf = strictify(v);
     } else if (k === 'additionalProperties') {
       // replaced below for objects
     } else if (UNSUPPORTED_KEYWORDS.has(k) || (k === 'minItems' && typeof v === 'number' && v > 1)) {
