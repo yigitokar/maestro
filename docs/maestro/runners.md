@@ -17,7 +17,7 @@ A runner is what executes one agent. Maestro has three, chosen with `--runner` o
 ## Claude
 
 ```bash
-node bin/maestro run review.js --model claude-sonnet-5-5
+maestro run review.js --model claude-sonnet-5-5
 ```
 
 The run's model defaults to `claude-opus-5-5`. Set it with `--model`, or per agent with `opts.model`.
@@ -41,7 +41,7 @@ When an agent has a `schema`, the runner has three ways to get the answer. Choos
 ## Codex
 
 ```bash
-node bin/maestro run review.js --runner codex --concurrency 4
+maestro run review.js --runner codex --concurrency 4
 ```
 
 Each agent is its own `codex exec` process, so memory use grows with `--concurrency`.
@@ -62,7 +62,7 @@ An agent's result counts only if Codex reported a completed turn, reported no er
 ## Both in one run
 
 ```bash
-node bin/maestro run review.js --runner auto
+maestro run review.js --runner auto
 ```
 
 With `auto`, each agent goes to a runner by its model name:

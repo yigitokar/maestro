@@ -1,6 +1,6 @@
 # Maestro
 
-> **English documentation:** [docs/](docs/README.md). Start with the [Quickstart](docs/maestro/quickstart.md).
+> **English documentation:** [docs.careresearch.ai/maestro](https://docs.careresearch.ai/maestro). Start with the [Quickstart](https://docs.careresearch.ai/maestro/quickstart). On npm: `maestro-workflows`.
 
 Çok-ajanlı orkestrasyon katmanı. Kontrol akışı kodda, muhakeme ajanda: deterministik bir JavaScript script'i, her biri temiz context'le başlayan ajanları çağırır, sonuçlarını birleştirir, oylatır ve tekrar dağıtır. Script'i ana ajan yazar, çalıştıran LLM değil düz bir runtime'dır.
 
@@ -207,10 +207,10 @@ Aynı Workflow aracı stdio üzerinden bir MCP sunucusu olarak açılır ve `too
 - `WorkflowStop({ runId })`: run'ı durdurur. Script `run_stopped` ile reddeder, journal kalır ve run sonradan `resumeFromRunId` ile sürdürülebilir.
 - `WorkflowSkip({ runId, agentId })`: `liveAgents` içindeki bir ajanı atlar; o `agent()` çağrısı `null` döner.
 
-Kendi projende kullanmak için sunucuyu Claude Code'a ekle. Komutu bu reponun kökünde, `npm run build`'den sonra çalıştır. Paket npm'de yayınlı değil; `npx maestro` npm'deki ilgisiz `maestro` paketini indirir, kullanma.
+Kendi projende kullanmak için sunucuyu Claude Code'a ekle. Paket npm'de `maestro-workflows` adıyla yayınlı; `npx maestro` ise npm'deki ilgisiz `maestro` paketini indirir, kullanma. Bu repodan çalıştırmak istersen komutun sonunu `node "$PWD/bin/maestro" mcp` yap (`npm run build`'den sonra).
 
 ```bash
-claude mcp add --scope user maestro -- node "$PWD/bin/maestro" mcp
+claude mcp add --scope user maestro -- npx -y maestro-workflows mcp
 ```
 
 Script yazma rehberini bütün projelerde görünen bir skill olarak ekle:
@@ -252,7 +252,7 @@ Run dizininde bir de `events.jsonl` vardır: her olay (ajan başladı, slot ald�
 ## Run'ı izlemek: `maestro viz`
 
 ```bash
-node ~/maestro/bin/maestro viz <runId> --cwd <repo>
+npx -y maestro-workflows viz <runId> --cwd <repo>
 ```
 
 Komut tarayıcıda run'ın zaman çizelgesini açar:

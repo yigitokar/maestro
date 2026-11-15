@@ -6,7 +6,7 @@ icon: "bolt"
 
 You do not need to write any code. You connect Maestro to Claude Code once. After that you ask Claude for a workflow, and Claude writes it and runs it.
 
-It takes about five minutes.
+It takes about two minutes.
 
 ## Before you start
 
@@ -16,43 +16,27 @@ You need three things:
 - [Node.js](https://nodejs.org) version 22.18 or newer. Check with `node --version`.
 - An Anthropic API key. The agents Maestro starts are paid for with this key.
 
-No API key, but a ChatGPT plan with the Codex CLI? That works too. See [the last step](#no-api-key-use-codex).
+No API key, but a ChatGPT plan with the Codex CLI? That works too. See [No API key? Use Codex](#no-api-key-use-codex).
 
-## Step 1: Download Maestro
+## Step 1: Connect it to Claude Code
 
-Run these three commands in a terminal, one after the other.
-
-```bash
-git clone https://github.com/yigitokar/maestro && cd maestro
-```
+Run this in a terminal. Put your own key in place of `sk-ant-...`.
 
 ```bash
-npm install
+claude mcp add --scope user maestro -e ANTHROPIC_API_KEY=sk-ant-... -- npx -y maestro-workflows mcp
 ```
+
+There is nothing to download first: `npx` fetches Maestro from npm the first time it runs.
+
+## Step 2: Teach Claude how to use it
+
+This saves a short guide that Claude reads before it writes a workflow.
 
 ```bash
-npm run build
+mkdir -p ~/.claude/skills/maestro-workflow-authoring && curl -fsSL https://raw.githubusercontent.com/yigitokar/maestro/main/skill/SKILL.md -o ~/.claude/skills/maestro-workflow-authoring/SKILL.md
 ```
 
-Stay in this `maestro` folder for the next two steps.
-
-## Step 2: Connect it to Claude Code
-
-Put your own key in place of `sk-ant-...`.
-
-```bash
-claude mcp add --scope user maestro -e ANTHROPIC_API_KEY=sk-ant-... -- node "$PWD/bin/maestro" mcp
-```
-
-## Step 3: Teach Claude how to use it
-
-This copies a short guide that Claude reads before it writes a workflow.
-
-```bash
-mkdir -p ~/.claude/skills/maestro-workflow-authoring && cp skill/SKILL.md ~/.claude/skills/maestro-workflow-authoring/SKILL.md
-```
-
-## Step 4: Ask
+## Step 3: Ask
 
 Close Claude Code and open it again, in the project you want to work on. Then ask for a workflow in plain words. Say the word **workflow**, so Claude knows you want several agents and not one answer.
 
@@ -78,10 +62,10 @@ That is all. Claude writes the script, starts it, and tells you the result when 
 2. Agents work in the background. A small run takes a minute or two; a big one takes longer.
 3. Claude reports what the agents found.
 
-To watch the agents work, run this from the `maestro` folder, with the run id Claude gave you and the path of your project:
+To watch the agents work, run this in your project's folder, with the run id Claude gave you:
 
 ```bash
-node bin/maestro viz <runId> --cwd /path/to/your/project
+npx -y maestro-workflows viz <runId>
 ```
 
 A page opens in your browser with one bar per agent.
@@ -94,16 +78,16 @@ A page opens in your browser with one bar per agent.
 
 ## If nothing happens
 
-- Type `/mcp` in Claude Code. `maestro` should be in the list and connected. If it is not, repeat Step 2 from inside the `maestro` folder and restart Claude Code.
+- Type `/mcp` in Claude Code. `maestro` should be in the list and connected. If it is not, repeat Step 1 and restart Claude Code.
 - Claude answered by itself and started no agents? Ask again and say "use a Maestro workflow".
-- A run failed at once with a message about a missing API key or authentication? The key in Step 2 was missing or wrong. Run `claude mcp remove maestro`, then repeat Step 2.
+- A run failed at once with a message about a missing API key or authentication? The key in Step 1 was missing or wrong. Run `claude mcp remove maestro`, then repeat Step 1.
 
 ## No API key? Use Codex
 
-If you have the [Codex CLI](https://github.com/openai/codex) installed and signed in, the agents can run on your ChatGPT plan. Use this command in Step 2 in place of the one above:
+If you have the [Codex CLI](https://github.com/openai/codex) installed and signed in, the agents can run on your ChatGPT plan. Use this command in Step 1 in place of the one above:
 
 ```bash
-claude mcp add --scope user maestro -- node "$PWD/bin/maestro" mcp --runner codex
+claude mcp add --scope user maestro -- npx -y maestro-workflows mcp --runner codex
 ```
 
 ## Next

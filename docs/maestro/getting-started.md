@@ -12,21 +12,13 @@ icon: "rocket"
 
 ## Install
 
-Maestro is not published to npm. Clone the repository and build it.
+Install the `maestro-workflows` package from npm.
 
 ```bash
-git clone https://github.com/yigitokar/maestro && cd maestro
+npm install -g maestro-workflows
 ```
 
-```bash
-npm install
-```
-
-```bash
-npm run build
-```
-
-The command is `node bin/maestro` from the repository root. Do not use `npx maestro`: that downloads an unrelated npm package with the same name.
+The command is `maestro`. To run it without installing, write `npx maestro-workflows` in its place. Do not use `npx maestro`: that downloads an unrelated npm package.
 
 ## A first workflow
 
@@ -70,7 +62,7 @@ A script starts with `export const meta` and ends with a top-level `return`. Eve
 `--dry-run` replaces every agent with a fake that answers from the schema. Nothing goes to the network.
 
 ```bash
-node bin/maestro run review.js --args '{"diffRef":"main...HEAD"}' --dry-run
+maestro run review.js --args '{"diffRef":"main...HEAD"}' --dry-run
 ```
 
 Progress is printed to stderr as a tree of phases and agents. The script's return value is printed to stdout as JSON.
@@ -78,7 +70,7 @@ Progress is printed to stderr as a tree of phases and agents. The script's retur
 ## Run it for real
 
 ```bash
-node bin/maestro run review.js --args '{"diffRef":"main...HEAD"}' --budget 300k
+maestro run review.js --args '{"diffRef":"main...HEAD"}' --budget 300k
 ```
 
 Agents run in the current directory and can read it. `--budget 300k` stops the run from spending more than about 300,000 output tokens. See [Runs, resume and budget](/maestro/runs).
@@ -90,7 +82,7 @@ Maestro writes its state under `.maestro/` in the directory you run it in. Add `
 Every run has an id, printed when it starts. Resume reuses the answers of every `agent()` call that did not change.
 
 ```bash
-node bin/maestro run review.js --resume <runId>
+maestro run review.js --resume <runId>
 ```
 
 Only the calls you changed, and the calls that depend on their answers, run again.
@@ -98,15 +90,15 @@ Only the calls you changed, and the calls that depend on their answers, run agai
 ## Look at a run
 
 ```bash
-node bin/maestro runs
+maestro runs
 ```
 
 ```bash
-node bin/maestro show <runId>
+maestro show <runId>
 ```
 
 ```bash
-node bin/maestro viz <runId>
+maestro viz <runId>
 ```
 
 `runs` lists the runs in this directory, `show` prints one run's agents and outcome, and `viz` opens a timeline of the run in the browser.

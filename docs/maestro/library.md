@@ -4,10 +4,10 @@ description: "Call Maestro from your own Node program or agent harness."
 icon: "book"
 ---
 
-Maestro is an ES module named `maestro-workflows`. It is not on npm; install it from a clone, after `npm run build` there:
+Maestro is an ES module named `maestro-workflows`. Install it from npm:
 
 ```bash
-npm install /path/to/maestro
+npm install maestro-workflows
 ```
 
 ## Running a workflow

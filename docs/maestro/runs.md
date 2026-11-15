@@ -23,7 +23,7 @@ Add `.maestro/` to your `.gitignore`.
 ## Resume
 
 ```bash
-node bin/maestro run review.js --resume <runId>
+maestro run review.js --resume <runId>
 ```
 
 Resume runs the script again from the top. Each `agent()` call is looked up in the journal by a key made from its prompt, its options (without `label` and `phase`) and how many times the same call has occurred. A call found with status `ok` returns its stored answer without running.
@@ -51,7 +51,7 @@ Answers are matched by content, so a script must be deterministic. See [Writing 
 ## Budget
 
 ```bash
-node bin/maestro run review.js --budget 500k
+maestro run review.js --budget 500k
 ```
 
 A budget is a number of **output tokens** for the whole run. It accepts `20000`, `500k` or `1.5m`.
@@ -77,25 +77,25 @@ An agent holds its slot for as long as it is running, including while its tools 
 ## Looking at runs
 
 ```bash
-node bin/maestro runs --limit 10
+maestro runs --limit 10
 ```
 
 Lists runs from newest to oldest with status, duration, agent counts and token usage.
 
 ```bash
-node bin/maestro show <runId>
+maestro show <runId>
 ```
 
 Lists a run's agents and its outcome. Add an agent's label to print that agent's trace: its tool calls, the start of its final text, its result and any error.
 
 ```bash
-node bin/maestro show <runId> find:security
+maestro show <runId> find:security
 ```
 
 ### The timeline
 
 ```bash
-node bin/maestro viz <runId>
+maestro viz <runId>
 ```
 
 Opens a page in the browser:
@@ -120,13 +120,13 @@ The page reads the run's files once a second, so it follows a run that is still 
 Agents that write leave git worktrees and `wf/*` branches behind.
 
 ```bash
-node bin/maestro gc
+maestro gc
 ```
 
 Lists dirty worktrees and branches, and says which branches are merged. A branch counts as merged if it is an ancestor of `HEAD` or all its commits have been cherry-picked.
 
 ```bash
-node bin/maestro gc --delete
+maestro gc --delete
 ```
 
 Deletes clean worktrees and merged branches. Worktrees with uncommitted work and unmerged branches are deleted only with `--delete --force`.
