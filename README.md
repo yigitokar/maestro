@@ -1,5 +1,7 @@
 # Maestro
 
+> **English documentation:** [docs/](docs/README.md). Start with [Getting started](docs/getting-started.md).
+
 Çok-ajanlı orkestrasyon katmanı. Kontrol akışı kodda, muhakeme ajanda: deterministik bir JavaScript script'i, her biri temiz context'le başlayan ajanları çağırır, sonuçlarını birleştirir, oylatır ve tekrar dağıtır. Script'i ana ajan yazar, çalıştıran LLM değil düz bir runtime'dır.
 
 Tasarım ve sözleşmeler [docs/spec.md](docs/spec.md) içinde (v0.3.2). Spec'in açık bıraktığı noktalarda alınan kararlar [docs/decisions.md](docs/decisions.md) içinde. Script yazmayı modele öğreten skill [skill/SKILL.md](skill/SKILL.md) içinde.
@@ -219,7 +221,7 @@ mkdir -p ~/.claude/skills/maestro-workflow-authoring && cp skill/SKILL.md ~/.cla
 
 Varsayılan runner ile sunucu Claude Code'un ortamındaki `ANTHROPIC_API_KEY`'i kullanır. Ajanların maliyeti bu anahtarın hesabına yazılır. `mcp --runner codex` ise Codex CLI oturumunu kullanır.
 
-`maestro mcp` sunucusu `--cwd`, `--state-dir`, `--tools-dir`, `--budget`, `--concurrency`, `--model`, `--runner` ve `--dry-run` seçeneklerini alır. `--budget` oturumun tamamı için tek havuzdur: sunucunun başlattığı bütün run'lar aynı `Budget` örneğinden harcar. stdout MCP kanalıdır, tanılar stderr'e gider. İstemci bağlantıyı kapatınca (stdin biter) sunucu kapanır, süren run'lar durdurulur (journal'ları resume için kalır) ve komut 0 ile çıkar.
+`maestro mcp` sunucusu `--cwd`, `--state-dir`, `--tools-dir`, `--budget`, `--concurrency`, `--model`, `--runner` ve `--dry-run` seçeneklerini alır. `--budget` oturumun tamamı için tek havuzdur: sunucunun başlattığı bütün run'lar aynı `Budget` örneğinden harcar. stdout MCP kanalıdır, tanılar stderr'e gider. İstemci bağlantıyı kapatınca (stdin biter) ya da istemci süreci kaybolunca sunucu kapanır, süren run'lar durdurulur (journal'ları resume için kalır) ve komut 0 ile çıkar.
 
 ## CLI
 
