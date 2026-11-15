@@ -8,15 +8,15 @@ Tasarım ve sözleşmeler [docs/spec.md](docs/spec.md) içinde (v0.3.2). Spec'in
 
 ## Kurulum
 
-Node 22.18 veya üstü gerekir (duman testi ve eval çalıştırıcıları `.ts` dosyalarını doğrudan koşturur).
+Node 22.18 veya üstü gerekir. Paket npm'de `maestro-workflows` adıyla yayınlıdır:
 
 ```bash
-npm install
+npm install -g maestro-workflows
 ```
 
-```bash
-npm run build
-```
+Komut `maestro`'dur. Kurmadan çalıştırmak için yerine `npx -y maestro-workflows` yaz. Kod yazmadan, Claude Code üzerinden kullanmak için [Quickstart](https://docs.careresearch.ai/maestro/quickstart) sayfasına bak.
+
+Bu repoda çalışıyorsan `npm install` ve `npm run build`'den sonra komut `node bin/maestro`'dur; aşağıdaki örnekler bu biçimi kullanır.
 
 Paket ESM'dir ve tek bağımlılık katmanı Anthropic TypeScript SDK'sıdır (`@anthropic-ai/sdk`), yanında `zod`, `acorn` ve MCP sunucusu için `@modelcontextprotocol/sdk` gelir. Varsayılan Anthropic runner için `ANTHROPIC_API_KEY` ortam değişkeni gerekir; Codex runner kurulu ve giriş yapılmış Codex CLI'ı kullanır. Testler ve `--dry-run` ağa hiç çıkmaz.
 
