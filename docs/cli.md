@@ -1,4 +1,8 @@
-# Command line
+---
+title: "Command line"
+description: "Every maestro command and flag."
+icon: "terminal"
+---
 
 The command is `node bin/maestro` from the repository root, after `npm run build`. The examples below write `maestro` for short.
 

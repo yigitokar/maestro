@@ -1,4 +1,8 @@
-# Claude Code
+---
+title: "Claude Code"
+description: "Use Maestro from Claude Code through its MCP server."
+icon: "plug"
+---
 
 Maestro ships an MCP server. With it connected, Claude Code can write a workflow script, start it, and collect the result while you keep working.
 

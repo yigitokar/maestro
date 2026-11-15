@@ -1,4 +1,8 @@
-# Runners
+---
+title: "Runners"
+description: "Run agents on Claude, on Codex, or on both in one run."
+icon: "server"
+---
 
 A runner is what executes one agent. Maestro has three, chosen with `--runner` or the `runner` option of `run()`.
 
@@ -32,7 +36,7 @@ When an agent has a `schema`, the runner has three ways to get the answer. Choos
 | `submit-tool` | The agent gets one more tool, `__maestro_submit_result`, and hands in its answer by calling it. There is no second request. |
 | `single-stage` | The schema is applied to the agent's own requests. There is no second request, but everything the agent writes must fit the schema. |
 
-`two-stage` pays for the agent's whole transcript a second time, uncached. In a small measurement on one review task the other two modes cost about 30% less. The default has not changed because answer quality has not been compared yet; the measurement is in [decisions.md](decisions.md).
+`two-stage` pays for the agent's whole transcript a second time, uncached. In a small measurement on one review task the other two modes cost about 30% less. The default has not changed because answer quality has not been compared yet; the measurement is in the project's [decision notes](https://github.com/yigitokar/maestro/blob/main/docs/decisions.md) (in Turkish).
 
 ## Codex
 
