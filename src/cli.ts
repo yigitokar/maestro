@@ -348,8 +348,42 @@ async function mcpCommand(p: Parsed, io: CliIO): Promise<number> {
     io.stdin.once('end', close);
     io.stdin.once('close', close);
     if (io.stdin.readableEnded || io.stdin.destroyed) close();
+    // A client that dies while another process still holds the pipe's write end never sends EOF, and
+    // the server would stay behind for good. Only for the real process: a test's main() has no client.
+    if (io.handleSignals) {
+      const stopWatching = watchParent(() => {
+        io.stderr.write('maestro mcp: the client process is gone; shutting down.\n');
+        close();
+      });
+      const done = server.onclose;
+      server.onclose = () => {
+        stopWatching();
+        done?.();
+      };
+    }
   });
   return 0;
+}
+
+/**
+ * Calls `onGone` once when this process's parent changes, i.e. the process that started it has exited and
+ * it was re-parented. Does nothing when it already has no parent to lose (ppid 1 at the start, as under
+ * a launcher that exits on purpose). The timer does not keep the process alive. Returns a stop function.
+ */
+export function watchParent(
+  onGone: () => void,
+  opts: { ppid?: () => number; intervalMs?: number } = {},
+): () => void {
+  const ppid = opts.ppid ?? (() => process.ppid);
+  const parent = ppid();
+  if (parent <= 1) return () => {};
+  const timer = setInterval(() => {
+    if (ppid() === parent) return;
+    clearInterval(timer);
+    onGone();
+  }, opts.intervalMs ?? 5_000);
+  timer.unref();
+  return () => clearInterval(timer);
 }
 
 async function runsCommand(p: Parsed, io: CliIO): Promise<number> {
