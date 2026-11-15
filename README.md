@@ -1,6 +1,6 @@
 # Maestro
 
-> **English documentation:** [docs/](docs/README.md). Start with the [Quickstart](docs/quickstart.md).
+> **English documentation:** [docs/](docs/README.md). Start with the [Quickstart](docs/maestro/quickstart.md).
 
 Çok-ajanlı orkestrasyon katmanı. Kontrol akışı kodda, muhakeme ajanda: deterministik bir JavaScript script'i, her biri temiz context'le başlayan ajanları çağırır, sonuçlarını birleştirir, oylatır ve tekrar dağıtır. Script'i ana ajan yazar, çalıştıran LLM değil düz bir runtime'dır.
 

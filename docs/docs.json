@@ -13,26 +13,26 @@
       {
         "group": "Get started",
         "pages": [
-          "index",
-          "quickstart",
-          "getting-started"
+          "maestro/index",
+          "maestro/quickstart",
+          "maestro/getting-started"
         ]
       },
       {
         "group": "Workflows",
         "pages": [
-          "workflows",
-          "agents-and-tools",
-          "runners",
-          "runs"
+          "maestro/workflows",
+          "maestro/agents-and-tools",
+          "maestro/runners",
+          "maestro/runs"
         ]
       },
       {
         "group": "Using Maestro",
         "pages": [
-          "cli",
-          "claude-code",
-          "library"
+          "maestro/cli",
+          "maestro/claude-code",
+          "maestro/library"
         ]
       }
     ]
@@ -53,5 +53,43 @@
     "socials": {
       "github": "https://github.com/yigitokar/maestro"
     }
-  }
+  },
+  "redirects": [
+    {
+      "source": "/quickstart",
+      "destination": "/maestro/quickstart"
+    },
+    {
+      "source": "/getting-started",
+      "destination": "/maestro/getting-started"
+    },
+    {
+      "source": "/workflows",
+      "destination": "/maestro/workflows"
+    },
+    {
+      "source": "/agents-and-tools",
+      "destination": "/maestro/agents-and-tools"
+    },
+    {
+      "source": "/runners",
+      "destination": "/maestro/runners"
+    },
+    {
+      "source": "/runs",
+      "destination": "/maestro/runs"
+    },
+    {
+      "source": "/cli",
+      "destination": "/maestro/cli"
+    },
+    {
+      "source": "/claude-code",
+      "destination": "/maestro/claude-code"
+    },
+    {
+      "source": "/library",
+      "destination": "/maestro/library"
+    }
+  ]
 }
