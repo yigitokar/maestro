@@ -4,6 +4,7 @@
 //   npm run build && node eval/reviewbench/run.js --out eval/data/rb/<name> [--arms A,B,C] [--repeats 3]
 //     [--set test|full] [--only <prKey,...>] [--limit n] [--model m] [--skeptic-effort high]
 //     [--cell-budget 400k] [--max-dollars 50] [--concurrency n] [--seed n]
+//     [--structured-mode two-stage|submit-tool|single-stage]
 //     [--bench eval/data/reviewbench] [--repos eval/data/rb-repos] [--accept-degraded] [--dry-run]
 // Arms: A one agent, B examples/workflows/review-changes.js, C its three finders without skeptics.
 // Cells finished in <out>/results.jsonl are skipped, so the same command continues a stopped run. A cell
@@ -63,6 +64,10 @@ if (!dryRun && !PRICES[model]) {
   );
 }
 const acceptDegraded = argv.includes('--accept-degraded');
+const structuredMode = flag('--structured-mode') ?? 'two-stage';
+if (!['two-stage', 'submit-tool', 'single-stage'].includes(structuredMode)) {
+  die(`--structured-mode is two-stage, submit-tool or single-stage, got "${structuredMode}"`);
+}
 
 const set = flag('--set') ?? 'test';
 if (set !== 'test' && set !== 'full') die(`--set is test or full, got "${set}"`);
@@ -135,7 +140,15 @@ for (const [i, cell] of todo.entries()) {
   }
   const key = prKey(cell.task);
   const started = Date.now();
-  const row = { id: cell.id, arm: cell.arm, repeat: cell.repeat, pr: key, model, status: 'failed' };
+  const row = {
+    id: cell.id,
+    arm: cell.arm,
+    repeat: cell.repeat,
+    pr: key,
+    model,
+    structuredMode,
+    status: 'failed',
+  };
   let handle;
   try {
     const cwd = dryCwd ?? prepareTask(cell.task, path.join(reposDir, key));
@@ -147,7 +160,7 @@ for (const [i, cell] of todo.entries()) {
       stateDir,
       model,
       budget: cellBudget,
-      runner: dryRun ? new FakeRunner(dryRules) : new AnthropicRunner(),
+      runner: dryRun ? new FakeRunner(dryRules) : new AnthropicRunner({ structuredMode }),
       ...(flag('--concurrency') ? { concurrency: number('--concurrency', 1) } : {}),
       ...(resume ? { resumeFromRunId: cell.id } : { runId: cell.id }),
     });
