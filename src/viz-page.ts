@@ -281,7 +281,7 @@ const SCRIPT = `
   var ZOOMS = [1, 2, 4, 8, 16];
   var STATUS_TEXT = { queued: 'sırada', running: 'çalışıyor', ok: 'tamam', null: 'null', skipped: 'atlandı', cached: 'önbellekten' };
   var state = {
-    lines: [], offset: 0, entries: [], outcome: null, skew: 0, attempt: null, selected: null, selectedT0: null, selectedRow: null, zoomIndex: 0,
+    lines: [], offset: 0, entries: [], outcome: null, outcomeVersion: null, skew: 0, attempt: null, selected: null, selectedT0: null, selectedRow: null, zoomIndex: 0,
     details: BOOT.details || {}, detailCache: {}, pollError: null, snapNow: null
   };
 
@@ -301,7 +301,10 @@ const SCRIPT = `
     state.lines = state.lines.concat(snap.lines || []);
     state.offset = snap.offset || 0;
     state.entries = snap.entries || [];
-    state.outcome = snap.outcome || null;
+    // The server leaves the outcome out when it is the version this page already has.
+    if (!snap.outcomeVersion) state.outcome = null;
+    else if (snap.outcome) state.outcome = snap.outcome;
+    state.outcomeVersion = snap.outcomeVersion || null;
     state.skew = (snap.now || Date.now()) - Date.now();
     state.snapNow = snap.now || null;
   }
@@ -929,7 +932,7 @@ const SCRIPT = `
   }
 
   function poll() {
-    fetch('api/poll?from=' + state.offset)
+    fetch('api/poll?from=' + state.offset + (state.outcomeVersion ? '&outcome=' + encodeURIComponent(state.outcomeVersion) : ''))
       .then(function (r) {
         if (!r.ok) throw new Error('HTTP ' + r.status);
         return r.json();
@@ -940,7 +943,7 @@ const SCRIPT = `
         var changed =
           (snap.lines && snap.lines.length) ||
           snap.entries.length !== state.entries.length ||
-          Boolean(snap.outcome) !== Boolean(state.outcome);
+          (snap.outcomeVersion || null) !== state.outcomeVersion;
         ingest(snap, snap.offset < state.offset);
         if (changed || hadError || running()) render();
       })

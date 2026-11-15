@@ -12,7 +12,7 @@ import { readEntries, readResultBlob, readTrace } from './journal.js';
 import type { Entry, EntryStatus, Trace, Usage } from './types.js';
 import { vizPage } from './viz-page.js';
 import { vizWidget, widgetModel } from './viz-widget.js';
-import { type PersistedOutcome, readOutcome } from './workflow.js';
+import { OUTCOME_FILE, type PersistedOutcome, readOutcome } from './workflow.js';
 
 /** A journal row without its result, for the timeline (sent on every poll, so kept small). */
 export interface VizEntrySummary {
@@ -42,8 +42,10 @@ export interface VizSnapshot {
   /** Byte offset to ask for next time (end of the last complete line). */
   offset: number;
   entries: VizEntrySummary[];
-  /** Settled outcome from `<runDir>/outcome.json`, when present. */
+  /** Settled outcome from `<runDir>/outcome.json`; left out when the caller already has this version. */
   outcome?: PersistedOutcome;
+  /** Identifies the outcome file as it is now (absent: no outcome). A poll sends back the one it has. */
+  outcomeVersion?: string;
   /** Server clock, so a live page measures running agents against the same clock that wrote `t`. */
   now: number;
 }
@@ -116,18 +118,42 @@ async function readRows(runDir: string): Promise<Entry[]> {
   }
 }
 
-export async function readSnapshot(runDir: string, runId: string, from = 0): Promise<VizSnapshot> {
-  const [{ lines, offset }, rows, outcome] = await Promise.all([
+/** Size and mtime of outcome.json: changes when a resume removes it or a new end rewrites it. */
+async function outcomeVersionOf(runDir: string): Promise<string | undefined> {
+  try {
+    const st = await stat(join(runDir, OUTCOME_FILE));
+    return `${st.size}-${st.mtimeMs}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * `haveOutcome` is the outcomeVersion the caller already holds: the outcome (a run's whole result) is
+ * then read and sent only when the file changed, not on every poll.
+ */
+export async function readSnapshot(
+  runDir: string,
+  runId: string,
+  from = 0,
+  haveOutcome?: string,
+): Promise<VizSnapshot> {
+  const [{ lines, offset }, rows, version] = await Promise.all([
     readEventLines(runDir, from),
     readRows(runDir),
-    readOutcome(runDir),
+    outcomeVersionOf(runDir),
   ]);
+  const outcome = version !== undefined && version !== haveOutcome ? await readOutcome(runDir) : undefined;
   return {
     runId,
     lines,
     offset,
     entries: rows.map(summary),
     ...(outcome !== undefined ? { outcome } : {}),
+    // An unreadable file has no version, so the next poll tries it again.
+    ...(version !== undefined && (outcome !== undefined || version === haveOutcome)
+      ? { outcomeVersion: version }
+      : {}),
     now: Date.now(),
   };
 }
@@ -253,7 +279,12 @@ export async function serveViz(opts: {
     if (url.pathname === '/') return send(res, 200, 'text/html; charset=utf-8', page);
     if (url.pathname === '/api/poll') {
       const from = Number(url.searchParams.get('from') ?? '0');
-      const snap = await readSnapshot(runDir, runId, Number.isSafeInteger(from) && from > 0 ? from : 0);
+      const snap = await readSnapshot(
+        runDir,
+        runId,
+        Number.isSafeInteger(from) && from > 0 ? from : 0,
+        url.searchParams.get('outcome') ?? undefined,
+      );
       return send(res, 200, 'application/json; charset=utf-8', JSON.stringify(snap));
     }
     if (url.pathname === '/api/entry') {
