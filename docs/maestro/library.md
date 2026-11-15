@@ -4,7 +4,7 @@ description: "Call Maestro from your own Node program or agent harness."
 icon: "book"
 ---
 
-Maestro is an ES module named `@careresearch/maestro`. It is not on npm; install it from a clone, after `npm run build` there:
+Maestro is an ES module named `maestro-workflows`. It is not on npm; install it from a clone, after `npm run build` there:
 
 ```bash
 npm install /path/to/maestro
@@ -13,7 +13,7 @@ npm install /path/to/maestro
 ## Running a workflow
 
 ```ts
-import { attachTerminalProgress, run } from '@careresearch/maestro';
+import { attachTerminalProgress, run } from 'maestro-workflows';
 
 const handle = run({ scriptPath: 'review.js', args: { diffRef: 'main...HEAD' }, budget: 300_000 });
 const detach = attachTerminalProgress(handle);   // progress tree on stderr
@@ -69,7 +69,7 @@ handle.events.on('agent_end', (e) => console.error(e.label, e.status, e.usage.ou
 ## Runners
 
 ```ts
-import { AnthropicRunner, CodexRunner, FakeRunner, RoutingRunner, run } from '@careresearch/maestro';
+import { AnthropicRunner, CodexRunner, FakeRunner, RoutingRunner, run } from 'maestro-workflows';
 
 await run({ scriptPath: 'review.js', runner: new CodexRunner() }).promise;
 ```
@@ -87,7 +87,7 @@ If you run your own agent loop on the Claude API, you can hand it the same `Work
 
 ```ts
 import Anthropic from '@anthropic-ai/sdk';
-import { handleWorkflowToolCall, maestroToolDefinition, toToolResultBlock } from '@careresearch/maestro';
+import { handleWorkflowToolCall, maestroToolDefinition, toToolResultBlock } from 'maestro-workflows';
 
 const client = new Anthropic();
 const tools = [maestroToolDefinition() /* , your other tools */];
@@ -108,7 +108,7 @@ messages.push({ role: 'user', content: [toToolResultBlock(toolUse.id, res)] });
 Runs started this way are controlled by id:
 
 ```ts
-import { liveWorkflowAgents, skipWorkflowAgent, stopWorkflowRun } from '@careresearch/maestro';
+import { liveWorkflowAgents, skipWorkflowAgent, stopWorkflowRun } from 'maestro-workflows';
 
 liveWorkflowAgents(runId);        // [{ id, label, phase, group }], or null once the run has ended
 skipWorkflowAgent(runId, id);     // that agent() returns null, the run goes on
@@ -122,7 +122,7 @@ All three return `false` or `null` for an unknown or finished run.
 To make your main loop's workflows share one pool, create a `Budget` and pass the same instance to every call:
 
 ```ts
-import { Budget } from '@careresearch/maestro';
+import { Budget } from 'maestro-workflows';
 
 const budget = new Budget({ total: 2_000_000 });
 await handleWorkflowToolCall(input, { budget });
@@ -131,7 +131,7 @@ await handleWorkflowToolCall(input, { budget });
 ## Reading runs
 
 ```ts
-import { readEntries, readOutcome, readTrace } from '@careresearch/maestro';
+import { readEntries, readOutcome, readTrace } from 'maestro-workflows';
 
 const rows = await readEntries(runDir);     // the journal's rows
 const outcome = await readOutcome(runDir);  // { ok, result } or { ok: false, error }; undefined while running

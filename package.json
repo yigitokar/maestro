@@ -1,5 +1,5 @@
 {
-  "name": "@careresearch/maestro",
+  "name": "maestro-workflows",
   "version": "1.2.0",
   "description": "Multi-agent workflow orchestrator: a deterministic script drives clean-context agents",
   "type": "module",
@@ -34,7 +34,7 @@
     }
   },
   "bin": {
-    "maestro": "./bin/maestro"
+    "maestro": "bin/maestro"
   },
   "files": [
     "dist",

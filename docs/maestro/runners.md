@@ -80,7 +80,7 @@ Both kinds of agent share one journal, one concurrency limit, one budget and one
 In a library you can supply your own rule:
 
 ```ts
-import { RoutingRunner, run } from '@careresearch/maestro';
+import { RoutingRunner, run } from 'maestro-workflows';
 
 const runner = new RoutingRunner({ route: (model) => (model.startsWith('claude-') ? 'anthropic' : 'codex') });
 await run({ scriptPath: 'review.js', runner }).promise;
