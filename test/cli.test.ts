@@ -9,7 +9,7 @@ import { PassThrough } from 'node:stream';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { main } from '../src/cli.js';
+import { main, watchParent } from '../src/cli.js';
 
 beforeAll(() => {
   process.env.GIT_CONFIG_GLOBAL = '/dev/null';
@@ -309,5 +309,39 @@ describe('maestro (no command / unknown command / help)', () => {
   it('the bin entry starts with a node shebang', () => {
     const src = readFileSync(path.join(import.meta.dirname, '..', 'src', 'cli.ts'), 'utf8');
     expect(src.split('\n')[0]).toBe('#!/usr/bin/env node');
+  });
+});
+
+describe('watchParent', () => {
+  const tick = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  it('calls onGone once when the parent changes, and not before', async () => {
+    let parent = 4242;
+    let gone = 0;
+    const stop = watchParent(() => gone++, { ppid: () => parent, intervalMs: 5 });
+    await tick(30);
+    expect(gone).toBe(0);
+    parent = 1;
+    await tick(30);
+    expect(gone).toBe(1);
+    await tick(30);
+    expect(gone).toBe(1);
+    stop();
+  });
+
+  it('does nothing for a process that starts without a parent, or after stop()', async () => {
+    let parent = 1;
+    let gone = 0;
+    watchParent(() => gone++, { ppid: () => parent, intervalMs: 5 });
+    parent = 77;
+    await tick(30);
+    expect(gone).toBe(0);
+
+    parent = 4242;
+    const stop = watchParent(() => gone++, { ppid: () => parent, intervalMs: 5 });
+    stop();
+    parent = 1;
+    await tick(30);
+    expect(gone).toBe(0);
   });
 });
