@@ -62,6 +62,7 @@ return { a, b, args };`;
       'blobs',
       'events.jsonl',
       'journal.jsonl',
+      'outcome.json',
       'run.json',
       'script.js',
     ]);

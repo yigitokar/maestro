@@ -99,7 +99,7 @@ import { CodexRunner, run } from 'maestro-orchestrator';
 const result = await run({ scriptPath: 'review.js', runner: new CodexRunner() }).promise;
 ```
 
-`--runner` varsayılanı `anthropic`'tir; `--dry-run` seçilen runner'ın önüne geçer. Model önceliği `new CodexRunner({ model })`, sonra workflow'un `model` seçeneği (`--model` dahil), sonra Codex config varsayılanıdır. Workflow modeli `claude-` ile başlıyorsa Codex'e gönderilmez; böylece Maestro'nun varsayılan Claude modeli Codex modelini değiştirmez. `effort: 'low' | 'medium' | 'high' | 'xhigh'` aynen, `'max'` ise `'xhigh'` olarak gider; verilmezse Codex varsayılanı kullanılır.
+`--runner` varsayılanı `anthropic`'tir; `codex` tüm ajanları Codex CLI üzerinden koşturur; `auto` (`RoutingRunner`) ise model adına göre çağrı bazında yönlendirir (`claude-*` / `anthropic/*` → `AnthropicRunner`, `gpt-*` / `o3` / `codex-*` gibi diğer modeller → `CodexRunner`). Böylece aynı run içinde örneğin GPT/Codex bulucular ve Claude Opus jüri aynı journal, semafor, bütçe ve worktree havuzunu paylaşabilir. `--dry-run` seçilen runner'ın önüne geçer. Model önceliği `new CodexRunner({ model })`, sonra workflow'un `model` seçeneği (`--model` dahil), sonra Codex config varsayılanıdır. Workflow modeli `claude-` ile başlıyorsa Codex'e gönderilmez; böylece Maestro'nun varsayılan Claude modeli Codex modelini değiştirmez. `effort: 'low' | 'medium' | 'high' | 'xhigh'` aynen, `'max'` ise `'xhigh'` olarak gider; verilmezse Codex varsayılanı kullanılır.
 
 Codex kendi shell araçlarını kullanır; Maestro'nun özel `ToolDef` araçları Codex'e aktarılmaz ve istenen özel araçlar bir log satırında adlandırılır. İzolasyonsuz ajan `read-only`, worktree içindeki ajan `workspace-write` sandbox'ıyla koşar. Writer, Codex içinde commit atmaz; değişikliklerini working tree'de bırakır. 2026-11-07 tarihli gerçek çalıştırmada Codex sandbox'ının `.git` metadata'sını salt okunur tuttuğu, ortak Git dizinini `--add-dir` ile vermenin bunu değiştirmediği görüldü. Başarılı ve iptal edilmemiş izole çalıştırmadan sonra runner değişiklik varsa kullanıcının Git kimliğiyle commit atar; mesaj `maestro(codex): ` ile başlar ve görev prompt'unun ilk satırından toplam 72 karaktere kısaltılır. Başarısız çalıştırmalar commit edilmez; kirli worktree inceleme için kalır. Runner'ın commit'i başarısız olursa sonuç da hata bilgisiyle `null` olur.
 
@@ -116,15 +116,17 @@ Script'in gördüğü yüzey (spec Seviye 1). Bunların dışında yalnızca JS 
 | API | Döner | Null ve throw |
 |---|---|---|
 | `agent(prompt, opts?)` | `schema` varsa doğrulanmış obje, yoksa final metin | Terminal API hatası, ajanın atlanması (`handle.skip(id)`) ve koşarken bütçe aşımı **null** döner. Geçersiz schema, girişte bütçe rezervasyonunun yetmemesi, `meta.maxAgents` tavanı ve izolasyonsuz yazma aracı **throw** eder. |
-| `parallel(thunks)` | Sonuç dizisi (bariyer) | Asla reject etmez. Throw eden thunk'ın slotu null olur ve log'a yazılır. 4096 öğe üstü throw eder. |
-| `pipeline(items, ...stages)` | Öğe başına son aşamanın sonucu | Aşamalar arasında bariyer yoktur. Aşama `(prev, item, index)` alır, ilk aşamada `prev === item`. Throw eden aşama öğeyi null yapar ve kalan aşamaları atlar. Null **dönen** aşama normal değerdir. |
+| `parallel(thunks)` | Sonuç dizisi (bariyer) | Ajan/çalışma zamanı hatalarında (`Error`, `schema_invalid`, `budget_exceeded`, `agent_cap`, `run_stopped`) throw eden thunk'ın slotu null olur ve log'a yazılır. Programcı/konfigürasyon hataları (`ReferenceError`, `SyntaxError`, `determinism`, `unknown_tool`, `unknown_phase`, `write_tool_without_isolation`, `nested_workflow`, `duplicate_writer_branch`, `journal_unwritable`) ve 4096 öğe üstü doğrudan reject eder. |
+| `pipeline(items, ...stages)` | Öğe başına son aşamanın sonucu | Aşamalar arasında bariyer yoktur. Aşama `(prev, item, index)` alır, ilk aşamada `prev === item`. Çalışma zamanı hatası atan aşama öğeyi null yapar ve kalan aşamaları atlar; programcı/konfigürasyon hataları (`parallel` ile aynı küme) doğrudan reject eder. Null **dönen** aşama normal değerdir. |
 | `phase(title)` | | `meta.phases` tanımlıysa başka başlık throw eder. |
 | `log(message)` | | |
 | `args` | Tool çağrısının `args` değeri, aynen | |
 | `budget` | `{ total, spent(), remaining() }` | `total` yoksa null ve `remaining()` Infinity. |
 | `workflow(nameOrRef, args?)` | Alt workflow'un dönüş değeri | Yalnızca bir seviye iç içe; çocuğun içinde throw eder. Aynı semafor, sayaç ve bütçe paylaşılır. |
 
-`agent` opts: `label`, `phase`, `schema`, `model`, `effort` (`low` … `max`), `isolation: 'worktree'`, `tools`. Varsayılan araçlar salt-okurdur: `read_file`, `grep`, `glob` ve izin listeli `bash` (ls, cat, git log/diff/status/show, rg, find). `bash` komutlarının yol argümanları, `read_file` gibi, çalışma dizininin dışına çıkamaz. `bash` ve `shell` ile koşan komutlar `ANTHROPIC_API_KEY` ve `ANTHROPIC_AUTH_TOKEN` değişkenlerini görmez. `write_file`, `edit_file`, `shell` ve `git_commit` yalnızca `isolation: 'worktree'` ile verilir. Yazan ajan, runtime'ın açtığı `wf/<runId>/<label>` branch'ine commit eder; çıkışta branch, temiz status ve en az bir commit Git'ten doğrulanır ve sonuca `branchName` eklenir.
+`agent` opts: `label`, `phase`, `schema`, `model`, `effort` (`low` … `max`), `isolation: 'worktree'`, `tools`. Varsayılan araçlar salt-okurdur: `read_file`, `grep`, `glob` ve izin listeli `bash` (ls, cat, git log/diff/status/show, rg, find). `bash` komutlarının yol argümanları, `read_file` gibi, çalışma dizininin dışına çıkamaz. `bash` ve `shell` ile koşan komutlar `ANTHROPIC_API_KEY` ve `ANTHROPIC_AUTH_TOKEN` değişkenlerini görmez. `write_file`, `edit_file`, `shell` ve `git_commit` yalnızca `isolation: 'worktree'` ile verilir. Yazan ajan, runtime'ın açtığı `wf/<runId>/<label>` branch'ine commit eder; `AnthropicRunner` içinde işini bitirip `git_commit` çağırmayı unutan yazana tek seferlik bir hatırlatma turu verilir; çıkışta branch, temiz status ve en az bir commit Git'ten doğrulanır ve sonuca `branchName` eklenir. `meta` bloğunda tanınmayan anahtarlar (ör. `maxAgent` yazım hatası) run başında uyarı olarak log'a düşer.
+
+`AnthropicRunner` şemalı ajanlarda üç yapılandırılmış çıktı modu destekler (`--structured-mode` / `structuredMode`): `two-stage` (varsayılan, spec 3.2 iki aşamalı parse), `submit-tool` (şemayı strict `__maestro_submit_result` aracı olarak Stage 1 araç listesine ekler; Stage 2'nin transcript prompt cache'ini kırmasını önler) ve `single-stage` (`output_config.format` şemasını doğrudan Stage 1 isteklerine verir).
 
 ### Özel araçlar
 
@@ -199,7 +201,7 @@ stopWorkflowRun(runId, 'yeter'); // canlı ajanlar 'skipped' yazılır, onComple
 Aynı Workflow aracı stdio üzerinden bir MCP sunucusu olarak açılır ve `tools/list` dört araç döner:
 
 - `Workflow`: run'ı başlatır, hemen `{ runId, scriptPath, status: 'started' }` döner. `cwd` verilirse run oturumun dizini yerine o repoda çalışır (yukarıdaki `cwd` paragrafı).
-- `WorkflowResult({ runId, wait? })`: Run sürerken `{ status: 'running', liveAgents }`, sonra `done` ya da `failed` döner. `wait: true` ile çağrı run bitene kadar açık kalır ve yoklamaya gerek kalmaz: Claude Code 2 dakikadan uzun süren bir MCP çağrısını arka plana alır, sonucu modele bildirim olarak verir. Bekleyen çağrı, istemci `progressToken` gönderdiyse 30 saniyede bir canlı ajanların adlarıyla `notifications/progress` yollar; böylece boşta kalan çağrı zaman aşımı çağrıyı kesmez. Tek seferlik `claude -p` oturumu tur bitince kapandığı için arka plandaki sonucu beklemez; sonucu almak için etkileşimli bir oturum kullanın.
+- `WorkflowResult({ runId, wait?, cwd? })`: Run sürerken `{ status: 'running', liveAgents }`, sonra `done` ya da `failed` döner. Tamamlanan run'ların nihai sonucu `<runDir>/outcome.json` dosyasına da yazıldığı için MCP sunucusu yeniden başlatılsa bile eski bir `runId` için `WorkflowResult` diskten okunabilir (`cwd` farklıysa birlikte verilir). `wait: true` ile çağrı run bitene kadar açık kalır ve yoklamaya gerek kalmaz: Claude Code 2 dakikadan uzun süren bir MCP çağrısını arka plana alır, sonucu modele bildirim olarak verir. Bekleyen çağrı, istemci `progressToken` gönderdiyse 30 saniyede bir canlı ajanların adlarıyla `notifications/progress` yollar; böylece boşta kalan çağrı zaman aşımı çağrıyı kesmez. Tek seferlik `claude -p` oturumu tur bitince kapandığı için arka plandaki sonucu beklemez; sonucu almak için etkileşimli bir oturum kullanın.
 - `WorkflowStop({ runId })`: run'ı durdurur. Script `run_stopped` ile reddeder, journal kalır ve run sonradan `resumeFromRunId` ile sürdürülebilir.
 - `WorkflowSkip({ runId, agentId })`: `liveAgents` içindeki bir ajanı atlar; o `agent()` çağrısı `null` döner.
 
@@ -224,21 +226,24 @@ Varsayılan runner ile sunucu Claude Code'un ortamındaki `ANTHROPIC_API_KEY`'i 
 ```text
 maestro run <script.js> [--args <json>] [--args-file f] [--resume <runId>] [--budget 500k]
                         [--dry-run] [--cwd d] [--state-dir d] [--tools-dir d] [--concurrency n] [--model m]
-                        [--runner <anthropic|codex>]
+                        [--runner <anthropic|codex|auto>]
+                        [--structured-mode <two-stage|submit-tool|single-stage>]
+maestro runs [--cwd d] [--state-dir d] [--limit n]          (alias: ls)
 maestro gc [--delete] [--force] [--cwd d]
 maestro show <runId> [label] [--cwd d] [--state-dir d]
 maestro viz <runId> [--cwd d] [--state-dir d] [--port n] [--no-open] [--out f.html] [--widget]
 maestro mcp [--cwd d] [--state-dir d] [--tools-dir d] [--budget 500k] [--concurrency n] [--model m]
-            [--runner <anthropic|codex>] [--dry-run]
+            [--runner <anthropic|codex|auto>]
+            [--structured-mode <two-stage|submit-tool|single-stage>] [--dry-run]
 ```
 
-`maestro run` sonucu stdout'a JSON olarak yazar, ilerleme stderr'e gider; Ctrl-C run'ı durdurur ve resume komutunu gösterir. `maestro mcp`, stdin bitince 0 ile çıkar; `--budget` orada her run için değil, oturum boyunca paylaşılan tek havuz içindir.
+`maestro run` sonucu stdout'a JSON olarak yazar, ilerleme stderr'e gider; Ctrl-C run'ı durdurur ve resume komutunu gösterir. `maestro runs` (`ls`) kayıtlı run'ları en yeniden eskiye durum, süre, ajan sayısı ve token/cache özetiyle listeler. `maestro mcp`, stdin bitince 0 ile çıkar; `--budget` orada her run için değil, oturum boyunca paylaşılan tek havuz içindir.
 
 `maestro gc` kirli worktree'leri ve `wf/*` branch'lerini listeler; birleşmiş sayılan branch'ler, HEAD'in atası olanlar ya da tüm commit'leri cherry-pick ile alınmış olanlardır. `--delete` temiz kalmış worktree'leri ve birleşmiş branch'leri siler. Kirli worktree'ler (commit edilmemiş iş) ve birleşmemiş branch'ler yalnızca `--delete --force` ile silinir.
 
 ## Run dizini ve resume
 
-`.maestro/runs/<runId>/` dizininde `script.js`, `args.json`, `run.json`, `journal.jsonl` ve `blobs/` bulunur. `run.json` run'ın modelini ve runner'ını tutar: cache anahtarı bunları içermediği için, resume ederken biri değişirse log'a "journal'daki sonuçlar eski modelden" uyarısı düşer. Journal satır başına bir `agent()` çağrısı tutar (`key = sha256(prompt + "\n" + canonicalJSON(opts \ {label, phase})) + ":" + n`). Yalnızca `status: 'ok'` satırlar cache isabetidir. `null` (API hatası) ve `skipped` (bütçe, atlama, durdurma) satırları resume'da tekrar koşar. Böylece bütçeyi artırıp resume etmek yarım kalan ajanları canlandırır. 64 KB üstü sonuçlar `blobs/<key>.json` dosyasına yazılır. Her canlı satır ayrıca `trace` taşır: ajanın araç çağrıları ve final metninin ilk 2.000 karakteri; `maestro show <runId>` ajanları listeler, `maestro show <runId> <label>` birinin trace'ini okunur basar.
+`.maestro/runs/<runId>/` dizininde `script.js`, `args.json`, `run.json`, `journal.jsonl`, `outcome.json` ve `blobs/` bulunur. `run.json` run'ın modelini ve runner'ını tutar: cache anahtarı bunları içermediği için, resume ederken biri değişirse log'a "journal'daki sonuçlar eski modelden" uyarısı düşer. Journal satır başına bir `agent()` çağrısı tutar (`key = sha256(prompt + "\n" + canonicalJSON(opts \ {label, phase})) + ":" + n`). Yalnızca `status: 'ok'` satırlar cache isabetidir. `null` (API hatası) ve `skipped` (bütçe, atlama, durdurma) satırları resume'da tekrar koşar. Böylece bütçeyi artırıp resume etmek yarım kalan ajanları canlandırır. 64 KB üstü sonuçlar `blobs/<key>.json` dosyasına yazılır (Windows'ta dosya adındaki `:` yerine `-` kullanılır; okuma iki adlandırmayı da kabul eder). `outcome.json` run bittiğinde nihai sonucu ya da hatayı tutar. Her canlı satır ayrıca `trace` taşır: ajanın araç çağrıları ve final metninin ilk 2.000 karakteri; `maestro show <runId>` ajanları ve run'ın `outcome` özetini listeler, `maestro show <runId> <label>` birinin trace'ini okunur basar.
 
 Run dizininde bir de `events.jsonl` vardır: her olay (ajan başladı, slot aldı, bitti, faz, log, bütçe) duvar saati zamanıyla bir satırdır. Ajanın prompt'u (ilk 4.000 karakter), modeli, effort'u ve araçları da buraya yazılır. Dosya yalnızca görüntüleme içindir. Resume ve cache journal'dan çalışır, bu dosyaya bakmaz. Yazılamazsa run durmaz, log'a bir satır düşer. Her başlatma ve resume dosyaya kendi `run_start` satırıyla eklenir.
 
@@ -335,7 +340,7 @@ Testler Vitest'tir ve ağa çıkmaz. Anthropic runner testleri gerçek SDK `tool
 | Bileşen | Kaynak | Spec |
 |---|---|---|
 | Journal | `src/journal.ts` | 3.1 |
-| Agent runner, araçlar | `src/runner.ts`, `src/codex-runner.ts`, `src/tools.ts`, `src/custom-tools.ts` | 3.2 |
+| Agent runner, araçlar | `src/runner.ts`, `src/codex-runner.ts`, `src/routing-runner.ts`, `src/tools.ts`, `src/custom-tools.ts` | 3.2 |
 | Script runtime, schema | `src/runtime.ts`, `src/schema.ts` | 3.3 |
 | Scheduler | `src/scheduler.ts` | 3.4 |
 | Budget | `src/budget.ts` | 3.5 |
@@ -363,8 +368,8 @@ Spec'ten koda birebir geçmeyen maddeler ve gerekçeleri aşağıdadır. Spec'in
 - **Kök `{ type: 'object' }` şeması `properties` olmadan kabul edilir (Seviye 1).** Tablo yalnızca kökün object olmamasını ve `required ⊄ properties` durumunu throw sayar; boş obje bu şemayı sağlar.
 - **Stage 2'de `max_tokens` "devam et" ile değil, daha büyük `max_tokens` ile tekrar denenir (3.2).** Bir devam turu, kesilmiş JSON belgesinin kalanını değil yeni bir belge üretirdi. Araç döngüsünde kural birebir uygulanır.
 - **Codex runner'da yazan ajan commit atmaz (3.6).** Codex sandbox'ı `.git`'i salt-okur tutar; başarılı bir izole koşudan sonra commit'i runner atar ve ajana tek bir talimat gider ("commit atma"). Şema cevabı da tek denemedir, ikinci parse denemesi yoktur.
-- **Spec'te olmayan ekler (kapsam eki).** Workflow aracının `cwd` girdisi, `WorkflowResult`'ın `wait` modu, script dışında tanımlanan özel araçlar (`.maestro/tools`, `--tools-dir`), run dizinindeki `events.jsonl` ve `run.json`, `maestro show` ve `maestro viz`.
-- **Agent SDK binding'i ve tek aşamalı runner yok (Açık soru 1 ve 2).** Spec bunları v2'ye ve sonraki bir optimizasyona bırakır.
+- **Spec'te olmayan ekler (kapsam eki).** Workflow aracının `cwd` girdisi, `WorkflowResult`'ın `wait` modu, script dışında tanımlanan özel araçlar (`.maestro/tools`, `--tools-dir`), run dizinindeki `events.jsonl`, `run.json` ve `outcome.json`, `maestro show`, `maestro runs` ve `maestro viz`.
+- **Agent SDK binding'i yok (Açık soru 2).** Spec bunu v2'ye bırakır. Açık soru 1'deki tek aşamalı / cache koruyan şema çıktısı ise `AnthropicRunner` içinde isteğe bağlı `structuredMode: 'submit-tool' | 'single-stage'` (`--structured-mode`) olarak desteklenir; varsayılan `two-stage` geriye dönük uyumu korur.
 
 ## Lisans
 

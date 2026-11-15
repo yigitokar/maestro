@@ -6,7 +6,17 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { canonicalJSON, hashCall, Journal, makeKey, Occurrences } from '../src/journal.js';
+import {
+  blobFileName,
+  canonicalJSON,
+  hashCall,
+  Journal,
+  makeKey,
+  Occurrences,
+  readResultBlob,
+  readTrace,
+  resolveBlobFile,
+} from '../src/journal.js';
 import type { Entry } from '../src/types.js';
 import { MaestroError } from '../src/types.js';
 
@@ -344,5 +354,41 @@ describe('Journal.open failures', () => {
     opened.push(j);
     expect(existsSync(join(runDir, 'blobs'))).toBe(true);
     expect(j.entries()).toEqual([]);
+  });
+
+  it('blobFileName & resolveBlobFile handle win32 dash-separated and POSIX colon-separated blobs interchangeably', async () => {
+    expect(blobFileName('abcd1234:0', '.json', 'win32')).toBe('abcd1234-0.json');
+    expect(blobFileName('abcd1234:0', '.json', 'darwin')).toBe('abcd1234:0.json');
+    expect(blobFileName('abcd1234:0', '.trace.json', 'win32')).toBe('abcd1234-0.trace.json');
+
+    const runDir = join(dir, 'cross-platform');
+    const j = await Journal.open(runDir);
+    opened.push(j);
+    const big = { payload: 'x'.repeat(70_000) };
+    const bigTrace = {
+      toolCalls: [{ tool: 'read_file', inputSummary: 'a', ok: true }],
+      finalText: 't'.repeat(70_000),
+    };
+    await j.append(entry('deadbeef:0', { result: big, trace: bigTrace }));
+    await j.close();
+
+    // Simulate a run folder copied from Windows where ':' was stored as '-'.
+    const blobsDir = join(runDir, 'blobs');
+    const { renameSync } = await import('node:fs');
+    if (existsSync(join(blobsDir, 'deadbeef:0.json'))) {
+      renameSync(join(blobsDir, 'deadbeef:0.json'), join(blobsDir, 'deadbeef-0.json'));
+    }
+    if (existsSync(join(blobsDir, 'deadbeef:0.trace.json'))) {
+      renameSync(join(blobsDir, 'deadbeef:0.trace.json'), join(blobsDir, 'deadbeef-0.trace.json'));
+    }
+
+    expect(resolveBlobFile(blobsDir, 'deadbeef:0', '.json', 'darwin')).toBe(
+      join(blobsDir, 'deadbeef-0.json'),
+    );
+    const reopened = await Journal.open(runDir);
+    opened.push(reopened);
+    expect((await reopened.get('deadbeef:0'))?.result).toEqual(big);
+    expect(await readResultBlob(runDir, 'deadbeef:0')).toEqual(big);
+    expect(await readTrace(runDir, reopened.entries()[0]!)).toEqual(bigTrace);
   });
 });

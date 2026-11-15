@@ -6,7 +6,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import Anthropic from '@anthropic-ai/sdk';
 import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { AnthropicRunner, COMMIT_REMINDER_MESSAGE, SUBMIT_RESULT_TOOL_NAME } from '../src/runner.js';
 import { type FakeResponse, FakeRunner } from '../src/testing/fake-runner.js';
 import type { Entry, RunRequest } from '../src/types.js';
 import { type RunOptions, run } from '../src/workflow.js';
@@ -197,5 +199,174 @@ return out;`,
     expect(existsSync(seen!.cwd)).toBe(false);
     expect(worktrees(repo)).toHaveLength(1);
     expect(git(repo, 'branch', '--list', 'wf/*')).toBe('');
+  });
+
+  it('AnthropicRunner gives an isolated writer one commit-reminder turn when it ends with uncommitted edits', async () => {
+    const repo = await makeRepo();
+    let msgId = 0;
+    const msg = (content: unknown[], stop_reason: string) => ({
+      id: `msg_w_${++msgId}`,
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-opus-5-5',
+      content,
+      stop_reason,
+      stop_sequence: null,
+      stop_details: null,
+      container: null,
+      context_management: null,
+      diagnostics: null,
+      usage: { input_tokens: 10, output_tokens: 5 },
+    });
+    const replies = [
+      // Turn 1: writes file via write_file tool
+      msg(
+        [
+          {
+            type: 'tool_use',
+            id: 'tu_write',
+            name: 'write_file',
+            input: { path: 'forgotten.txt', content: 'fixed after reminder\n' },
+          },
+        ],
+        'tool_use',
+      ),
+      // Turn 2: forgets git_commit and ends turn!
+      msg([{ type: 'text', text: 'all done!' }], 'end_turn'),
+      // Turn 3 (after COMMIT_REMINDER_MESSAGE): commits via git_commit
+      msg(
+        [
+          {
+            type: 'tool_use',
+            id: 'tu_commit',
+            name: 'git_commit',
+            input: { message: 'commit after reminder' },
+          },
+        ],
+        'tool_use',
+      ),
+      // Turn 4: finishes stage 1 cleanly
+      msg([{ type: 'text', text: 'committed now' }], 'end_turn'),
+      // Stage 2 structured output
+      msg([{ type: 'text', text: '{"summary":"recovered","filesTouched":["forgotten.txt"]}' }], 'end_turn'),
+    ];
+    const bodies: any[] = [];
+    const client = new Anthropic({
+      apiKey: 'test',
+      maxRetries: 0,
+      fetch: (async (_url: unknown, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body ?? '{}'));
+        bodies.push(body);
+        return new Response(JSON.stringify(replies[bodies.length - 1]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as any,
+    });
+    const runner = new AnthropicRunner({ client, retryDelayMs: 0 });
+    const handle = start(repo, {
+      runner,
+      runId: 'r-remind',
+      script: `${META}return agent('write forgotten.txt', { label: 'forgetful', isolation: 'worktree', tools: ${WRITE_TOOLS}, schema: ${WRITE_RESULT} });`,
+    });
+    const out = (await handle.promise) as { summary: string; filesTouched: string[]; branchName: string };
+    expect(out).toEqual({
+      summary: 'recovered',
+      filesTouched: ['forgotten.txt'],
+      branchName: 'wf/r-remind/forgetful',
+    });
+    expect(bodies[2].messages.at(-1).content).toBe(COMMIT_REMINDER_MESSAGE);
+    expect(git(repo, 'show', 'wf/r-remind/forgetful:forgotten.txt')).toBe('fixed after reminder');
+  });
+
+  it('AnthropicRunner submit-tool mode also rejects premature submit when worktree has uncommitted edits', async () => {
+    const repo = await makeRepo();
+    let msgId = 0;
+    const msg = (content: unknown[], stop_reason: string) => ({
+      id: `msg_ws_${++msgId}`,
+      type: 'message',
+      role: 'assistant',
+      model: 'claude-opus-5-5',
+      content,
+      stop_reason,
+      stop_sequence: null,
+      stop_details: null,
+      container: null,
+      context_management: null,
+      diagnostics: null,
+      usage: { input_tokens: 10, output_tokens: 5 },
+    });
+    const replies = [
+      msg(
+        [
+          {
+            type: 'tool_use',
+            id: 'tu_w',
+            name: 'write_file',
+            input: { path: 'sub.txt', content: 'submit mode\n' },
+          },
+        ],
+        'tool_use',
+      ),
+      // Premature submit before git_commit -> receives is_error reminder!
+      msg(
+        [
+          {
+            type: 'tool_use',
+            id: 'tu_sub1',
+            name: SUBMIT_RESULT_TOOL_NAME,
+            input: { summary: 'done', filesTouched: ['sub.txt'] },
+          },
+        ],
+        'tool_use',
+      ),
+      msg(
+        [{ type: 'tool_use', id: 'tu_c', name: 'git_commit', input: { message: 'commit sub.txt' } }],
+        'tool_use',
+      ),
+      msg(
+        [
+          {
+            type: 'tool_use',
+            id: 'tu_sub2',
+            name: SUBMIT_RESULT_TOOL_NAME,
+            input: { summary: 'done', filesTouched: ['sub.txt'] },
+          },
+        ],
+        'tool_use',
+      ),
+    ];
+    const bodies: any[] = [];
+    const client = new Anthropic({
+      apiKey: 'test',
+      maxRetries: 0,
+      fetch: (async (_url: unknown, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body ?? '{}'));
+        bodies.push(body);
+        return new Response(JSON.stringify(replies[bodies.length - 1]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as any,
+    });
+    const runner = new AnthropicRunner({ client, retryDelayMs: 0, structuredMode: 'submit-tool' });
+    const handle = start(repo, {
+      runner,
+      runId: 'r-sub-remind',
+      script: `${META}return agent('write sub.txt', { label: 'subwriter', isolation: 'worktree', tools: ${WRITE_TOOLS}, schema: ${WRITE_RESULT} });`,
+    });
+    const out = (await handle.promise) as { summary: string; filesTouched: string[]; branchName: string };
+    expect(out).toEqual({
+      summary: 'done',
+      filesTouched: ['sub.txt'],
+      branchName: 'wf/r-sub-remind/subwriter',
+    });
+    expect(bodies).toHaveLength(4);
+    expect(bodies[2].messages.at(-1).content[0]).toMatchObject({
+      type: 'tool_result',
+      tool_use_id: 'tu_sub1',
+      is_error: true,
+    });
+    expect(git(repo, 'show', 'wf/r-sub-remind/subwriter:sub.txt')).toBe('submit mode');
   });
 });

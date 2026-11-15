@@ -165,6 +165,19 @@ function literalValue(node: any, path: string): unknown {
   }
 }
 
+export const KNOWN_META_KEYS: ReadonlySet<string> = new Set([
+  'name',
+  'description',
+  'phases',
+  'maxAgents',
+  'whenToUse',
+]);
+
+/** Keys in a parsed `meta` block that Maestro does not recognize (catches typos such as `maxAgent`). */
+export function unknownMetaKeys(meta: WorkflowMeta | Record<string, unknown>): string[] {
+  return Object.keys(meta).filter((k) => !KNOWN_META_KEYS.has(k));
+}
+
 // Known fields are validated; extra keys are pure literals too and pass through unchanged.
 function validateMeta(v: unknown): WorkflowMeta {
   const m = v as Record<string, unknown>;
@@ -196,6 +209,33 @@ function validateMeta(v: unknown): WorkflowMeta {
 // ---------------------------------------------------------------------------------------------------------
 // parallel / pipeline (spec Level 1 null/throw table, ADR-2)
 
+/**
+ * Script/environment invariant codes that must reject the run even when raised inside a `parallel()` or
+ * `pipeline()` slot. Agent/budget/schema slot failures (`schema_invalid`, `budget_exceeded`, `agent_cap`,
+ * `run_stopped`) stay non-fatal so a single bad item or mid-run cap only nulls that slot.
+ */
+export const FATAL_SCRIPT_CODES: ReadonlySet<string> = new Set([
+  'determinism',
+  'unknown_tool',
+  'unknown_phase',
+  'write_tool_without_isolation',
+  'nested_workflow',
+  'duplicate_writer_branch',
+  'item_limit',
+  'journal_unwritable',
+  'meta_invalid',
+  'tool_invalid',
+]);
+
+/** Realm-independent check: catches programmer/invariant errors without relying on host `instanceof`. */
+export function isFatalScriptError(err: unknown): boolean {
+  if (err === null || typeof err !== 'object') return false;
+  const code = (err as { code?: unknown }).code;
+  if (typeof code === 'string' && FATAL_SCRIPT_CODES.has(code)) return true;
+  const name = (err as { name?: unknown }).name;
+  return name === 'ReferenceError' || name === 'SyntaxError';
+}
+
 function defaultCheckItems(count: number, where: 'parallel' | 'pipeline'): void {
   if (count > LIMITS.maxItemsPerCall) {
     throw new MaestroError(
@@ -205,7 +245,10 @@ function defaultCheckItems(count: number, where: 'parallel' | 'pipeline'): void 
   }
 }
 
-/** parallel(thunks): never rejects because of a thunk; a throwing or non-function thunk yields null. */
+/**
+ * parallel(thunks): turns per-slot runtime throws and non-function slots into null, while rethrowing
+ * fatal script/environment invariant violations (`isFatalScriptError`).
+ */
 export function makeParallel(checkItems: CheckItems = defaultCheckItems, onSwallowed?: OnSwallowed) {
   return async function parallel(thunks: Array<() => Promise<unknown>>): Promise<unknown[]> {
     if (!Array.isArray(thunks)) throw new TypeError('parallel() expects an array of functions');
@@ -221,6 +264,7 @@ export function makeParallel(checkItems: CheckItems = defaultCheckItems, onSwall
             if (typeof thunk !== 'function') throw new TypeError(`parallel() slot ${i} is not a function`);
             return await thunk();
           } catch (e) {
+            if (isFatalScriptError(e)) throw e;
             reportSwallowed(onSwallowed, 'parallel', i, e);
             return null;
           }
@@ -233,8 +277,8 @@ export function makeParallel(checkItems: CheckItems = defaultCheckItems, onSwall
 
 /**
  * pipeline(items, ...stages): no barrier between stages; every item runs its own stage chain. Stage 1
- * gets (item, item, index), later stages (prev, item, index). A throwing stage makes the item null and
- * skips its remaining stages; a stage that returns null passes null on as a normal value.
+ * gets (item, item, index), later stages (prev, item, index). A non-fatal throwing stage makes the item
+ * null and skips its remaining stages; fatal script errors (`isFatalScriptError`) reject the pipeline.
  */
 export function makePipeline(checkItems: CheckItems = defaultCheckItems, onSwallowed?: OnSwallowed) {
   return async function pipeline(items: unknown[], ...stages: Stage[]): Promise<unknown[]> {
@@ -254,6 +298,7 @@ export function makePipeline(checkItems: CheckItems = defaultCheckItems, onSwall
               prev = await stage(prev, item, index);
             }
           } catch (e) {
+            if (isFatalScriptError(e)) throw e;
             reportSwallowed(onSwallowed, 'pipeline', index, e);
             return null;
           }
