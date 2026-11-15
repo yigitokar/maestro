@@ -8,7 +8,7 @@ icon: "rocket"
 
 - Node.js 22.18 or newer.
 - For agents on Claude: an `ANTHROPIC_API_KEY` in the environment.
-- For agents on Codex: the Codex CLI, installed and signed in. No Anthropic key is needed. See [Runners](runners.md).
+- For agents on Codex: the Codex CLI, installed and signed in. No Anthropic key is needed. See [Runners](/maestro/runners).
 
 ## Install
 
@@ -63,7 +63,7 @@ log(`${confirmed.length} findings confirmed`)
 return confirmed
 ```
 
-A script starts with `export const meta` and ends with a top-level `return`. Everything between is ordinary JavaScript plus the functions Maestro provides. [Writing workflows](workflows.md) describes them.
+A script starts with `export const meta` and ends with a top-level `return`. Everything between is ordinary JavaScript plus the functions Maestro provides. [Writing workflows](/maestro/workflows) describes them.
 
 ## Try it without spending anything
 
@@ -81,7 +81,7 @@ Progress is printed to stderr as a tree of phases and agents. The script's retur
 node bin/maestro run review.js --args '{"diffRef":"main...HEAD"}' --budget 300k
 ```
 
-Agents run in the current directory and can read it. `--budget 300k` stops the run from spending more than about 300,000 output tokens. See [Runs, resume and budget](runs.md).
+Agents run in the current directory and can read it. `--budget 300k` stops the run from spending more than about 300,000 output tokens. See [Runs, resume and budget](/maestro/runs).
 
 Maestro writes its state under `.maestro/` in the directory you run it in. Add `.maestro/` to that repository's `.gitignore`.
 
@@ -113,6 +113,6 @@ node bin/maestro viz <runId>
 
 ## Next
 
-- [Writing workflows](workflows.md) for the full script API.
-- [Claude Code](claude-code.md) to let Claude write and start workflows for you.
+- [Writing workflows](/maestro/workflows) for the full script API.
+- [Claude Code](/maestro/claude-code) to let Claude write and start workflows for you.
 - The `examples/` directory: `review-changes`, `find-edge-cases` and `fanout-writers`, each runnable with `node examples/<name>.js --dry-run`.

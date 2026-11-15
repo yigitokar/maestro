@@ -57,7 +57,7 @@ const found = await agent('List the exported functions of src/journal.ts.', {
 })
 ```
 
-The options are described in [Agents and tools](agents-and-tools.md).
+The options are described in [Agents and tools](/maestro/agents-and-tools).
 
 ### `parallel(thunks)`
 
@@ -134,10 +134,10 @@ If you need a timestamp, pass it in `args`: `new Date(args.ts)` works.
 
 ## Patterns
 
-**Find, then verify.** Finders propose, skeptics try to refute, and only what survives is kept. The first workflow in [Getting started](getting-started.md) does this.
+**Find, then verify.** Finders propose, skeptics try to refute, and only what survives is kept. The first workflow in [Getting started](/maestro/getting-started) does this.
 
 **Loop until dry.** Ask for new items, give the next agent the list so far, and stop after a round that adds nothing. `examples/workflows/find-edge-cases.js` does this.
 
-**Fan out writers.** Several isolated agents each change code on their own branch, and one coordinator collects the branches. `examples/workflows/fanout-writers.js` does this; see [Agents and tools](agents-and-tools.md).
+**Fan out writers.** Several isolated agents each change code on their own branch, and one coordinator collects the branches. `examples/workflows/fanout-writers.js` does this; see [Agents and tools](/maestro/agents-and-tools).
 
 **Put limits in code.** Do not ask an agent to "stay under 10 agents". Set `maxAgents` and a budget.

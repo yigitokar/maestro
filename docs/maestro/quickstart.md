@@ -108,6 +108,6 @@ claude mcp add --scope user maestro -- node "$PWD/bin/maestro" mcp --runner code
 
 ## Next
 
-- [Getting started](getting-started.md): write and run a workflow yourself, without Claude Code.
-- [Claude Code](claude-code.md): everything the connection can do.
-- [Runs, resume and budget](runs.md): limits, costs and looking at past runs.
+- [Getting started](/maestro/getting-started): write and run a workflow yourself, without Claude Code.
+- [Claude Code](/maestro/claude-code): everything the connection can do.
+- [Runs, resume and budget](/maestro/runs): limits, costs and looking at past runs.

@@ -67,7 +67,7 @@ This lets one session work on any repository. Prefer giving a worktree of the re
 
 ## Server options
 
-The server takes `--cwd`, `--state-dir`, `--tools-dir`, `--budget`, `--concurrency`, `--model`, `--runner`, `--structured-mode` and `--dry-run`. See [Command line](cli.md).
+The server takes `--cwd`, `--state-dir`, `--tools-dir`, `--budget`, `--concurrency`, `--model`, `--runner`, `--structured-mode` and `--dry-run`. See [Command line](/maestro/cli).
 
 `--budget` is one pool for the session: all runs the server starts spend from the same budget.
 
@@ -75,7 +75,7 @@ The server ends when Claude Code disconnects or exits. Runs in progress are stop
 
 ## Your own tools
 
-The `Workflow` tool's description lists the custom tools found in `.maestro/tools/`, so the model writing a script knows their names. See [Agents and tools](agents-and-tools.md).
+The `Workflow` tool's description lists the custom tools found in `.maestro/tools/`, so the model writing a script knows their names. See [Agents and tools](/maestro/agents-and-tools).
 
 ## Watching a run
 

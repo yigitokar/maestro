@@ -29,8 +29,8 @@ The script's return value goes to stdout as JSON. Progress goes to stderr. Ctrl-
 | `--tools-dir <dir>` | Where custom tools are loaded from. Default: `<state-dir>/tools`. |
 | `--concurrency <n>` | How many agents may run at once. |
 | `--model <model>` | The run's model. Default: `claude-opus-5-5`. |
-| `--runner <name>` | `anthropic` (default), `codex` or `auto`. See [Runners](runners.md). |
-| `--structured-mode <mode>` | `two-stage` (default), `submit-tool` or `single-stage`. See [Runners](runners.md). |
+| `--runner <name>` | `anthropic` (default), `codex` or `auto`. See [Runners](/maestro/runners). |
+| `--structured-mode <mode>` | `two-stage` (default), `submit-tool` or `single-stage`. See [Runners](/maestro/runners). |
 
 ## `maestro runs`
 
@@ -56,7 +56,7 @@ Without a label, lists the run's agents and its outcome. With a label, or the st
 maestro viz <runId> [--port <n>] [--no-open] [--out <file.html>] [--widget] [--cwd <dir>] [--state-dir <dir>]
 ```
 
-Opens a run's timeline in the browser and follows it while it runs. See [Runs, resume and budget](runs.md).
+Opens a run's timeline in the browser and follows it while it runs. See [Runs, resume and budget](/maestro/runs).
 
 ## `maestro gc`
 
@@ -73,7 +73,7 @@ maestro mcp [--cwd <dir>] [--state-dir <dir>] [--tools-dir <dir>] [--budget <n>]
             [--model <model>] [--runner <name>] [--structured-mode <mode>] [--dry-run]
 ```
 
-Serves Maestro as an MCP server over stdio. See [Claude Code](claude-code.md).
+Serves Maestro as an MCP server over stdio. See [Claude Code](/maestro/claude-code).
 
 Here `--budget` is one pool for the whole session: every run the server starts spends from it.
 
