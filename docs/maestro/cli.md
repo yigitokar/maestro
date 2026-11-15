@@ -4,7 +4,7 @@ description: "Every maestro command and flag."
 icon: "terminal"
 ---
 
-The command is `node bin/maestro` from the repository root, after `npm run build`. The examples below write `maestro` for short.
+The command is `maestro`, after `npm install -g maestro-workflows`. Without an install, write `npx maestro-workflows` in its place.
 
 ## `maestro run`
 

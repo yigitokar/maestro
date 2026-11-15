@@ -8,16 +8,16 @@ Maestro ships an MCP server. With it connected, Claude Code can write a workflow
 
 ## Set up
 
-Build Maestro, then add the server from the repository root:
+Add the server. `npx` downloads Maestro from npm the first time it runs:
 
 ```bash
-claude mcp add --scope user maestro -- node "$PWD/bin/maestro" mcp
+claude mcp add --scope user maestro -- npx -y maestro-workflows mcp
 ```
 
 Add the guide that teaches Claude how to write scripts, as a skill available in every project:
 
 ```bash
-mkdir -p ~/.claude/skills/maestro-workflow-authoring && cp skill/SKILL.md ~/.claude/skills/maestro-workflow-authoring/SKILL.md
+mkdir -p ~/.claude/skills/maestro-workflow-authoring && curl -fsSL https://raw.githubusercontent.com/yigitokar/maestro/main/skill/SKILL.md -o ~/.claude/skills/maestro-workflow-authoring/SKILL.md
 ```
 
 With the default runner the server uses the `ANTHROPIC_API_KEY` in Claude Code's environment, and the agents' cost is billed to that key. To run agents on your Codex plan instead, add `--runner codex` to the server command.
@@ -82,5 +82,5 @@ The `Workflow` tool's description lists the custom tools found in `.maestro/tool
 The timeline works for runs started through the server too:
 
 ```bash
-node bin/maestro viz <runId> --cwd <repo>
+maestro viz <runId> --cwd <repo>
 ```
