@@ -1,6 +1,6 @@
 # Maestro documentation
 
-The guides are in [maestro/](maestro/) and are published at [docs.careresearch.ai/maestro](https://docs.careresearch.ai/maestro) with Mintlify (`docs.json` in this directory). They also read as plain Markdown here.
+The guides are in [maestro/](maestro/) and are published at [docs.careresearch.ai/maestro](https://docs.careresearch.ai/maestro) with Mintlify (`docs.json` in this directory). Links between the guides are site paths, so follow them on the site.
 
 Maestro runs multi-agent workflows. You write a short JavaScript script that says which agents run, in what order, and what happens to their answers. Maestro executes the script with a plain runtime: each `agent()` call starts a model with a clean context, and the script combines, votes on and passes on the results.
 

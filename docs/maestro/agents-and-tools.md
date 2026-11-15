@@ -75,7 +75,7 @@ An agent that ends with uncommitted changes gets one reminder to commit. If it s
 
 Two agents cannot write to the same branch: give writers different labels.
 
-`maestro gc` lists leftover worktrees and `wf/*` branches. See [Command line](cli.md).
+`maestro gc` lists leftover worktrees and `wf/*` branches. See [Command line](/maestro/cli).
 
 ## Your own tools
 

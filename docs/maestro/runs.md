@@ -38,7 +38,7 @@ Without a script argument, `--resume <runId>` reuses the stored `script.js` and 
 
 The key includes an agent's own `model` option, but not the run's model (`--model`) or the runner. If you resume with a different one of those, stored answers from the old one are still used, and the log says so.
 
-Answers are matched by content, so a script must be deterministic. See [Writing workflows](workflows.md).
+Answers are matched by content, so a script must be deterministic. See [Writing workflows](/maestro/workflows).
 
 ## Agent statuses
 

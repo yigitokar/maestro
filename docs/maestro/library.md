@@ -79,7 +79,7 @@ await run({ scriptPath: 'review.js', runner: new CodexRunner() }).promise;
 - `RoutingRunner({ anthropic?, codex?, route? })`
 - `FakeRunner`, for tests and dry runs: it answers from the schema and never touches the network.
 
-See [Runners](runners.md).
+See [Runners](/maestro/runners).
 
 ## Giving the Workflow tool to your own agent
 
