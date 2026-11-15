@@ -1,4 +1,4 @@
-// Public API of maestro-orchestrator: the Workflow tool surface plus every component behind it.
+// Public API of @careresearch/maestro: the Workflow tool surface plus every component behind it.
 
 export type { BudgetLease, BudgetOptions, BudgetTick } from './budget.js';
 export { Budget, parseBudgetDirective } from './budget.js';

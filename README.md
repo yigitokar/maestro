@@ -74,7 +74,7 @@ Değişmeyen her `agent()` çağrısı journal'dan gelir; yalnızca değişen ç
 Kütüphane olarak:
 
 ```ts
-import { run, AnthropicRunner, attachTerminalProgress } from 'maestro-orchestrator';
+import { run, AnthropicRunner, attachTerminalProgress } from '@careresearch/maestro';
 
 const handle = run({ scriptPath: 'review.js', args: { diffRef: 'main...HEAD' }, budget: 300_000 });
 const detach = attachTerminalProgress(handle);       // stderr'e ilerleme ağacı
@@ -96,7 +96,7 @@ node bin/maestro mcp --runner codex --concurrency 4
 Kütüphane olarak:
 
 ```ts
-import { CodexRunner, run } from 'maestro-orchestrator';
+import { CodexRunner, run } from '@careresearch/maestro';
 
 const result = await run({ scriptPath: 'review.js', runner: new CodexRunner() }).promise;
 ```
@@ -168,7 +168,7 @@ Determinizm: script içinde `Date.now()`, `Math.random()` ve argümansız `new D
 
 ```ts
 import Anthropic from '@anthropic-ai/sdk';
-import { handleWorkflowToolCall, maestroToolDefinition, toToolResultBlock } from 'maestro-orchestrator';
+import { handleWorkflowToolCall, maestroToolDefinition, toToolResultBlock } from '@careresearch/maestro';
 
 const client = new Anthropic();
 const tools = [maestroToolDefinition(), /* kendi araçların */];
@@ -189,7 +189,7 @@ Girdide `script`, `scriptPath` veya `name` alanlarından tam biri verilir. `name
 Tool ile başlatılan run'lar runId ile kontrol edilir (spec Seviye 1, null/throw tablosundaki kullanıcı satırları):
 
 ```ts
-import { liveWorkflowAgents, skipWorkflowAgent, stopWorkflowRun } from 'maestro-orchestrator';
+import { liveWorkflowAgents, skipWorkflowAgent, stopWorkflowRun } from '@careresearch/maestro';
 
 liveWorkflowAgents(runId);       // [{ id, label, phase, group }]: canlı ajanlar; run bittiyse null
 skipWorkflowAgent(runId, id);    // agent() null döner, journal satırı 'skipped', run devam eder

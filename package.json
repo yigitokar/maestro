@@ -1,10 +1,27 @@
 {
-  "name": "maestro-orchestrator",
-  "version": "0.1.0",
-  "description": "Multi-agent workflow orchestrator: deterministic scripts drive clean-context Claude agents",
+  "name": "@careresearch/maestro",
+  "version": "1.2.0",
+  "description": "Multi-agent workflow orchestrator: a deterministic script drives clean-context agents",
   "type": "module",
   "license": "Apache-2.0",
-  "private": true,
+  "homepage": "https://docs.careresearch.ai/maestro",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yigitokar/maestro.git"
+  },
+  "bugs": "https://github.com/yigitokar/maestro/issues",
+  "keywords": [
+    "agents",
+    "multi-agent",
+    "workflow",
+    "orchestrator",
+    "claude",
+    "codex",
+    "mcp"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": ">=22.18"
   },
@@ -23,8 +40,8 @@
     "dist",
     "bin",
     "skill",
-    "docs",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -33,7 +50,8 @@
     "coverage": "vitest run --coverage --coverage.include='src/**'",
     "lint": "biome check . && tsc -p tsconfig.json --noEmit",
     "format": "biome check --write .",
-    "smoke": "npm run build && node examples/smoke.ts"
+    "smoke": "npm run build && node examples/smoke.ts",
+    "prepublishOnly": "npm run lint && npm run build && npm test"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0",

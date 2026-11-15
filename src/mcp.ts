@@ -73,7 +73,7 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
       ? ctx.budget
       : new Budget({ total: ctx.budget ?? null, concurrency: ctx.concurrency ?? defaultConcurrency() });
   const runCtx = { ...ctx, budget };
-  const server = new Server({ name: 'maestro', version: '0.1.0' }, { capabilities: { tools: {} } });
+  const server = new Server({ name: 'maestro', version: '1.2.0' }, { capabilities: { tools: {} } });
   // The client is gone: nobody can poll the result, so live runs stop (their journals stay for resume).
   server.onclose = () => {
     for (const [runId, outcome] of outcomes)
