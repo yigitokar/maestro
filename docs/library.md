@@ -1,4 +1,8 @@
-# Library
+---
+title: "Library"
+description: "Call Maestro from your own Node program or agent harness."
+icon: "book"
+---
 
 Maestro is an ES module named `maestro-orchestrator`. It is not on npm; install it from a clone, after `npm run build` there:
 

@@ -1,4 +1,8 @@
-# Getting started
+---
+title: "Getting started"
+description: "Install Maestro, write a first workflow, run it and resume it."
+icon: "rocket"
+---
 
 ## Requirements
 

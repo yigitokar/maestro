@@ -1,0 +1,44 @@
+---
+title: "Maestro"
+description: "Multi-agent workflows where the control flow is code and the reasoning is in the agents."
+icon: "house"
+---
+
+Maestro runs multi-agent workflows. You write a short JavaScript script that says which agents run, in what order, and what happens to their answers. Maestro executes the script with a plain runtime: each `agent()` call starts a model with a clean context, and the script combines, votes on and passes on the results.
+
+The control flow is code, so it is the same on every run. The reasoning is in the agents.
+
+```js
+export const meta = { name: 'two-views', description: 'Ask two reviewers, then one judge' }
+
+const reviews = await parallel([
+  () => agent('Review src/journal.ts for correctness bugs.'),
+  () => agent('Review src/journal.ts for missing tests.'),
+])
+return agent(`Merge these two reviews into one ranked list:\n${reviews.filter(Boolean).join('\n---\n')}`)
+```
+
+## What you get
+
+- **Resume.** Every agent's answer is stored. Change one prompt and only that agent, and the ones that depend on it, run again.
+- **Limits in code.** A budget in output tokens and a cap on agents, enforced by the runtime, not requested in a prompt.
+- **Isolated writers.** An agent that changes code works in its own git worktree and branch.
+- **Two model providers.** Agents run on Claude, on Codex, or on both in one run.
+- **A timeline.** Watch a run in the browser while it happens.
+
+## Start here
+
+<Columns cols={2}>
+  <Card title="Getting started" icon="rocket" href="/getting-started">
+    Install, write a first workflow, run it and resume it.
+  </Card>
+  <Card title="Writing workflows" icon="code" href="/workflows">
+    The script API and its rules.
+  </Card>
+  <Card title="Claude Code" icon="plug" href="/claude-code">
+    Let Claude write and start workflows for you.
+  </Card>
+  <Card title="Command line" icon="terminal" href="/cli">
+    Every command and flag.
+  </Card>
+</Columns>

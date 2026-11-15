@@ -1,0 +1,20 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "Maestro",
+  "description": "Multi-agent workflows: a deterministic script drives clean-context agents.",
+  "colors": { "primary": "#B4532A", "light": "#E08A5B", "dark": "#8F3F1E" },
+  "navigation": {
+    "groups": [
+      { "group": "Get started", "pages": ["index", "getting-started"] },
+      { "group": "Workflows", "pages": ["workflows", "agents-and-tools", "runners", "runs"] },
+      { "group": "Using Maestro", "pages": ["cli", "claude-code", "library"] }
+    ]
+  },
+  "navbar": {
+    "links": [{ "type": "github", "href": "https://github.com/yigitokar/maestro" }]
+  },
+  "footer": {
+    "socials": { "github": "https://github.com/yigitokar/maestro" }
+  }
+}

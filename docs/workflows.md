@@ -1,4 +1,8 @@
-# Writing workflows
+---
+title: "Writing workflows"
+description: "The script API: agent, parallel, pipeline, phase, log, args, budget and workflow."
+icon: "code"
+---
 
 A workflow is one JavaScript file. Maestro runs it in a restricted context: the script sees JavaScript's built-ins and the functions on this page, and nothing else. `process`, `require`, `fetch`, `console` and `setTimeout` are not defined.
 

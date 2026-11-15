@@ -1,4 +1,8 @@
-# Agents and tools
+---
+title: "Agents and tools"
+description: "Agent options, the built-in tools, agents that write code, and your own tools."
+icon: "wrench"
+---
 
 ## Agent options
 

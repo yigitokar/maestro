@@ -1,4 +1,8 @@
-# Runs, resume and budget
+---
+title: "Runs, resume and budget"
+description: "What a run leaves on disk, how resume works, budgets, and watching a run."
+icon: "clock-rotate-left"
+---
 
 ## What a run leaves on disk
 
