@@ -37,9 +37,36 @@ if (scenario.grandchild) {
   grandchild.unref();
 }
 for (const [file, contents] of Object.entries(scenario.files ?? {})) await writeFile(file, contents);
+let mcpTools;
+let mcpResults;
+if (scenario.mcpCalls) {
+  const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
+  const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js');
+  let mcpCommand;
+  let mcpArgs;
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== '-c') continue;
+    const kv = argv[i + 1] ?? '';
+    const cmdPrefix = 'mcp_servers.maestro_tools.command=';
+    const argsPrefix = 'mcp_servers.maestro_tools.args=';
+    if (kv.startsWith(cmdPrefix)) mcpCommand = JSON.parse(kv.slice(cmdPrefix.length));
+    else if (kv.startsWith(argsPrefix)) mcpArgs = JSON.parse(kv.slice(argsPrefix.length));
+  }
+  const client = new Client({ name: 'fake-codex', version: '0.1.0' });
+  await client.connect(new StdioClientTransport({ command: mcpCommand, args: mcpArgs }));
+  try {
+    mcpTools = (await client.listTools()).tools;
+    mcpResults = [];
+    for (const c of scenario.mcpCalls) {
+      mcpResults.push(await client.callTool({ name: c.name, arguments: c.arguments ?? {} }));
+    }
+  } finally {
+    await client.close();
+  }
+}
 await appendFile(
   process.env.FAKE_CODEX_RECORD,
-  `${JSON.stringify({ argv, cwd: process.cwd(), pid: process.pid, grandchildPid, stdin, prompt, schema })}\n`,
+  `${JSON.stringify({ argv, cwd: process.cwd(), pid: process.pid, grandchildPid, stdin, prompt, schema, mcpTools, mcpResults })}\n`,
 );
 
 if (scenario.stderr) process.stderr.write(scenario.stderr);

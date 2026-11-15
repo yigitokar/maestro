@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { promisify } from 'node:util';
+import { type CodexToolBridge, startCodexToolBridge } from './codex-tool-mcp.js';
 import { childGitEnv } from './git-env.js';
 import { toStructuredOutputSchema, validateValue, WRITER_COMMIT_INSTRUCTION } from './runner.js';
 import { READ_TOOL_NAMES, WRITE_TOOL_NAMES } from './tools.js';
@@ -14,6 +15,7 @@ import {
   MaestroError,
   type RunRequest,
   type RunResult,
+  type ToolDef,
   type Trace,
   type Usage,
 } from './types.js';
@@ -28,6 +30,8 @@ export interface CodexRunnerOptions {
   extraArgs?: string[];
   /** Time after SIGTERM before forcing termination with SIGKILL (default 1 second). */
   killGraceMs?: number;
+  /** Expose non-builtin `ToolDef`s to `codex exec` via a temporary stdio MCP server (default true). */
+  customToolsMcp?: boolean;
 }
 
 const execFileAsync = promisify(execFile);
@@ -162,10 +166,21 @@ export class CodexRunner implements AgentRunner {
     const st = new RunState(req);
     if (req.signal.aborted) return st.done(null, 'skipped', { error: 'aborted' });
     let tempDir: string | undefined;
+    let bridge: CodexToolBridge | undefined;
     try {
-      const custom = [...new Set(req.tools.map((t) => t.name).filter((name) => !BUILTIN_TOOLS.has(name)))];
-      if (custom.length > 0)
-        req.log(`Codex cannot use custom tools (${custom.join(', ')}); it uses its own shell tools instead.`);
+      const customByName = new Map<string, ToolDef>();
+      for (const tool of req.tools) {
+        if (!BUILTIN_TOOLS.has(tool.name) && !customByName.has(tool.name)) {
+          customByName.set(tool.name, tool);
+        }
+      }
+      const customTools = [...customByName.values()];
+      const bridgeEnabled = this.opts.customToolsMcp !== false;
+      if (customTools.length > 0 && !bridgeEnabled) {
+        req.log(
+          `Codex cannot use custom tools (${customTools.map((t) => t.name).join(', ')}); it uses its own shell tools instead.`,
+        );
+      }
 
       tempDir = await mkdtemp(path.join(os.tmpdir(), 'maestro-codex-'));
       const outputPath = path.join(tempDir, 'last.txt');
@@ -187,6 +202,15 @@ export class CodexRunner implements AgentRunner {
         const effort = req.effort === 'max' ? 'xhigh' : req.effort;
         args.push('-c', `model_reasoning_effort="${effort}"`);
       }
+      if (customTools.length > 0 && bridgeEnabled) {
+        bridge = await startCodexToolBridge({
+          dir: path.join(tempDir, 'mcp'),
+          tools: customTools,
+          ctx: { cwd: req.cwd, signal: req.signal },
+          onToolCall: (call) => st.trace.toolCalls.push(call),
+        });
+        args.push(...bridge.codexConfigArgs);
+      }
       if (req.schema) {
         const schema = toStructuredOutputSchema(req.schema);
         requireProperties(schema);
@@ -199,6 +223,9 @@ export class CodexRunner implements AgentRunner {
       const system = req.system.replace(WRITER_COMMIT_INSTRUCTION, CODEX_COMMIT_INSTRUCTION);
       let prompt = `System instructions:\n${system}\n\nTask:\n${req.prompt}`;
       if (req.isolated && system === req.system) prompt += `\n\n${CODEX_COMMIT_INSTRUCTION}`;
+      if (customTools.length > 0 && bridgeEnabled) {
+        prompt += `\n\nCustom tools available via the maestro_tools MCP server: ${customTools.map((t) => t.name).join(', ')}.`;
+      }
       args.push('-o', outputPath, ...(this.opts.extraArgs ?? []), '-');
       req.signal.throwIfAborted();
       const exit = await this.execute(args, prompt, req, st, env);
@@ -261,6 +288,7 @@ export class CodexRunner implements AgentRunner {
       if (req.signal.aborted) return st.done(null, 'skipped', { error: 'aborted' });
       return st.done(null, 'null', { error: error instanceof Error ? error.message : String(error) });
     } finally {
+      await bridge?.close();
       if (tempDir) await rm(tempDir, { recursive: true, force: true });
     }
   }
