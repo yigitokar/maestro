@@ -24,7 +24,7 @@ export const meta = {
 }
 ```
 
-`meta.phases` varsa `phase(title)` ve `opts.phase` yalnızca buradaki başlıkları kabul eder, başka başlık throw eder. Tavanı prompt'a "10 ajan altı kal" diye yazma, `maxAgents` ile koda koy.
+`meta.phases` varsa `phase(title)` ve `opts.phase` yalnızca buradaki başlıkları kabul eder, başka başlık throw eder. Bilinmeyen `meta` alanları (ör. `maxAgent` yazım hatası) run başında uyarı log'u üretir; geçerli alanlar `name`, `description`, `phases`, `maxAgents` ve `whenToUse`'dur. Tavanı prompt'a "10 ajan altı kal" diye yazma, `maxAgents` ile koda koy.
 
 ## Host API
 
@@ -33,15 +33,15 @@ Script gövdesi async'tir: `await` ve en üstte `return` serbest. Dönüş değe
 | API | Davranış |
 |---|---|
 | `agent(prompt, opts?)` | Ajan koşar. `schema` varsa doğrulanmış obje, yoksa final metin döner. Terminal API hatası, kullanıcının atlaması veya koşarken bütçe aşımı → **null**. Geçersiz schema (kök `object` değil, `required ⊄ properties`), bütçe girişte yetmiyor, ajan tavanı doldu, izolasyonsuz yazma aracı istendi → **throw**. |
-| `parallel(thunks)` | Hepsini bekler (bariyer). Throw eden thunk'ın slotu **null**; çağrı asla reject etmez. |
-| `pipeline(items, ...stages)` | Her öğe aşamaları bağımsız geçer, aşamalar arası bariyer yok. Aşama `(prev, item, index)` alır; ilk aşamada `prev === item`. Throw eden aşama öğeyi null yapar ve kalan aşamaları atlar; null **dönen** aşama normal değerdir, sonraki aşamaya geçer. |
+| `parallel(thunks)` | Hepsini bekler (bariyer). Ajan/çalışma zamanı hatası atan thunk'ın slotu **null** olur; programcı/konfigürasyon hataları (`ReferenceError`, `Math.random()`, `unknown_tool`, `unknown_phase`, izolasyonsuz yazma aracı vb.) doğrudan **throw** eder. |
+| `pipeline(items, ...stages)` | Her öğe aşamaları bağımsız geçer, aşamalar arası bariyer yok. Aşama `(prev, item, index)` alır; ilk aşamada `prev === item`. Çalışma zamanı hatası atan aşama öğeyi null yapar ve kalan aşamaları atlar; programcı/konfigürasyon hataları doğrudan **throw** eder. Null **dönen** aşama normal değerdir, sonraki aşamaya geçer. |
 | `phase(title)` | Sonraki ajanları bu ilerleme kutusuna koyar. Paralel kodda `opts.phase` kullan. |
 | `log(msg)` | İlerleme ağacının üstünde anlatıcı satırı. |
 | `args` | Tool çağrısındaki `args`, olduğu gibi. Diziyi string'e çevirip verme. |
 | `budget` | `{ total, spent(), remaining() }`. `total` yoksa null ve `remaining()` Infinity. Havuz paylaşılır, sınır serttir. |
 | `workflow(nameOrRef, args?)` | Başka bir workflow'u alt adım olarak koşar. Aynı semafor, sayaç ve bütçe. Yalnızca bir seviye: çocuğun içinde `workflow()` throw eder. |
 
-`opts`: `label` (görüntü adı), `phase`, `schema`, `model`, `effort` (`low` … `max`), `isolation: 'worktree'`, `tools` (izinli araçlar). Varsayılan araçlar salt-okurdur: `read_file`, `grep`, `glob`, `bash` (ls, cat, git log/diff/status/show, rg, find). Yazma araçları (`write_file`, `edit_file`, `shell`, `git_commit`) yalnızca `isolation: 'worktree'` ile verilir. Script'in dışında tanımlanmış özel araçlar (`.maestro/tools/*.js`, örneğin `arxiv_search`) de adıyla seçilir; hangilerinin olduğu Workflow aracının açıklamasının sonunda yazar. `tools` varsayılan seti genişletmez, yerine geçer: özel aracın yanında gereken okuma araçlarını da say.
+`opts`: `label` (görüntü adı), `phase`, `schema`, `model`, `effort` (`low` … `max`), `isolation: 'worktree'`, `tools` (izinli araçlar). Sunucu `--runner auto` ile çalışıyorsa `opts.model` ajan bazında farklı sağlayıcılara yönlendirilebilir (`claude-*` → Anthropic, `gpt-*` / `o3` → Codex). Varsayılan araçlar salt-okurdur: `read_file`, `grep`, `glob`, `bash` (ls, cat, git log/diff/status/show, rg, find). Yazma araçları (`write_file`, `edit_file`, `shell`, `git_commit`) yalnızca `isolation: 'worktree'` ile verilir. Script'in dışında tanımlanmış özel araçlar (`.maestro/tools/*.js`, örneğin `arxiv_search`) de adıyla seçilir; hangilerinin olduğu Workflow aracının açıklamasının sonunda yazar. `tools` varsayılan seti genişletmez, yerine geçer: özel aracın yanında gereken okuma araçlarını da say.
 
 Kural: ajan seviyesindeki hata sessizce null'a düşer, script seviyesindeki hata run'ı öldürür. Sonuçlara `.filter(Boolean)` uygula ve kaç öğenin düştüğünü `log()` ile söyle.
 
@@ -140,7 +140,7 @@ Tam hâlleri (`FINDINGS`, `VERDICT`, `BUGS` şemalarıyla): `examples/workflows/
 
 Her run `.maestro/runs/<runId>/` altında `script.js`, `args.json`, `journal.jsonl` ve `blobs/` tutar. Script'i düzenleyip `resumeFromRunId` ile tekrar koşunca değişmeyen her çağrı cache'den döner. İsabet çağrı başına bakılır: ortadaki bir prompt değişirse yalnızca o çağrı ve sonucunu prompt'una alan çağrılar canlı koşar, bağımsız kardeşler cache'den gelir. Aynı script ve aynı args sıfır canlı çağrı demektir. Yalnızca `ok` kayıtlar cache isabetidir: null (API hatası) ve skipped (bütçe veya atlama) kayıtlar resume'da tekrar koşar. Bütçeyi artırıp resume etmek yarım kalan ajanları böyle canlandırır.
 
-Beklenmedik ya da boş bir sonucu teşhis etmeden önce `journal.jsonl`'i oku. Her satır bir çağrının gerçek dönüş değerini ve status'unu tutar. Cache'teki sonucun dolu olduğunu varsayma.
+Beklenmedik ya da boş bir sonucu teşhis etmeden önce `journal.jsonl`'i oku (veya `node ~/maestro/bin/maestro runs --cwd <cwd>` ve `maestro show <runId> --cwd <cwd>` çalıştır). Her satır bir çağrının gerçek dönüş değerini ve status'unu tutar. Cache'teki sonucun dolu olduğunu varsayma.
 
 Kullanıcı run'ı izlemek isterse ona şu komutu ver:
 

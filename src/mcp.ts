@@ -7,6 +7,7 @@
 // it. WorkflowStop and WorkflowSkip are the user controls of the spec Seviye 1 null/throw table: stop
 // the run (script rejects, journal stays) and skip a live agent (agent() → null).
 
+import path from 'node:path';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { RequestHandlerExtra } from '@modelcontextprotocol/sdk/shared/protocol.js';
@@ -29,6 +30,7 @@ import {
   type WorkflowOutcome,
   type WorkflowToolContext,
 } from './tool.js';
+import { readOutcome, SAFE_ID } from './workflow.js';
 
 export const WORKFLOW_RESULT_TOOL_NAME = 'WorkflowResult';
 export const WORKFLOW_STOP_TOOL_NAME = 'WorkflowStop';
@@ -138,7 +140,7 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
         {
           name: WORKFLOW_RESULT_TOOL_NAME,
           description:
-            'Result of a Workflow run started earlier: { status: "running" } while it runs, then { status: "done", result } or { status: "failed", error }. Prefer wait: true over polling: the call then returns only once the run settles. Claude Code moves a call that runs past 2 minutes to the background and delivers its result as a notification, so you can keep working meanwhile. If a timeout ends the call, the run goes on: call WorkflowResult again.',
+            'Result of a Workflow run started earlier: { status: "running" } while it runs, then { status: "done", result } or { status: "failed", error }. Also reads settled runs persisted on disk (<stateDir>/runs/<runId>/outcome.json) across MCP sessions. Prefer wait: true over polling: the call then returns only once the run settles. Claude Code moves a call that runs past 2 minutes to the background and delivers its result as a notification, so you can keep working meanwhile. If a timeout ends the call, the run goes on: call WorkflowResult again.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -146,6 +148,11 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
               wait: {
                 type: 'boolean',
                 description: 'true: answer only once the run is done or failed. Default false: answer now.',
+              },
+              cwd: {
+                type: ['string', 'null'],
+                description:
+                  "Optional working directory passed when starting the run (for reading settled runs on disk); omit for the server's default.",
               },
             },
             required: ['runId'],
@@ -206,12 +213,28 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
       const runId = (input as { runId?: unknown } | undefined)?.runId;
       if (typeof runId !== 'string' || !runId) return text('runId is required', true);
       const outcome = outcomes.get(runId);
-      if (outcome === undefined)
+      if (outcome === undefined) {
+        if (name === WORKFLOW_RESULT_TOOL_NAME && SAFE_ID.test(runId)) {
+          const inputCwd = (input as { cwd?: unknown } | undefined)?.cwd;
+          const serverCwd = path.resolve(ctx.cwd ?? process.cwd());
+          const targetCwd =
+            typeof inputCwd === 'string' && inputCwd.length > 0
+              ? path.resolve(serverCwd, inputCwd)
+              : serverCwd;
+          const stateDir = path.resolve(targetCwd, ctx.stateDir ?? '.maestro');
+          const persisted = await readOutcome(path.join(stateDir, 'runs', runId));
+          if (persisted !== undefined) {
+            return persisted.ok
+              ? text({ runId, status: 'done', result: persisted.result })
+              : text({ runId, status: 'failed', error: persisted.error }, true);
+          }
+        }
         return text(
-          `unknown runId ${runId} (runs of another server process are not tracked, and only the last ` +
-            `${MAX_KEPT_OUTCOMES} finished runs are kept; the journal is under .maestro/runs/${runId})`,
+          `unknown runId ${runId} (no settled run of that id on disk; a run another server process is still ` +
+            `running is not tracked; the journal is under .maestro/runs/${runId})`,
           true,
         );
+      }
       if (name === WORKFLOW_STOP_TOOL_NAME) {
         if (outcome !== 'running' || !stopWorkflowRun(runId, 'stopped by user'))
           return text(`run ${runId} is not running`, true);

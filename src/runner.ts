@@ -4,11 +4,14 @@
 // with output_config.format. Agent-level failures become null (null/throw table); only the
 // write-tool-without-isolation configuration error throws.
 
+import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import Anthropic from '@anthropic-ai/sdk';
 import { betaJSONSchemaOutputFormat } from '@anthropic-ai/sdk/helpers/beta/json-schema';
 import type { BetaRunnableTool } from '@anthropic-ai/sdk/lib/tools/BetaRunnableTool';
+import { childGitEnv } from './git-env.js';
 import {
   type AgentRunner,
   type EntryStatus,
@@ -57,10 +60,34 @@ export const WRITER_INSTRUCTION =
   'Do not run npm install or any other package install (npm/pnpm/yarn/bun/pip install, npm ci): ' +
   'node_modules and build artifacts are not copied into this worktree (at most symlinked from the main checkout).';
 
+const execFileAsync = promisify(execFile);
+
 const CONTINUE_MESSAGE =
   'devam et / continue: your previous reply was cut off by the output limit. Continue exactly where you ' +
   'stopped, without repeating what you already wrote.';
 const SCHEMA_MESSAGE = 'Bulgularını şemaya göre döndür / return your findings in the required schema.';
+
+/** Sent once when an isolated writer ends its turn with uncommitted changes in the worktree. */
+export const COMMIT_REMINDER_MESSAGE =
+  'Uncommitted changes remain in the working tree (`git status --porcelain` is non-empty). ' +
+  'Commit your finished work with `git_commit` (or revert temporary edits) before ending your turn; ' +
+  'uncommitted changes are not handed off.';
+
+/** Synthetic strict tool used by `structuredMode: 'submit-tool'` so the transcript cache stays intact. */
+export const SUBMIT_RESULT_TOOL_NAME = '__maestro_submit_result';
+
+const SUBMIT_SYSTEM_INSTRUCTION = `When you have your final answer, call \`${SUBMIT_RESULT_TOOL_NAME}\` with an input matching its schema.`;
+const SUBMIT_REMINDER_MESSAGE = `Call \`${SUBMIT_RESULT_TOOL_NAME}\` now with your final structured findings.`;
+
+/**
+ * How `AnthropicRunner` obtains a schema-validated result:
+ * - `'two-stage'` (default): Stage 1 tool loop, then Stage 2 `messages.parse` with `output_config.format`.
+ * - `'submit-tool'`: adds a strict `__maestro_submit_result` tool in Stage 1 so every turn shares the same
+ *   tools, system and `output_config`, preserving Anthropic prompt cache on the full transcript.
+ * - `'single-stage'`: passes `output_config.format` directly on Stage 1 turns, falling back to one Stage 2
+ *   retry only if client-side validation fails.
+ */
+export type StructuredMode = 'two-stage' | 'submit-tool' | 'single-stage';
 
 /** System prompt: return contract + project CLAUDE.md (when present) + commit instruction for writers. */
 export function systemPrompt(opts: { cwd: string; writer: boolean }): string {
@@ -80,6 +107,7 @@ export interface AnthropicRunnerOptions {
   maxTurns?: number;
   maxTokens?: number;
   retryDelayMs?: number;
+  structuredMode?: StructuredMode;
 }
 
 /** Thrown internally to unwind when the run's signal fires. */
@@ -343,6 +371,138 @@ export function validateValue(schema: unknown, value: unknown, at = '$'): string
   return errs;
 }
 
+async function hasUncommittedChanges(cwd: string, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) throw new Aborted();
+  try {
+    const { stdout } = await execFileAsync('git', ['status', '--porcelain'], {
+      cwd,
+      env: childGitEnv(),
+      signal,
+      encoding: 'utf8',
+    });
+    return stdout.trim().length > 0;
+  } catch (e) {
+    if (signal.aborted || (e as { name?: unknown })?.name === 'AbortError') throw new Aborted();
+    // Non-git directories (e.g. unit tests without git init) have no git commit hand-off.
+    return false;
+  }
+}
+
+function schemaAllowsNull(schema: unknown): boolean {
+  if (!schema || typeof schema !== 'object') return false;
+  const s = schema as Record<string, unknown>;
+  if (s.type === 'null' || (Array.isArray(s.type) && s.type.includes('null'))) return true;
+  if (s.const === null || (Array.isArray(s.enum) && s.enum.includes(null))) return true;
+  if (Array.isArray(s.anyOf) && s.anyOf.some(schemaAllowsNull)) return true;
+  if (Array.isArray(s.oneOf) && s.oneOf.some(schemaAllowsNull)) return true;
+  return false;
+}
+
+function makeNullableSchema(schema: unknown): unknown {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return schema;
+  if (schemaAllowsNull(schema)) return schema;
+  const s = schema as Record<string, unknown>;
+  if (typeof s.type === 'string') return { ...s, type: [s.type, 'null'] };
+  if (Array.isArray(s.type)) return { ...s, type: [...s.type, 'null'] };
+  return { anyOf: [s, { type: 'null' }] };
+}
+
+/**
+ * Converts a workflow output schema into a strict tool `input_schema` (every object property listed in
+ * `required`; optional properties wrapped as nullable and stripped back out by `stripSyntheticNulls`).
+ */
+export function toStrictToolInputSchema(schema: unknown): JSONSchema {
+  return strictToolNode(toStructuredOutputSchema(schema), schema) as JSONSchema;
+}
+
+function strictToolNode(node: unknown, orig: unknown): unknown {
+  if (Array.isArray(node))
+    return node.map((item, i) => strictToolNode(item, Array.isArray(orig) ? orig[i] : undefined));
+  if (!node || typeof node !== 'object') return node;
+  const src = node as Record<string, unknown>;
+  const origObj =
+    orig && typeof orig === 'object' && !Array.isArray(orig) ? (orig as Record<string, unknown>) : {};
+  const out: Record<string, unknown> = { ...src };
+  if (src.items && typeof src.items === 'object') out.items = strictToolNode(src.items, origObj.items);
+  for (const kw of ['anyOf', 'allOf', 'prefixItems'] as const) {
+    if (Array.isArray(src[kw])) {
+      const origList = Array.isArray(origObj[kw]) ? (origObj[kw] as unknown[]) : [];
+      out[kw] = (src[kw] as unknown[]).map((sub, i) => strictToolNode(sub, origList[i]));
+    }
+  }
+  for (const defsKey of ['$defs', 'definitions'] as const) {
+    if (src[defsKey] && typeof src[defsKey] === 'object') {
+      const origDefs = (origObj[defsKey] as Record<string, unknown> | undefined) ?? {};
+      out[defsKey] = Object.fromEntries(
+        Object.entries(src[defsKey] as Record<string, unknown>).map(([k, v]) => [
+          k,
+          strictToolNode(v, origDefs[k]),
+        ]),
+      );
+    }
+  }
+  const type = src.type;
+  const isObject =
+    type === 'object' ||
+    (Array.isArray(type) && type.includes('object')) ||
+    (type === undefined && 'properties' in src);
+  if (isObject) {
+    const props = (src.properties ?? {}) as Record<string, unknown>;
+    const origProps = (origObj.properties ?? {}) as Record<string, unknown>;
+    const origReq = new Set(Array.isArray(origObj.required) ? (origObj.required as string[]) : []);
+    const nextProps: Record<string, unknown> = {};
+    for (const [k, propSchema] of Object.entries(props)) {
+      const converted = strictToolNode(propSchema, origProps[k]);
+      nextProps[k] = origReq.has(k) ? converted : makeNullableSchema(converted);
+    }
+    out.properties = nextProps;
+    out.required = Object.keys(nextProps);
+    out.additionalProperties = false;
+  }
+  return out;
+}
+
+/** Drops `null` values introduced only to satisfy strict-tool `required` on optional properties. */
+export function stripSyntheticNulls(origSchema: unknown, value: unknown): unknown {
+  if (!origSchema || typeof origSchema !== 'object' || Array.isArray(origSchema)) return value;
+  const s = origSchema as Record<string, unknown>;
+  if (Array.isArray(value)) {
+    if (s.items && typeof s.items === 'object' && !Array.isArray(s.items)) {
+      return value.map((el) => stripSyntheticNulls(s.items, el));
+    }
+    return value;
+  }
+  if (value !== null && typeof value === 'object') {
+    const props = (s.properties ?? {}) as Record<string, unknown>;
+    const reqSet = new Set(Array.isArray(s.required) ? (s.required as string[]) : []);
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      const propSchema = props[k];
+      if (v === null && k in props && !reqSet.has(k) && !schemaAllowsNull(propSchema)) continue;
+      out[k] = propSchema !== undefined ? stripSyntheticNulls(propSchema, v) : v;
+    }
+    return out;
+  }
+  return value;
+}
+
+function buildOutputFormat(schema: JSONSchema) {
+  const base = betaJSONSchemaOutputFormat(toStructuredOutputSchema(schema) as { type: 'object' }, {
+    transform: false,
+  });
+  // Invalid JSON must not throw (the SDK's parse would lose the response): treat it as null.
+  return {
+    ...base,
+    parse: (text: string): unknown => {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------------------------
 
 export class AnthropicRunner implements AgentRunner {
@@ -352,6 +512,7 @@ export class AnthropicRunner implements AgentRunner {
   /** Largest max_tokens of any single request: the raised stage-2 retry (spec 3.5 max_tokens_per_turn). */
   readonly maxRequestTokens: number;
   readonly retryDelayMs: number;
+  readonly structuredMode: StructuredMode;
 
   constructor(opts: AnthropicRunnerOptions = {}) {
     this.#client = opts.client;
@@ -362,6 +523,7 @@ export class AnthropicRunner implements AgentRunner {
       Math.min(2 * this.maxTokens, LIMITS.maxTokensPerTurnRaised),
     );
     this.retryDelayMs = opts.retryDelayMs ?? 5_000;
+    this.structuredMode = opts.structuredMode ?? 'two-stage';
   }
 
   /** Default client built lazily: SDK default maxRetries (2) is the spec's "SDK retry". */
@@ -382,16 +544,19 @@ export class AnthropicRunner implements AgentRunner {
     const st = new RunState(req);
     try {
       if (req.signal.aborted) throw new Aborted();
-      return await this.#run(req, st);
+      return await this.#run(req, st, writers.length > 0);
     } catch (e) {
       if (isAbortError(e, req.signal)) return st.done(null, 'skipped', { error: 'aborted' });
       return st.fail(errorText(e));
     }
   }
 
-  async #run(req: RunRequest, st: RunState): Promise<RunResult> {
+  async #run(req: RunRequest, st: RunState, hasWriters: boolean): Promise<RunResult> {
     const client = this.client;
     const ctx: ToolContext = { cwd: req.cwd, signal: req.signal };
+    const mode: StructuredMode = req.schema ? this.structuredMode : 'two-stage';
+    const format = req.schema ? buildOutputFormat(req.schema) : undefined;
+
     const apiTools: BetaTool[] = req.tools.map((t) => ({
       type: 'custom',
       name: t.name,
@@ -410,7 +575,56 @@ export class AnthropicRunner implements AgentRunner {
       },
       parse: (input: unknown) => input,
     }));
-    const outputConfig = req.effort ? { output_config: { effort: req.effort } } : {};
+
+    let submitted: { value: unknown } | undefined;
+    let commitReminded = false;
+    let submitReminded = false;
+
+    if (mode === 'submit-tool' && req.schema) {
+      const schema = req.schema;
+      const submitApiTool: BetaTool = {
+        type: 'custom',
+        name: SUBMIT_RESULT_TOOL_NAME,
+        description: 'Submit the final structured return value of this task.',
+        input_schema: toStrictToolInputSchema(schema) as BetaTool['input_schema'],
+        strict: true,
+      };
+      apiTools.push(submitApiTool);
+      runnable.push({
+        ...submitApiTool,
+        run: async (input: unknown) => {
+          if (
+            req.isolated &&
+            hasWriters &&
+            !commitReminded &&
+            (await hasUncommittedChanges(req.cwd, req.signal))
+          ) {
+            commitReminded = true;
+            req.log('writer called submit tool with uncommitted changes; prompting once to commit');
+            throw new Error(COMMIT_REMINDER_MESSAGE);
+          }
+          const cleaned = stripSyntheticNulls(schema, input);
+          const errors = validateValue(schema, cleaned);
+          if (errors.length > 0) {
+            req.log(`submit tool validation failed: ${errors.slice(0, 5).join('; ')}`);
+            throw new Error(
+              `Output failed schema validation: ${errors.join('; ')}. Fix and call ${SUBMIT_RESULT_TOOL_NAME} again.`,
+            );
+          }
+          submitted = { value: cleaned };
+          return 'Submitted.';
+        },
+        parse: (input: unknown) => input,
+      });
+    }
+
+    const systemText = mode === 'submit-tool' ? `${req.system}\n\n${SUBMIT_SYSTEM_INSTRUCTION}` : req.system;
+    const outputConfig =
+      mode === 'single-stage' && format
+        ? { output_config: { format, ...(req.effort ? { effort: req.effort } : {}) } }
+        : req.effort
+          ? { output_config: { effort: req.effort } }
+          : {};
 
     // ---- Stage 1: tool loop -------------------------------------------------------------
     let messages: MessageParam[] = [{ role: 'user', content: req.prompt }];
@@ -425,7 +639,7 @@ export class AnthropicRunner implements AgentRunner {
         {
           model: req.model,
           max_tokens: this.maxTokens,
-          system: cachedSystem(req.system),
+          system: cachedSystem(systemText),
           messages,
           tools: runnable,
           // Automatic breakpoint on the last block: it walks forward with the transcript, so every turn
@@ -453,7 +667,28 @@ export class AnthropicRunner implements AgentRunner {
             const why = d?.explanation ? `: ${d.explanation}` : '';
             return st.fail(`refusal (category: ${d?.category ?? 'none'})${why}`);
           }
-          if (message.stop_reason === 'tool_use') carry = '';
+          if (message.stop_reason === 'tool_use') {
+            carry = '';
+            if (mode === 'submit-tool' && req.schema) {
+              const toolUses = message.content.filter(
+                (b): b is Anthropic.Beta.Messages.BetaToolUseBlock => b.type === 'tool_use',
+              );
+              if (toolUses.length === 1 && toolUses[0]!.name === SUBMIT_RESULT_TOOL_NAME) {
+                const dirty =
+                  req.isolated &&
+                  hasWriters &&
+                  !commitReminded &&
+                  (await hasUncommittedChanges(req.cwd, req.signal));
+                if (!dirty) {
+                  const cleaned = stripSyntheticNulls(req.schema, toolUses[0]!.input);
+                  if (validateValue(req.schema, cleaned).length === 0) {
+                    submitted = { value: cleaned };
+                    break;
+                  }
+                }
+              }
+            }
+          }
         }
       } catch (e) {
         failure = e;
@@ -470,6 +705,7 @@ export class AnthropicRunner implements AgentRunner {
         throw failure;
       }
       if (!last) return st.fail('error: tool loop produced no message');
+      if (submitted !== undefined) return st.done(submitted.value, 'ok');
       if (last.stop_reason === 'max_tokens') {
         if (continued) return st.fail('max_tokens reached again after one continuation');
         continued = true;
@@ -481,32 +717,76 @@ export class AnthropicRunner implements AgentRunner {
       if (last.stop_reason === 'tool_use') {
         return st.fail(`turn cap: agent still calling tools after ${this.maxTurns} turns`);
       }
+      if (
+        req.isolated &&
+        hasWriters &&
+        !commitReminded &&
+        (await hasUncommittedChanges(req.cwd, req.signal))
+      ) {
+        commitReminded = true;
+        if (loopTurns >= this.maxTurns) {
+          return st.fail(`turn cap: ${this.maxTurns} turns used with uncommitted changes`);
+        }
+        req.log('writer ended turn with uncommitted changes; prompting once to commit');
+        messages = [...messages, { role: 'user', content: COMMIT_REMINDER_MESSAGE }];
+        continue;
+      }
+      if (mode === 'submit-tool' && req.schema) {
+        const textCandidate = carry + textOf(last);
+        try {
+          const parsedCandidate = JSON.parse(textCandidate);
+          if (
+            parsedCandidate !== null &&
+            parsedCandidate !== undefined &&
+            validateValue(req.schema, parsedCandidate).length === 0
+          ) {
+            return st.done(parsedCandidate, 'ok');
+          }
+        } catch {
+          // Not raw JSON either; remind once to call the submit tool.
+        }
+        if (!submitReminded) {
+          submitReminded = true;
+          if (loopTurns >= this.maxTurns) return st.fail(`turn cap: ${this.maxTurns} turns used`);
+          req.log(`agent ended turn without calling ${SUBMIT_RESULT_TOOL_NAME}; prompting once`);
+          messages = [...messages, { role: 'user', content: SUBMIT_REMINDER_MESSAGE }];
+          continue;
+        }
+        const error = 'schema parse failed twice';
+        req.log(error);
+        return st.done(null, 'null', { raw: textCandidate, error });
+      }
       break;
     }
 
     const finalText = carry + textOf(last);
     if (finalText !== '') st.finalText = finalText;
-    if (!req.schema) return st.done(finalText, 'ok');
+    if (!req.schema || !format) return st.done(finalText, 'ok');
+
+    let startAttempt = 1;
+    let raw = '';
+    if (mode === 'single-stage') {
+      raw = finalText;
+      let parsedStage1: unknown = null;
+      try {
+        parsedStage1 = JSON.parse(finalText);
+      } catch {
+        parsedStage1 = null;
+      }
+      if (parsedStage1 !== null && parsedStage1 !== undefined) {
+        const errors = validateValue(req.schema, parsedStage1);
+        if (errors.length === 0) return st.done(parsedStage1, 'ok');
+        req.log(`schema parse attempt 1: ${errors.slice(0, 5).join('; ')}`);
+      } else {
+        req.log(`schema parse attempt 1: no parsable structured output (stop: ${last.stop_reason})`);
+      }
+      startAttempt = 2;
+    }
 
     // ---- Stage 2: structured final ------------------------------------------------------
-    const base = betaJSONSchemaOutputFormat(toStructuredOutputSchema(req.schema) as { type: 'object' }, {
-      transform: false,
-    });
-    // Invalid JSON must not throw (the SDK's parse would lose the response): treat it as null.
-    const format = {
-      ...base,
-      parse: (text: string): unknown => {
-        try {
-          return JSON.parse(text);
-        } catch {
-          return null;
-        }
-      },
-    };
     const parseMessages: MessageParam[] = [...messages, { role: 'user', content: SCHEMA_MESSAGE }];
-    let raw = '';
     let maxTokens = this.maxTokens;
-    for (let attempt = 1; attempt <= 2; attempt++) {
+    for (let attempt = startAttempt; attempt <= 2; attempt++) {
       const response = await this.#withRetry(req, () =>
         client.beta.messages.parse(
           {
@@ -515,7 +795,7 @@ export class AnthropicRunner implements AgentRunner {
             // Only the tools + system breakpoint here: tool_choice and the output format differ from
             // stage 1, which invalidates the messages cache, and an automatic breakpoint would write the
             // whole transcript at the write premium for a request that is not repeated.
-            system: cachedSystem(req.system),
+            system: cachedSystem(systemText),
             messages: parseMessages,
             // History with tool_use blocks needs the tool definitions; never force a tool (400 on current models).
             ...(apiTools.length > 0 ? { tools: apiTools, tool_choice: { type: 'none' as const } } : {}),

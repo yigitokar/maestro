@@ -57,6 +57,10 @@ export function vizPage(boot: { mode: 'live' | 'static'; runId: string; [k: stri
     </div>
     <div id="timeline" class="timeline"></div>
   </section>
+  <section class="panel" id="outcome-panel" hidden>
+    <div class="panel-head"><h2 id="outcome-title">Çıktı</h2></div>
+    <pre id="outcome-body"></pre>
+  </section>
   <section class="panel">
     <div class="panel-head"><h2>Log</h2></div>
     <ol id="logs" class="logs"></ol>
@@ -277,7 +281,7 @@ const SCRIPT = `
   var ZOOMS = [1, 2, 4, 8, 16];
   var STATUS_TEXT = { queued: 'sırada', running: 'çalışıyor', ok: 'tamam', null: 'null', skipped: 'atlandı', cached: 'önbellekten' };
   var state = {
-    lines: [], offset: 0, entries: [], skew: 0, attempt: null, selected: null, selectedT0: null, selectedRow: null, zoomIndex: 0,
+    lines: [], offset: 0, entries: [], outcome: null, skew: 0, attempt: null, selected: null, selectedT0: null, selectedRow: null, zoomIndex: 0,
     details: BOOT.details || {}, detailCache: {}, pollError: null, snapNow: null
   };
 
@@ -297,6 +301,7 @@ const SCRIPT = `
     state.lines = state.lines.concat(snap.lines || []);
     state.offset = snap.offset || 0;
     state.entries = snap.entries || [];
+    state.outcome = snap.outcome || null;
     state.skew = (snap.now || Date.now()) - Date.now();
     state.snapNow = snap.now || null;
   }
@@ -451,6 +456,29 @@ const SCRIPT = `
     return attempts[state.attempt];
   }
 
+  function renderOutcome(attempts) {
+    var panel = $('outcome-panel');
+    if (!panel) return;
+    var latest = !attempts.length || state.attempt === null || state.attempt >= attempts.length - 1;
+    if (!latest || !state.outcome) {
+      panel.hidden = true;
+      return;
+    }
+    panel.hidden = false;
+    var title = $('outcome-title');
+    var body = $('outcome-body');
+    if (state.outcome.ok) {
+      title.textContent = 'Run sonucu';
+      body.className = '';
+      var val = state.outcome.result;
+      body.textContent = typeof val === 'string' ? val : JSON.stringify(val, null, 2);
+    } else {
+      title.textContent = 'Run hatası';
+      body.className = 'err';
+      body.textContent = String(state.outcome.error || '');
+    }
+  }
+
   function render() {
     var attempts = buildAttempts(state.lines);
     var a = current(attempts);
@@ -461,6 +489,7 @@ const SCRIPT = `
     if (a && a.order.length + a.lanes.length > 0) renderTimeline(host, a);
     else renderJournalOnly(host);
     host.scrollLeft = keep;
+    renderOutcome(attempts);
     renderLogs(a);
     if (state.selected !== null && a && a.t0 !== state.selectedT0) closeDetail();
     if (state.selected !== null && a && a.agents[state.selected]) renderDetail(a.agents[state.selected], a);
@@ -908,7 +937,10 @@ const SCRIPT = `
       .then(function (snap) {
         var hadError = state.pollError !== null;
         state.pollError = null;
-        var changed = (snap.lines && snap.lines.length) || snap.entries.length !== state.entries.length;
+        var changed =
+          (snap.lines && snap.lines.length) ||
+          snap.entries.length !== state.entries.length ||
+          Boolean(snap.outcome) !== Boolean(state.outcome);
         ingest(snap, snap.offset < state.offset);
         if (changed || hadError || running()) render();
       })

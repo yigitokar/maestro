@@ -5,7 +5,7 @@
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Budget, type BudgetLease } from './budget.js';
 import { EMPTY_TOOL_REGISTRY, loadCustomTools, type ToolRegistry } from './custom-tools.js';
@@ -13,7 +13,14 @@ import { EVENT_LOG_PROMPT_CHARS, EventLog } from './event-log.js';
 import { Isolation, type WorktreeLease } from './isolation.js';
 import { hashCall, Journal, makeKey, Occurrences } from './journal.js';
 import { AnthropicRunner, systemPrompt } from './runner.js';
-import { type HostHooks, type ParsedScript, parseScript, runScript } from './runtime.js';
+import {
+  type HostHooks,
+  KNOWN_META_KEYS,
+  type ParsedScript,
+  parseScript,
+  runScript,
+  unknownMetaKeys,
+} from './runtime.js';
 import { defaultConcurrency, Scheduler } from './scheduler.js';
 import { buildTools } from './tools.js';
 import type {
@@ -25,6 +32,7 @@ import type {
   ToolDef,
   Usage,
   WorkflowEvent,
+  WorkflowMeta,
 } from './types.js';
 import { DEFAULT_MODEL, MaestroError } from './types.js';
 import { addUsage, cacheReadRatio, hasCacheInfo, totalInput } from './usage.js';
@@ -96,6 +104,24 @@ interface LiveAgent {
 /** A runId or workflow name: one path component, never a path. */
 export const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
+/** Persisted outcome file inside `<runDir>/outcome.json`, readable across MCP sessions and CLI commands. */
+export const OUTCOME_FILE = 'outcome.json';
+
+export type PersistedOutcome = { ok: true; result: unknown } | { ok: false; error: string };
+
+/** Reads `<runDir>/outcome.json` when a settled run persisted its final outcome; undefined otherwise. */
+export async function readOutcome(runDir: string): Promise<PersistedOutcome | undefined> {
+  try {
+    const raw = JSON.parse(await readFile(path.join(runDir, OUTCOME_FILE), 'utf8'));
+    if (!isPlainObject(raw) || typeof raw.ok !== 'boolean') return undefined;
+    if (raw.ok) return { ok: true, result: 'result' in raw ? raw.result : null };
+    if (typeof raw.error === 'string') return { ok: false, error: raw.error };
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function run(opts: RunOptions): RunHandle {
   const runId = opts.resumeFromRunId ?? opts.runId ?? generateRunId();
   const cwd = path.resolve(opts.cwd ?? process.cwd());
@@ -120,6 +146,7 @@ export function run(opts: RunOptions): RunHandle {
   const liveUsage: Usage = { input_tokens: 0, output_tokens: 0 };
 
   let journal: Journal | undefined;
+  let runOpened = false;
   let budget: Budget | undefined;
   let scheduler: Scheduler | undefined;
   let isolation: Isolation | undefined;
@@ -142,6 +169,16 @@ export function run(opts: RunOptions): RunHandle {
   };
   const emitLog = (message: string, group?: string): void =>
     emit(withDefined({ type: 'log', runId, message, group }));
+  const warnUnknownMetaKeys = (meta: WorkflowMeta, group?: string): void => {
+    const extra = unknownMetaKeys(meta);
+    if (extra.length > 0) {
+      emitLog(
+        `meta: unknown key${extra.length > 1 ? 's' : ''} ${extra.map((k) => `"${k}"`).join(', ')} ignored ` +
+          `(known: ${[...KNOWN_META_KEYS].join(', ')})`,
+        group,
+      );
+    }
+  };
   const stopError = () =>
     new MaestroError(`run ${runId} stopped${stopReason ? `: ${stopReason}` : ''}`, 'run_stopped');
 
@@ -410,6 +447,7 @@ export function run(opts: RunOptions): RunHandle {
     if (stopped) throw stopError();
     const { source, file } = await resolveRef(ref);
     const parsed = parseScript(source);
+    warnUnknownMetaKeys(parsed.meta, parsed.meta.name);
     if (parsed.meta.maxAgents !== undefined) {
       emitLog(
         `workflow ${parsed.meta.name}: meta.maxAgents ${parsed.meta.maxAgents} ignored; ` +
@@ -484,6 +522,8 @@ export function run(opts: RunOptions): RunHandle {
 
     // spec 3.1: if the journal cannot be written the run does not start.
     journal = await Journal.open(runDir, { log: (m) => emitLog(m) });
+    runOpened = true;
+    if (resume) await rm(path.join(runDir, OUTCOME_FILE), { force: true }).catch(() => {});
     await eventLog.open(runDir, {
       t: startedAt,
       line: {
@@ -498,6 +538,7 @@ export function run(opts: RunOptions): RunHandle {
         budget: opts.budget instanceof Budget ? opts.budget.total : (opts.budget ?? null),
       },
     });
+    warnUnknownMetaKeys(parsed.meta);
     try {
       await writeFile(scriptFile, source);
       await writeFile(argsFile, `${JSON.stringify(args)}\n`);
@@ -525,13 +566,14 @@ export function run(opts: RunOptions): RunHandle {
       });
       // spec 3.5 aşım payı: max_tokens_per_turn is the largest max_tokens the runner actually sends.
       const r = getRunner();
+      const maxReq = (r as { maxRequestTokens?: unknown }).maxRequestTokens;
       budget =
         opts.budget instanceof Budget
           ? opts.budget
           : new Budget({
               total: opts.budget ?? null,
               concurrency: scheduler.concurrency,
-              maxTokensPerTurn: r instanceof AnthropicRunner ? r.maxRequestTokens : undefined,
+              maxTokensPerTurn: typeof maxReq === 'number' ? maxReq : undefined,
             });
       const offTick = budget.onTick((t) => emit({ type: 'budget_tick', runId, ...t }));
       try {
@@ -566,12 +608,28 @@ export function run(opts: RunOptions): RunHandle {
   const promise = new Promise<unknown>((resolve, reject) => {
     settle = { resolve, reject };
   });
+  // Never rejects: finish() settles the run only after this, so a throw here would leave the run pending
+  // and, unhandled, end the process. A result JSON cannot hold (a BigInt, a cycle) gets no outcome file.
+  const writeOutcome = async (ok: boolean, v: unknown): Promise<void> => {
+    if (!runOpened) return;
+    const finalPath = path.join(runDir, OUTCOME_FILE);
+    const tmpPath = `${finalPath}.${process.pid}.tmp`;
+    try {
+      const outcome: PersistedOutcome = ok
+        ? { ok: true, result: copyValue(v) }
+        : { ok: false, error: errorText(v) };
+      await writeFile(tmpPath, `${JSON.stringify(outcome, null, 2)}\n`);
+      await rename(tmpPath, finalPath);
+    } catch {
+      await rm(tmpPath, { force: true }).catch(() => {});
+    }
+  };
   const finish = (ok: boolean, v: unknown) => {
     if (settled) return;
     settled = true;
     eventLog.record(withDefined({ type: 'run_end' as const, ok, error: ok ? undefined : errorText(v) }));
-    // Settle once the event log is on disk: a resume started right after must not interleave with it.
-    void eventLog.close().then(() => {
+    // Settle once outcome.json and events.jsonl are on disk: a resume or reader right after sees both.
+    void Promise.all([writeOutcome(ok, v), eventLog.close()]).then(() => {
       if (ok) settle.resolve(v);
       else settle.reject(v);
     });

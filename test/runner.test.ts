@@ -5,8 +5,12 @@ import Anthropic from '@anthropic-ai/sdk';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   AnthropicRunner,
+  COMMIT_REMINDER_MESSAGE,
   RETURN_CONTRACT,
+  SUBMIT_RESULT_TOOL_NAME,
+  stripSyntheticNulls,
   systemPrompt,
+  toStrictToolInputSchema,
   toStructuredOutputSchema,
   validateValue,
   WRITER_INSTRUCTION,
@@ -777,5 +781,93 @@ describe('writer system prompt: no package installs (spec 3.6)', () => {
     expect(writer).toContain('Do not run npm install');
     expect(writer).toContain('node_modules');
     expect(systemPrompt({ cwd, writer: false })).not.toContain('npm install');
+  });
+});
+
+describe('AnthropicRunner: structuredMode submit-tool & single-stage (cache preservation)', () => {
+  const schemaWithOptional = {
+    type: 'object',
+    properties: {
+      count: { type: 'integer', minimum: 1 },
+      note: { type: 'string' },
+    },
+    required: ['count'],
+  };
+
+  it('toStrictToolInputSchema + stripSyntheticNulls preserve optional properties cleanly', () => {
+    const strict = toStrictToolInputSchema(schemaWithOptional) as any;
+    expect(strict.required).toEqual(['count', 'note']);
+    expect(strict.properties.note.type).toEqual(['string', 'null']);
+    expect(stripSyntheticNulls(schemaWithOptional, { count: 3, note: null })).toEqual({ count: 3 });
+    expect(stripSyntheticNulls(schemaWithOptional, { count: 3, note: 'hi' })).toEqual({
+      count: 3,
+      note: 'hi',
+    });
+  });
+
+  it('submit-tool: completes in a single turn without an extra stage-2 or trailing API request', async () => {
+    const { client, bodies } = scripted([
+      reply([toolUse('s1', SUBMIT_RESULT_TOOL_NAME, { count: 2, note: null })], 'tool_use'),
+    ]);
+    const runner = new AnthropicRunner({ client, retryDelayMs: 0, structuredMode: 'submit-tool' });
+    const res = await runner.run(makeReq({ schema: schemaWithOptional }).req);
+    expect(res).toMatchObject({ status: 'ok', result: { count: 2 }, turns: 1 });
+    expect(bodies).toHaveLength(1);
+    expect(bodies[0].tools.map((t: any) => t.name)).toContain(SUBMIT_RESULT_TOOL_NAME);
+  });
+
+  it('submit-tool: validation error is returned as tool_result is_error so the agent fixes it in-loop', async () => {
+    const { client, bodies } = scripted([
+      reply([toolUse('s1', SUBMIT_RESULT_TOOL_NAME, { count: 0, note: null })], 'tool_use'),
+      reply([toolUse('s2', SUBMIT_RESULT_TOOL_NAME, { count: 4, note: 'ok' })], 'tool_use'),
+    ]);
+    const runner = new AnthropicRunner({ client, retryDelayMs: 0, structuredMode: 'submit-tool' });
+    const res = await runner.run(makeReq({ schema: schemaWithOptional }).req);
+    expect(res).toMatchObject({ status: 'ok', result: { count: 4, note: 'ok' }, turns: 2 });
+    expect(bodies).toHaveLength(2);
+    const toolRes = bodies[1].messages.at(-1).content[0];
+    expect(toolRes).toMatchObject({ type: 'tool_result', tool_use_id: 's1', is_error: true });
+    expect(toolRes.content).toContain('below minimum');
+  });
+
+  it('submit-tool: sends one reminder turn if the model ends without calling the submit tool', async () => {
+    const { client, bodies } = scripted([
+      reply([text('I looked around')], 'end_turn'),
+      reply([toolUse('s1', SUBMIT_RESULT_TOOL_NAME, { count: 5, note: null })], 'tool_use'),
+    ]);
+    const runner = new AnthropicRunner({ client, retryDelayMs: 0, structuredMode: 'submit-tool' });
+    const res = await runner.run(makeReq({ schema: schemaWithOptional }).req);
+    expect(res).toMatchObject({ status: 'ok', result: { count: 5 }, turns: 2 });
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1].messages.at(-1).content).toContain(SUBMIT_RESULT_TOOL_NAME);
+  });
+
+  it('single-stage: passes output_config.format during stage 1 and avoids stage 2 when valid', async () => {
+    const { client, bodies } = scripted([
+      reply([toolUse('t1', 'glob', { pattern: '*.txt' })], 'tool_use'),
+      reply([text('{"count":3,"note":"cached"}')], 'end_turn'),
+    ]);
+    const runner = new AnthropicRunner({ client, retryDelayMs: 0, structuredMode: 'single-stage' });
+    const res = await runner.run(makeReq({ schema: schemaWithOptional }).req);
+    expect(res).toMatchObject({ status: 'ok', result: { count: 3, note: 'cached' }, turns: 2 });
+    expect(bodies).toHaveLength(2);
+    expect(bodies[0].output_config?.format?.type).toBe('json_schema');
+    expect(bodies[1].output_config?.format?.type).toBe('json_schema');
+  });
+
+  it('single-stage: falls back to one stage-2 retry when stage-1 output violates a numeric constraint', async () => {
+    const { client, bodies } = scripted([
+      reply([text('{"count":0}')], 'end_turn'),
+      reply([text('{"count":7}')], 'end_turn'),
+    ]);
+    const runner = new AnthropicRunner({ client, retryDelayMs: 0, structuredMode: 'single-stage' });
+    const res = await runner.run(makeReq({ schema: schemaWithOptional }).req);
+    expect(res).toMatchObject({ status: 'ok', result: { count: 7 }, turns: 2 });
+    expect(bodies).toHaveLength(2);
+  });
+
+  it('COMMIT_REMINDER_MESSAGE mentions git_commit and uncommitted changes', () => {
+    expect(COMMIT_REMINDER_MESSAGE).toContain('git_commit');
+    expect(COMMIT_REMINDER_MESSAGE).toContain('uncommitted');
   });
 });

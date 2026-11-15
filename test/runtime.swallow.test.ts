@@ -2,7 +2,16 @@
 // parallel()/pipeline() still turn throws into null, but the host hears about every swallowed slot.
 
 import { describe, expect, it, vi } from 'vitest';
-import { type HostHooks, makeParallel, makePipeline, parseScript, runScript } from '../src/runtime.js';
+import {
+  type HostHooks,
+  isFatalScriptError,
+  makeParallel,
+  makePipeline,
+  parseScript,
+  runScript,
+  unknownMetaKeys,
+} from '../src/runtime.js';
+import { MaestroError } from '../src/types.js';
 
 const META = "export const meta = { name: 'swallow', description: 'd' };\n";
 
@@ -124,5 +133,92 @@ describe('runScript wires hooks.onSwallowed', () => {
       ['parallel', 2, 'inside'],
       ['pipeline', 1, 'two'],
     ]);
+  });
+});
+
+describe('fatal programmer/config errors inside parallel() and pipeline()', () => {
+  it.each([
+    { label: 'Math.random() determinism guard', code: 'Math.random()', expected: /Math\.random/ },
+    { label: 'Date.now() determinism guard', code: 'Date.now()', expected: /Date\.now/ },
+    {
+      label: 'undefined identifier ReferenceError',
+      code: 'undeclaredIdentifierXYZ',
+      expected: /not defined/,
+    },
+    { label: 'ambient console ReferenceError', code: 'console.log(1)', expected: /not defined/ },
+  ])('parallel() rethrows $label without swallowing to null', async ({ code, expected }) => {
+    const onSwallowed = vi.fn();
+    await expect(
+      runScript(
+        parseScript(`${META}return await parallel([() => agent('ok'), () => ${code}]);`),
+        {},
+        hooks(onSwallowed),
+      ),
+    ).rejects.toThrow(expected);
+    expect(onSwallowed).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'unknown_tool',
+    'unknown_phase',
+    'write_tool_without_isolation',
+    'nested_workflow',
+    'determinism',
+  ] as const)('pipeline() rethrows MaestroError(%s) instead of nulling the slot', async (code) => {
+    const onSwallowed = vi.fn();
+    const h: HostHooks = {
+      ...hooks(onSwallowed),
+      agent: async () => {
+        throw new MaestroError(`bad:${code}`, code);
+      },
+    };
+    await expect(
+      runScript(parseScript(`${META}return await pipeline(['x'], (v) => agent(v));`), {}, h),
+    ).rejects.toMatchObject({ code });
+    expect(onSwallowed).not.toHaveBeenCalled();
+  });
+
+  it.each(['schema_invalid', 'budget_exceeded', 'agent_cap', 'run_stopped'] as const)(
+    'non-fatal MaestroError(%s) remains swallowed as null inside parallel()',
+    async (code) => {
+      expect(isFatalScriptError(new MaestroError('non-fatal', code))).toBe(false);
+      const seen: number[] = [];
+      const h: HostHooks = {
+        ...hooks((_w, i) => seen.push(i)),
+        agent: async (p: string) => {
+          if (p === 'bad') throw new MaestroError(`nf:${code}`, code);
+          return 'ok';
+        },
+      };
+      const out = await runScript(
+        parseScript(`${META}return await parallel([() => agent('good'), () => agent('bad')]);`),
+        {},
+        h,
+      );
+      expect(out).toEqual(['ok', null]);
+      expect(seen).toEqual([1]);
+    },
+  );
+});
+
+describe('unknownMetaKeys', () => {
+  it('detects typos in export const meta while allowing all known keys', () => {
+    expect(
+      unknownMetaKeys({
+        name: 'w',
+        description: 'd',
+        phases: [{ title: 'p' }],
+        maxAgents: 5,
+        whenToUse: 'always',
+      }),
+    ).toEqual([]);
+    expect(
+      unknownMetaKeys({
+        name: 'w',
+        description: 'd',
+        maxAgent: 5,
+        timeout: 100,
+      }),
+    ).toEqual(['maxAgent', 'timeout']);
   });
 });

@@ -139,4 +139,30 @@ describe('CLI runner selection', () => {
       }
     },
   );
+
+  it('run --runner auto routes Claude models to AnthropicRunner and non-Claude models to CodexRunner in one run', async () => {
+    const dir = await tmp();
+    const mixedScript = `export const meta = { name: 'mixed', description: 'd' };
+const [a, b] = await parallel([
+  () => agent('from-gpt', { model: 'gpt-5.4' }),
+  () => agent('from-claude', { model: 'claude-opus-4-7' }),
+]);
+return { a, b };`;
+    await writeFile(path.join(dir, 'mixed.js'), mixedScript);
+    const res = await cli(['run', 'mixed.js', '--runner', 'auto', '--structured-mode', 'submit-tool'], dir);
+    expect(res.code, res.stderr).toBe(0);
+    expect(JSON.parse(res.stdout)).toEqual({ a: 'codex', b: 'anthropic' });
+    expect(CodexRunner.prototype.run).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ model: 'gpt-5.4', prompt: 'from-gpt' }),
+    );
+    expect(AnthropicRunner.prototype.run).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ model: 'claude-opus-4-7', prompt: 'from-claude' }),
+    );
+  });
+
+  it('rejects invalid --structured-mode with usage', async () => {
+    const res = await cli(['run', 'demo.js', '--structured-mode', 'bogus', '--dry-run'], await tmp());
+    expect(res.code).toBe(1);
+    expect(res.stderr).toContain('invalid --structured-mode "bogus"');
+  });
 });

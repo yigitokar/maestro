@@ -2,7 +2,7 @@
 // One Entry per line in <runDir>/journal.jsonl; results above 64 KB live in <runDir>/blobs/<key>.json.
 
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { access, constants, type FileHandle, mkdir, open, readFile, truncate } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { AgentOpts, Entry, Trace } from './types.js';
@@ -107,6 +107,35 @@ export function makeKey(hash: string, n: number): string {
   return `${hash}:${n}`;
 }
 
+/**
+ * Blob filename for `key`: POSIX keeps `<hash>:<n><ext>`, while Windows (`win32`) turns `:` into `-`
+ * because NTFS rejects colons as alternate data stream separators.
+ */
+export function blobFileName(
+  key: string,
+  ext = '.json',
+  platform: NodeJS.Platform = process.platform,
+): string {
+  return `${platform === 'win32' ? key.replaceAll(':', '-') : key}${ext}`;
+}
+
+/**
+ * Resolves a blob path on disk, falling back to the other OS's filename convention so a `.maestro`
+ * directory copied between POSIX and Windows remains readable without migration.
+ */
+export function resolveBlobFile(
+  blobDir: string,
+  key: string,
+  ext = '.json',
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const primary = join(blobDir, blobFileName(key, ext, platform));
+  if (existsSync(primary)) return primary;
+  const alt = join(blobDir, blobFileName(key, ext, platform === 'win32' ? 'linux' : 'win32'));
+  if (alt !== primary && existsSync(alt)) return alt;
+  return primary;
+}
+
 /** Per-execution occurrence counter: n is never derived from journal rows (spec Seviye 2 adım 1). */
 export class Occurrences {
   private readonly counts = new Map<string, number>();
@@ -200,7 +229,7 @@ export class Journal {
     if (!row) return undefined;
     // A deep copy: the caller's edits to a result must not reach the row later reads are served from.
     if (row.blob !== true) return structuredClone(row);
-    const blobPath = this.blobPath(key);
+    const blobPath = resolveBlobFile(this.blobDir, key, '.json');
     let result: unknown;
     try {
       result = JSON.parse(readFileSync(blobPath, 'utf8'));
@@ -275,12 +304,12 @@ export class Journal {
   }
 
   private blobPath(key: string): string {
-    return join(this.blobDir, `${key}.json`);
+    return join(this.blobDir, blobFileName(key, '.json'));
   }
 }
 
 function traceBlobPath(blobDir: string, key: string): string {
-  return join(blobDir, `${key}.trace.json`);
+  return join(blobDir, blobFileName(key, '.trace.json'));
 }
 
 /** Read-only view of a run's journal (for `maestro show`): rows of the good prefix, nothing truncated. */
@@ -289,12 +318,19 @@ export async function readEntries(runDir: string): Promise<Entry[]> {
   return scan(data).rows;
 }
 
+/** Reads a >64 KB result blob for `key` (resolving POSIX/Windows filename conventions). */
+export async function readResultBlob(runDir: string, key: string): Promise<unknown> {
+  return JSON.parse(await readFile(resolveBlobFile(join(runDir, 'blobs'), key, '.json'), 'utf8'));
+}
+
 /** The row's trace with its blob resolved; undefined when the row has none or the blob is unreadable. */
 export async function readTrace(runDir: string, row: Entry): Promise<Trace | undefined> {
   if (row.trace === undefined) return undefined;
   if (row.traceBlob !== true) return row.trace as Trace;
   try {
-    return JSON.parse(await readFile(traceBlobPath(join(runDir, 'blobs'), row.key), 'utf8')) as Trace;
+    return JSON.parse(
+      await readFile(resolveBlobFile(join(runDir, 'blobs'), row.key, '.trace.json'), 'utf8'),
+    ) as Trace;
   } catch {
     return undefined;
   }

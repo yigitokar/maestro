@@ -4,7 +4,7 @@
 
 import { spawn } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
@@ -12,21 +12,26 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { parseBudgetDirective } from './budget.js';
 import { CodexRunner } from './codex-runner.js';
 import { gc } from './isolation.js';
-import { readEntries, readTrace } from './journal.js';
+import { readEntries, readResultBlob, readTrace } from './journal.js';
 import { serveMcp } from './mcp.js';
 import { attachTerminalProgress, type ProgressStream } from './progress.js';
-import { AnthropicRunner } from './runner.js';
+import { RoutingRunner } from './routing-runner.js';
+import { AnthropicRunner, type StructuredMode } from './runner.js';
+import { parseScript } from './runtime.js';
 import { FakeRunner } from './testing/fake-runner.js';
-import type { AgentRunner, Entry } from './types.js';
-import { cacheReadRatio, totalInput } from './usage.js';
-import { exportVizHtml, exportVizWidget, serveViz } from './viz.js';
-import { run, SAFE_ID } from './workflow.js';
+import type { AgentRunner, Entry, Usage } from './types.js';
+import { addUsage, cacheReadRatio, totalInput } from './usage.js';
+import { exportVizHtml, exportVizWidget, readEventLines, serveViz } from './viz.js';
+import { readOutcome, run, SAFE_ID } from './workflow.js';
 
 export const USAGE = `usage:
   maestro run <script.js> [--args <json>] [--args-file <file>] [--resume <runId>] [--budget <500k>]
                           [--dry-run] [--cwd <dir>] [--state-dir <dir>] [--tools-dir <dir>] [--concurrency <n>]
-                          [--model <model>] [--runner <anthropic|codex>]
+                          [--model <model>] [--runner <anthropic|codex|auto>]
+                          [--structured-mode <two-stage|submit-tool|single-stage>]
   maestro run --resume <runId> [options]     resume with the stored script.js and args.json
+  maestro runs [--cwd <dir>] [--state-dir <dir>] [--limit <n>]
+                                             list runs newest-first with status, agents and token usage (alias: ls)
   maestro gc [--delete] [--force] [--cwd <dir>]
   maestro show <runId> [label] [--cwd <dir>] [--state-dir <dir>]
                                              list a run's agents; with a label (or key prefix), print
@@ -36,17 +41,19 @@ export const USAGE = `usage:
                                              (--out writes the page as one self-contained HTML file instead;
                                              --widget prints a snapshot fragment for a chat's inline widget tool)
   maestro mcp [--cwd <dir>] [--state-dir <dir>] [--tools-dir <dir>] [--budget <500k>] [--concurrency <n>]
-              [--model <model>] [--runner <anthropic|codex>] [--dry-run]
+              [--model <model>] [--runner <anthropic|codex|auto>]
+              [--structured-mode <two-stage|submit-tool|single-stage>] [--dry-run]
                                              serve the Workflow tool over stdio as an MCP server
                                              (--budget is one pool for the whole session; exits 0 when stdin ends)
 
-  --dry-run   run every agent with an in-memory fake runner (schema stubs, no network)
-  --runner    agent runner: anthropic (default) or codex; --dry-run takes precedence
-  --tools-dir custom tools agents may name in opts.tools: *.js files that default-export a tool
-              (default <state-dir>/tools)
-  gc          lists dirty worktrees and merged / unmerged wf/* branches; deletes only with --delete
-              (clean worktrees and merged branches; --force also deletes dirty worktrees and
-              unmerged branches)`;
+  --dry-run          run every agent with an in-memory fake runner (schema stubs, no network)
+  --runner           agent runner: anthropic (default), codex, or auto (routes by model); --dry-run takes precedence
+  --structured-mode  Anthropic schema output mode: two-stage (default), submit-tool, or single-stage
+  --tools-dir        custom tools agents may name in opts.tools: *.js files that default-export a tool
+                     (default <state-dir>/tools)
+  gc                 lists dirty worktrees and merged / unmerged wf/* branches; deletes only with --delete
+                     (clean worktrees and merged branches; --force also deletes dirty worktrees and
+                     unmerged branches)`;
 
 export interface CliIO {
   /** MCP channel input for `maestro mcp` (default process.stdin); the server ends when it ends. */
@@ -78,6 +85,8 @@ const VALUE_FLAGS = new Set([
   'concurrency',
   'model',
   'runner',
+  'structured-mode',
+  'limit',
   'out',
   'port',
 ]);
@@ -117,12 +126,22 @@ function str(p: Parsed, name: string): string | undefined {
   return typeof v === 'string' ? v : undefined;
 }
 
-function runnerName(p: Parsed): 'anthropic' | 'codex' {
+function runnerName(p: Parsed): 'anthropic' | 'codex' | 'auto' {
   const name = str(p, 'runner') ?? 'anthropic';
-  if (name !== 'anthropic' && name !== 'codex') {
-    throw new UsageError(`invalid --runner "${name}" (expected anthropic or codex)`);
+  if (name !== 'anthropic' && name !== 'codex' && name !== 'auto') {
+    throw new UsageError(`invalid --runner "${name}" (expected anthropic, codex or auto)`);
   }
   return name;
+}
+
+function structuredModeFlag(p: Parsed): StructuredMode {
+  const mode = str(p, 'structured-mode') ?? 'two-stage';
+  if (mode !== 'two-stage' && mode !== 'submit-tool' && mode !== 'single-stage') {
+    throw new UsageError(
+      `invalid --structured-mode "${mode}" (expected two-stage, submit-tool or single-stage)`,
+    );
+  }
+  return mode;
 }
 
 export async function main(argv: string[], ioOverrides: Partial<CliIO> = {}): Promise<number> {
@@ -147,6 +166,7 @@ export async function main(argv: string[], ioOverrides: Partial<CliIO> = {}): Pr
       return 0;
     }
     if (command === 'run') return await runCommand(parsed, io);
+    if (command === 'runs' || command === 'ls') return await runsCommand(parsed, io);
     if (command === 'gc') return await gcCommand(parsed, io);
     if (command === 'show') return await showCommand(parsed, io);
     if (command === 'viz') return await vizCommand(parsed, io);
@@ -201,9 +221,11 @@ async function runCommand(p: Parsed, io: CliIO): Promise<number> {
 
   const dryRun = p.flags.has('dry-run');
   const selectedRunner = runnerName(p);
+  const structuredMode = structuredModeFlag(p);
   let runner: AgentRunner;
   if (dryRun) runner = new FakeRunner();
   else if (selectedRunner === 'codex') runner = new CodexRunner();
+  else if (selectedRunner === 'auto') runner = new RoutingRunner({ anthropic: { structuredMode } });
   else {
     if (!io.env.ANTHROPIC_API_KEY) {
       io.stderr.write(
@@ -212,7 +234,7 @@ async function runCommand(p: Parsed, io: CliIO): Promise<number> {
       );
       return 1;
     }
-    runner = new AnthropicRunner();
+    runner = new AnthropicRunner({ structuredMode });
   }
 
   const stateDir = str(p, 'state-dir');
@@ -286,6 +308,7 @@ async function mcpCommand(p: Parsed, io: CliIO): Promise<number> {
   }
   const dryRun = p.flags.has('dry-run');
   const selectedRunner = runnerName(p);
+  const structuredMode = structuredModeFlag(p);
   // stdout is the MCP channel: diagnostics go to stderr only.
   if (!dryRun && selectedRunner === 'anthropic' && !io.env.ANTHROPIC_API_KEY) {
     io.stderr.write('maestro mcp: ANTHROPIC_API_KEY is not set; Workflow runs will fail until it is.\n');
@@ -300,7 +323,9 @@ async function mcpCommand(p: Parsed, io: CliIO): Promise<number> {
         ? new FakeRunner()
         : selectedRunner === 'codex'
           ? new CodexRunner()
-          : new AnthropicRunner(),
+          : selectedRunner === 'auto'
+            ? new RoutingRunner({ anthropic: { structuredMode } })
+            : new AnthropicRunner({ structuredMode }),
       cwd,
       budget,
       ...(stateDir !== undefined ? { stateDir: path.resolve(io.cwd, stateDir) } : {}),
@@ -326,6 +351,136 @@ async function mcpCommand(p: Parsed, io: CliIO): Promise<number> {
   return 0;
 }
 
+async function runsCommand(p: Parsed, io: CliIO): Promise<number> {
+  if (p.positionals.length > 0) throw new UsageError(`unexpected arguments: ${p.positionals.join(' ')}`);
+  const limitArg = str(p, 'limit');
+  let limit: number | undefined;
+  if (limitArg !== undefined) {
+    limit = Number(limitArg);
+    if (!Number.isInteger(limit) || limit < 1) {
+      throw new UsageError(`--limit must be a positive integer, got "${limitArg}"`);
+    }
+  }
+  const cwd = path.resolve(io.cwd, str(p, 'cwd') ?? '.');
+  const stateDirArg = str(p, 'state-dir');
+  const stateDir = stateDirArg !== undefined ? path.resolve(io.cwd, stateDirArg) : path.join(cwd, '.maestro');
+  const runsDir = path.join(stateDir, 'runs');
+  if (!existsSync(runsDir)) {
+    io.stdout.write(`(no runs in ${runsDir})\n`);
+    return 0;
+  }
+  const dirEntries = await readdir(runsDir, { withFileTypes: true });
+  const runIds = dirEntries.filter((d) => d.isDirectory() && SAFE_ID.test(d.name)).map((d) => d.name);
+  if (runIds.length === 0) {
+    io.stdout.write(`(no runs in ${runsDir})\n`);
+    return 0;
+  }
+
+  interface RunSummaryRow {
+    runId: string;
+    startedAt: number;
+    line: string;
+  }
+
+  const summaries: RunSummaryRow[] = await Promise.all(
+    runIds.map(async (runId): Promise<RunSummaryRow> => {
+      const runDir = path.join(runsDir, runId);
+      const [{ lines: events }, outcome, rows, st] = await Promise.all([
+        readEventLines(runDir),
+        readOutcome(runDir),
+        readEntries(runDir).catch(() => [] as Entry[]),
+        stat(runDir),
+      ]);
+      const firstStart = events.find(
+        (e): e is Extract<typeof e, { type: 'run_start' }> => e.type === 'run_start',
+      );
+      let lastStartIdx = -1;
+      for (let i = events.length - 1; i >= 0; i--) {
+        if (events[i]?.type === 'run_start') {
+          lastStartIdx = i;
+          break;
+        }
+      }
+      const lastStart =
+        lastStartIdx >= 0
+          ? (events[lastStartIdx] as Extract<(typeof events)[number], { type: 'run_start' }>)
+          : undefined;
+      let name = lastStart?.name ?? firstStart?.name;
+      if (!name) {
+        try {
+          const src = await readFile(path.join(runDir, 'script.js'), 'utf8');
+          name = parseScript(src).meta.name;
+        } catch {
+          // Best-effort name lookup.
+        }
+      }
+      let endEvent: Extract<(typeof events)[number], { type: 'run_end' }> | undefined;
+      for (let i = events.length - 1; i > lastStartIdx; i--) {
+        const e = events[i];
+        if (e?.type === 'run_end') {
+          endEvent = e;
+          break;
+        }
+      }
+      const status: 'done' | 'failed' | 'running' =
+        endEvent !== undefined
+          ? endEvent.ok
+            ? 'done'
+            : 'failed'
+          : lastStartIdx === -1 && outcome !== undefined
+            ? outcome.ok
+              ? 'done'
+              : 'failed'
+            : 'running';
+      const startedAt = firstStart?.t ?? events[0]?.t ?? st.mtimeMs;
+      const attemptStart = lastStart?.t ?? startedAt;
+      const finishedAt = endEvent?.t;
+      const dur =
+        finishedAt !== undefined && finishedAt >= attemptStart
+          ? formatRunDuration(finishedAt - attemptStart)
+          : '-';
+
+      const usage: Usage = { input_tokens: 0, output_tokens: 0 };
+      let okCount = 0;
+      let nullCount = 0;
+      let skippedCount = 0;
+      for (const r of rows) {
+        addUsage(usage, r.usage);
+        if (r.status === 'ok') okCount++;
+        else if (r.status === 'null') nullCount++;
+        else if (r.status === 'skipped') skippedCount++;
+      }
+      const counts: string[] = [];
+      if (okCount > 0) counts.push(`${okCount} ok`);
+      if (nullCount > 0) counts.push(`${nullCount} null`);
+      if (skippedCount > 0) counts.push(`${skippedCount} skipped`);
+      const agentSummary = rows.length === 0 ? '0 agents' : `${rows.length} agents (${counts.join(', ')})`;
+
+      const ratio = cacheReadRatio(usage);
+      const cached = ratio === null ? '' : ` (${Math.round(ratio * 100)}% cached)`;
+      const n = (v: number) => v.toLocaleString('en-US');
+      const line =
+        `${runId}  [${status}]  ${name ?? '-'}  ${dur}  ${agentSummary}  ` +
+        `${n(totalInput(usage))} in${cached}, ${n(usage.output_tokens)} out`;
+      return { runId, startedAt, line };
+    }),
+  );
+
+  summaries.sort((a, b) => b.startedAt - a.startedAt || b.runId.localeCompare(a.runId));
+  const selected = limit !== undefined ? summaries.slice(0, limit) : summaries;
+  for (const s of selected) io.stdout.write(`${s.line}\n`);
+  return 0;
+}
+
+function formatRunDuration(ms: number): string {
+  if (ms < 1_000) return `${Math.round(ms)}ms`;
+  const sec = ms / 1_000;
+  if (sec < 60) return `${sec.toFixed(1)}s`;
+  const mins = Math.floor(sec / 60);
+  const rem = Math.round(sec - mins * 60);
+  return `${mins}m${rem}s`;
+}
+
 async function showCommand(p: Parsed, io: CliIO): Promise<number> {
   const [runId, label, ...extra] = p.positionals;
   if (runId === undefined) throw new UsageError('show needs a runId');
@@ -344,6 +499,16 @@ async function showCommand(p: Parsed, io: CliIO): Promise<number> {
   }
   if (label === undefined) {
     for (const row of rows) io.stdout.write(`${rowLine(row)}\n`);
+    const outcome = await readOutcome(runDir);
+    if (outcome) {
+      if (outcome.ok) {
+        const raw = JSON.stringify(outcome.result) ?? 'null';
+        const preview = raw.length > 160 ? `${raw.slice(0, 160)}…` : raw;
+        io.stdout.write(`outcome: ok · ${preview}\n`);
+      } else {
+        io.stdout.write(`outcome: failed · ${outcome.error}\n`);
+      }
+    }
     return 0;
   }
   let picked = rows.filter((r) => r.label === label);
@@ -446,7 +611,7 @@ async function showRow(runDir: string, row: Entry): Promise<string> {
   let result: unknown = row.result;
   if (row.blob === true) {
     try {
-      result = JSON.parse(await readFile(path.join(runDir, 'blobs', `${row.key}.json`), 'utf8'));
+      result = await readResultBlob(runDir, row.key);
     } catch {
       result = '(result blob unreadable)';
     }

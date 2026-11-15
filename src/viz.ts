@@ -3,15 +3,16 @@
 // process (an MCP server, a terminal `maestro run`) is executing; exportVizHtml() writes the same page
 // as one self-contained file with the data embedded. The server binds to 127.0.0.1 only.
 
-import { type FileHandle, open, readFile, stat } from 'node:fs/promises';
+import { type FileHandle, open, stat } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
 import { EVENT_LOG_FILE, type EventLogLine } from './event-log.js';
-import { readEntries, readTrace } from './journal.js';
+import { readEntries, readResultBlob, readTrace } from './journal.js';
 import type { Entry, EntryStatus, Trace, Usage } from './types.js';
 import { vizPage } from './viz-page.js';
 import { vizWidget, widgetModel } from './viz-widget.js';
+import { type PersistedOutcome, readOutcome } from './workflow.js';
 
 /** A journal row without its result, for the timeline (sent on every poll, so kept small). */
 export interface VizEntrySummary {
@@ -41,6 +42,8 @@ export interface VizSnapshot {
   /** Byte offset to ask for next time (end of the last complete line). */
   offset: number;
   entries: VizEntrySummary[];
+  /** Settled outcome from `<runDir>/outcome.json`, when present. */
+  outcome?: PersistedOutcome;
   /** Server clock, so a live page measures running agents against the same clock that wrote `t`. */
   now: number;
 }
@@ -114,8 +117,19 @@ async function readRows(runDir: string): Promise<Entry[]> {
 }
 
 export async function readSnapshot(runDir: string, runId: string, from = 0): Promise<VizSnapshot> {
-  const [{ lines, offset }, rows] = await Promise.all([readEventLines(runDir, from), readRows(runDir)]);
-  return { runId, lines, offset, entries: rows.map(summary), now: Date.now() };
+  const [{ lines, offset }, rows, outcome] = await Promise.all([
+    readEventLines(runDir, from),
+    readRows(runDir),
+    readOutcome(runDir),
+  ]);
+  return {
+    runId,
+    lines,
+    offset,
+    entries: rows.map(summary),
+    ...(outcome !== undefined ? { outcome } : {}),
+    now: Date.now(),
+  };
 }
 
 /**
@@ -142,7 +156,7 @@ async function detail(runDir: string, row: Entry): Promise<VizEntryDetail> {
   let result: unknown = row.result;
   if (row.blob === true) {
     try {
-      result = JSON.parse(await readFile(join(runDir, 'blobs', `${row.key}.json`), 'utf8'));
+      result = await readResultBlob(runDir, row.key);
     } catch {
       result = '(result blob unreadable)';
     }

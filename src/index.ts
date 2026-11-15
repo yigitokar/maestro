@@ -18,7 +18,18 @@ export type {
   WorktreeLease,
 } from './isolation.js';
 export { branchNameFor, gc, Isolation } from './isolation.js';
-export { canonicalJSON, hashCall, Journal, makeKey, Occurrences } from './journal.js';
+export {
+  blobFileName,
+  canonicalJSON,
+  hashCall,
+  Journal,
+  makeKey,
+  Occurrences,
+  readEntries,
+  readResultBlob,
+  readTrace,
+  resolveBlobFile,
+} from './journal.js';
 export type { McpServerOptions } from './mcp.js';
 export {
   createMcpServer,
@@ -30,10 +41,31 @@ export {
 } from './mcp.js';
 export type { ProgressStream, ProgressTreeOptions } from './progress.js';
 export { attachTerminalProgress, formatEventLine, GLYPHS, ProgressTree } from './progress.js';
-export type { AnthropicRunnerOptions } from './runner.js';
-export { AnthropicRunner, RETURN_CONTRACT, systemPrompt, WRITER_INSTRUCTION } from './runner.js';
+export type { RouteTarget, RoutingRunnerOptions } from './routing-runner.js';
+export { defaultModelRoute, RoutingRunner } from './routing-runner.js';
+export type { AnthropicRunnerOptions, StructuredMode } from './runner.js';
+export {
+  AnthropicRunner,
+  COMMIT_REMINDER_MESSAGE,
+  RETURN_CONTRACT,
+  SUBMIT_RESULT_TOOL_NAME,
+  stripSyntheticNulls,
+  systemPrompt,
+  toStrictToolInputSchema,
+  toStructuredOutputSchema,
+  WRITER_INSTRUCTION,
+} from './runner.js';
 export type { HostHooks, ParsedScript } from './runtime.js';
-export { makeParallel, makePipeline, parseScript, runScript } from './runtime.js';
+export {
+  FATAL_SCRIPT_CODES,
+  isFatalScriptError,
+  KNOWN_META_KEYS,
+  makeParallel,
+  makePipeline,
+  parseScript,
+  runScript,
+  unknownMetaKeys,
+} from './runtime.js';
 export { defaultConcurrency, Scheduler } from './scheduler.js';
 export { assertSatisfiableSchema, validateAgainstSchema } from './schema.js';
 export type { FakeHandler, FakeResponse, FakeRule } from './testing/fake-runner.js';
@@ -62,5 +94,5 @@ export type { VizEntryDetail, VizEntrySummary, VizServer, VizSnapshot } from './
 export { exportVizHtml, exportVizWidget, readEventLines, readSnapshot, serveViz } from './viz.js';
 export type { WidgetAgent, WidgetModel } from './viz-widget.js';
 export { vizWidget, widgetModel } from './viz-widget.js';
-export type { RunHandle, RunOptions } from './workflow.js';
-export { run } from './workflow.js';
+export type { PersistedOutcome, RunHandle, RunOptions } from './workflow.js';
+export { OUTCOME_FILE, readOutcome, run } from './workflow.js';
