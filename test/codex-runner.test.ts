@@ -537,6 +537,8 @@ describe('CodexRunner: arguments, tools and isolation', () => {
     ]);
     const call = records()[0]!;
     expect(call.prompt).toContain('maestro_tools');
+    // codex exec refuses every call to a server that is not pre-approved.
+    expect(call.argv).toContain('mcp_servers.maestro_tools.default_tools_approval_mode="approve"');
     expect(call.mcpTools?.map((t) => t.name)).toEqual(['search_papers', 'lookup_database']);
     expect(call.mcpResults).toMatchObject([
       { content: [{ type: 'text', text: `papers(${cwd}):prompt caching` }] },
