@@ -10,6 +10,7 @@ The control flow is code, so it is the same on every run. The reasoning is in th
 
 | Guide | What it covers |
 |---|---|
+| [Quickstart](quickstart.md) | The shortest path: connect Maestro to Claude Code and ask for a workflow |
 | [Getting started](getting-started.md) | Install, write a first workflow, run it, resume it |
 | [Writing workflows](workflows.md) | The script API: `agent`, `parallel`, `pipeline`, `phase`, `log`, `args`, `budget`, `workflow` |
 | [Agents and tools](agents-and-tools.md) | Agent options, the built-in tools, agents that write code, your own tools |
