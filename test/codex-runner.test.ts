@@ -55,6 +55,7 @@ interface Scenario {
   exitBeforeStdin?: boolean;
   grandchild?: 'group' | 'escaped';
   files?: Record<string, string>;
+  mcpCalls?: Array<{ name: string; arguments?: Record<string, unknown> }>;
   steps?: Array<{ event?: unknown; raw?: string; delayMs?: number; waitForFile?: string }>;
 }
 
@@ -70,6 +71,8 @@ interface RecordOfCall {
   stdin: string;
   prompt: string;
   schema?: any;
+  mcpTools?: Array<{ name: string }>;
+  mcpResults?: unknown[];
 }
 
 function records(): RecordOfCall[] {
@@ -486,7 +489,62 @@ describe('CodexRunner: arguments, tools and isolation', () => {
     await expect(access(recordPath)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('warns once with all unsupported custom tools and never calls their implementations', async () => {
+  it('exposes custom tools over a temporary stdio MCP bridge, executes them in-process and records traces', async () => {
+    const searchPapers: ToolDef = {
+      name: 'search_papers',
+      description: 'Search indexed papers',
+      inputSchema: {
+        type: 'object',
+        properties: { query: { type: 'string' } },
+        required: ['query'],
+        additionalProperties: false,
+      },
+      write: false,
+      run: vi.fn(async (input: { query: string }, ctx) => `papers(${ctx.cwd}):${input.query}`),
+    };
+    const failingTool: ToolDef = {
+      name: 'lookup_database',
+      description: 'Lookup row',
+      inputSchema: {
+        type: 'object',
+        properties: { id: { type: 'number' } },
+        required: ['id'],
+        additionalProperties: false,
+      },
+      write: false,
+      run: vi.fn(async () => {
+        throw new Error('db offline');
+      }),
+    };
+    scenario({
+      mcpCalls: [
+        { name: 'search_papers', arguments: { query: 'prompt caching' } },
+        { name: 'lookup_database', arguments: { id: 42 } },
+      ],
+      finalText: 'bridged ok',
+      steps: [{ event: turn({ input_tokens: 15, output_tokens: 5 }) }],
+    });
+    const { req, logs } = makeReq({ tools: [...buildTools(undefined, false), searchPapers, failingTool] });
+    const res = await new CodexRunner({ bin }).run(req);
+    expect(res.status).toBe('ok');
+    expect(res.result).toBe('bridged ok');
+    expect(logs).toEqual([]);
+    expect(searchPapers.run).toHaveBeenCalledTimes(1);
+    expect(failingTool.run).toHaveBeenCalledTimes(1);
+    expect(res.trace?.toolCalls).toEqual([
+      { tool: 'search_papers', inputSummary: '{"query":"prompt caching"}', ok: true },
+      { tool: 'lookup_database', inputSummary: '{"id":42}', ok: false },
+    ]);
+    const call = records()[0]!;
+    expect(call.prompt).toContain('maestro_tools');
+    expect(call.mcpTools?.map((t) => t.name)).toEqual(['search_papers', 'lookup_database']);
+    expect(call.mcpResults).toMatchObject([
+      { content: [{ type: 'text', text: `papers(${cwd}):prompt caching` }] },
+      { isError: true, content: [{ type: 'text', text: 'db offline' }] },
+    ]);
+  });
+
+  it('warns once with all unsupported custom tools when customToolsMcp is disabled', async () => {
     const custom = (name: string): ToolDef => ({
       name,
       description: 'custom tool',
@@ -496,7 +554,7 @@ describe('CodexRunner: arguments, tools and isolation', () => {
     });
     const tools = [custom('search_papers'), custom('lookup_database')];
     const { req, logs } = makeReq({ tools: [...buildTools(undefined, false), ...tools] });
-    expect((await new CodexRunner({ bin }).run(req)).status).toBe('ok');
+    expect((await new CodexRunner({ bin, customToolsMcp: false }).run(req)).status).toBe('ok');
     expect(logs).toHaveLength(1);
     expect(logs[0]).toContain('search_papers');
     expect(logs[0]).toContain('lookup_database');
