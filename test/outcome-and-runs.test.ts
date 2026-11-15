@@ -199,6 +199,13 @@ throw new Error('planned-failure');`,
 
     const snap = await readSnapshot(r1.runDir, r1.runId);
     expect(snap.outcome).toEqual({ ok: true, result: 'alpha' });
+    // A poll that already has this version of the outcome does not get the result again.
+    expect(snap.outcomeVersion).toBeTypeOf('string');
+    const same = await readSnapshot(r1.runDir, r1.runId, snap.offset, snap.outcomeVersion);
+    expect(same.outcome).toBeUndefined();
+    expect(same.outcomeVersion).toBe(snap.outcomeVersion);
+    const stale = await readSnapshot(r1.runDir, r1.runId, snap.offset, 'another-version');
+    expect(stale.outcome).toEqual(snap.outcome);
     const html = await exportVizHtml(r1.runDir, r1.runId);
     expect(html).toContain('id="outcome-panel"');
     expect(html).toContain('"outcome":{"ok":true,"result":"alpha"}');

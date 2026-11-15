@@ -4,13 +4,14 @@
 
 import { spawn } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
-import { readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { open, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { Readable, Writable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { parseBudgetDirective } from './budget.js';
 import { CodexRunner } from './codex-runner.js';
+import { EVENT_LOG_FILE } from './event-log.js';
 import { gc } from './isolation.js';
 import { readEntries, readResultBlob, readTrace } from './journal.js';
 import { serveMcp } from './mcp.js';
@@ -382,8 +383,19 @@ async function runsCommand(p: Parsed, io: CliIO): Promise<number> {
     line: string;
   }
 
+  // With --limit, order the runs by a cheap start hint first, so only the listed runs' event logs and
+  // journals are read in full.
+  let listed = runIds;
+  if (limit !== undefined && runIds.length > limit) {
+    const hints = await Promise.all(
+      runIds.map(async (runId) => ({ runId, t: await runStartHint(path.join(runsDir, runId)) })),
+    );
+    hints.sort((a, b) => b.t - a.t || b.runId.localeCompare(a.runId));
+    listed = hints.slice(0, limit).map((h) => h.runId);
+  }
+
   const summaries: RunSummaryRow[] = await Promise.all(
-    runIds.map(async (runId): Promise<RunSummaryRow> => {
+    listed.map(async (runId): Promise<RunSummaryRow> => {
       const runDir = path.join(runsDir, runId);
       const [{ lines: events }, outcome, rows, st] = await Promise.all([
         readEventLines(runDir),
@@ -470,6 +482,31 @@ async function runsCommand(p: Parsed, io: CliIO): Promise<number> {
   const selected = limit !== undefined ? summaries.slice(0, limit) : summaries;
   for (const s of selected) io.stdout.write(`${s.line}\n`);
   return 0;
+}
+
+/**
+ * When a run started, from the first line of its event log alone (the first run_start); the directory's
+ * mtime when there is no readable first line. The same value runsCommand sorts by after a full read.
+ */
+async function runStartHint(runDir: string): Promise<number> {
+  try {
+    const fh = await open(path.join(runDir, EVENT_LOG_FILE), 'r');
+    try {
+      const buf = Buffer.alloc(64 * 1024);
+      const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+      const head = buf.subarray(0, bytesRead).toString('utf8');
+      const nl = head.indexOf('\n');
+      if (nl !== -1) {
+        const t = (JSON.parse(head.slice(0, nl)) as { t?: unknown }).t;
+        if (typeof t === 'number') return t;
+      }
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    // No event log, or a first line that is not JSON: fall through.
+  }
+  return (await stat(runDir)).mtimeMs;
 }
 
 function formatRunDuration(ms: number): string {
