@@ -12,6 +12,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   serveMcp,
+  WORKFLOW_GUIDE_TOOL_NAME,
   WORKFLOW_RESULT_TOOL_NAME,
   WORKFLOW_SKIP_TOOL_NAME,
   WORKFLOW_STOP_TOOL_NAME,
@@ -83,7 +84,13 @@ describe('maestro mcp', () => {
     const { client } = await connect();
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
-      ['Workflow', WORKFLOW_RESULT_TOOL_NAME, WORKFLOW_STOP_TOOL_NAME, WORKFLOW_SKIP_TOOL_NAME].sort(),
+      [
+        'Workflow',
+        WORKFLOW_GUIDE_TOOL_NAME,
+        WORKFLOW_RESULT_TOOL_NAME,
+        WORKFLOW_STOP_TOOL_NAME,
+        WORKFLOW_SKIP_TOOL_NAME,
+      ].sort(),
     );
     for (const t of tools) expect((t.inputSchema as any).additionalProperties, t.name).toBe(false);
     const skip = tools.find((t) => t.name === WORKFLOW_SKIP_TOOL_NAME)!;
@@ -91,6 +98,18 @@ describe('maestro mcp', () => {
     const result = tools.find((t) => t.name === WORKFLOW_RESULT_TOOL_NAME)!;
     expect((result.inputSchema as any).required).toEqual(['runId']);
     expect((result.inputSchema as any).properties.wait.type).toBe('boolean');
+  });
+
+  it('WorkflowGuide returns the script-writing guide, and the server points to it', async () => {
+    const { client } = await connect();
+    const res = (await client.callTool({ name: WORKFLOW_GUIDE_TOOL_NAME, arguments: {} })) as any;
+    expect(res.isError).toBeFalsy();
+    const guide: string = res.content[0].text;
+    expect(guide.startsWith('# Maestro workflow')).toBe(true);
+    expect(guide).toContain('export const meta');
+    expect(client.getInstructions()).toContain(WORKFLOW_GUIDE_TOOL_NAME);
+    const workflow = (await client.listTools()).tools.find((t) => t.name === 'Workflow')!;
+    expect(workflow.description).toContain(WORKFLOW_GUIDE_TOOL_NAME);
   });
 
   it('WorkflowResult with wait: true answers only once the run settles', async () => {
