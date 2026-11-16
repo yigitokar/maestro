@@ -28,15 +28,15 @@ claude mcp add --scope user maestro -e ANTHROPIC_API_KEY=sk-ant-... -- npx -y ma
 
 There is nothing to download first: `npx` fetches Maestro from npm the first time it runs.
 
-## Step 2: Teach Claude how to use it
+The server also carries a short guide to writing workflows. Claude reads it by itself before it writes its first one, so there is nothing more to install.
 
-This saves a short guide that Claude reads before it writes a workflow.
+Optional: Claude Code can also keep the guide as a skill, which it then sees in every project without asking the server.
 
 ```bash
 mkdir -p ~/.claude/skills/maestro-workflow-authoring && curl -fsSL https://raw.githubusercontent.com/yigitokar/maestro/main/skill/SKILL.md -o ~/.claude/skills/maestro-workflow-authoring/SKILL.md
 ```
 
-## Step 3: Ask
+## Step 2: Ask
 
 Close Claude Code and open it again, in the project you want to work on. Then ask for a workflow in plain words. Say the word **workflow**, so Claude knows you want several agents and not one answer.
 

@@ -200,10 +200,11 @@ stopWorkflowRun(runId, 'yeter'); // canlı ajanlar 'skipped' yazılır, onComple
 
 ## Claude Code'a bağlama
 
-Aynı Workflow aracı stdio üzerinden bir MCP sunucusu olarak açılır ve `tools/list` dört araç döner:
+Aynı Workflow aracı stdio üzerinden bir MCP sunucusu olarak açılır ve `tools/list` beş araç döner:
 
 - `Workflow`: run'ı başlatır, hemen `{ runId, scriptPath, status: 'started' }` döner. `cwd` verilirse run oturumun dizini yerine o repoda çalışır (yukarıdaki `cwd` paragrafı).
 - `WorkflowResult({ runId, wait?, cwd? })`: Run sürerken `{ status: 'running', liveAgents }`, sonra `done` ya da `failed` döner. Tamamlanan run'ların nihai sonucu `<runDir>/outcome.json` dosyasına da yazıldığı için MCP sunucusu yeniden başlatılsa bile eski bir `runId` için `WorkflowResult` diskten okunabilir (`cwd` farklıysa birlikte verilir). `wait: true` ile çağrı run bitene kadar açık kalır ve yoklamaya gerek kalmaz: Claude Code 2 dakikadan uzun süren bir MCP çağrısını arka plana alır, sonucu modele bildirim olarak verir. Bekleyen çağrı, istemci `progressToken` gönderdiyse 30 saniyede bir canlı ajanların adlarıyla `notifications/progress` yollar; böylece boşta kalan çağrı zaman aşımı çağrıyı kesmez. Tek seferlik `claude -p` oturumu tur bitince kapandığı için arka plandaki sonucu beklemez; sonucu almak için etkileşimli bir oturum kullanın.
+- `WorkflowGuide()`: script yazma rehberini ([skill/SKILL.md](skill/SKILL.md)) Markdown olarak döner. Girdi almaz, hiçbir şey başlatmaz. Sunucunun `instructions` alanı ve `Workflow` açıklaması modele ilk script'ten önce bunu çağırmasını söyler; böylece skill'i ayrıca kurmayan istemci de rehbere ulaşır.
 - `WorkflowStop({ runId })`: run'ı durdurur. Script `run_stopped` ile reddeder, journal kalır ve run sonradan `resumeFromRunId` ile sürdürülebilir.
 - `WorkflowSkip({ runId, agentId })`: `liveAgents` içindeki bir ajanı atlar; o `agent()` çağrısı `null` döner.
 
@@ -213,7 +214,7 @@ Kendi projende kullanmak için sunucuyu Claude Code'a ekle. Paket npm'de `maestr
 claude mcp add --scope user maestro -- npx -y maestro-workflows mcp
 ```
 
-Script yazma rehberini bütün projelerde görünen bir skill olarak ekle:
+Sunucu script yazma rehberini de taşır: model ilk script'inden önce `WorkflowGuide` aracıyla okur. Aynı rehberi bütün projelerde görünen bir skill olarak da ekleyebilirsin (isteğe bağlı):
 
 ```bash
 mkdir -p ~/.claude/skills/maestro-workflow-authoring && cp skill/SKILL.md ~/.claude/skills/maestro-workflow-authoring/SKILL.md

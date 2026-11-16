@@ -218,7 +218,7 @@ describe('maestro mcp', () => {
     await client.connect(new StdioServerTransport(m.toClient, m.toServer));
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
-      ['Workflow', 'WorkflowResult', 'WorkflowSkip', 'WorkflowStop'].sort(),
+      ['Workflow', 'WorkflowGuide', 'WorkflowResult', 'WorkflowSkip', 'WorkflowStop'].sort(),
     );
     const started = await client.callTool({
       name: 'Workflow',

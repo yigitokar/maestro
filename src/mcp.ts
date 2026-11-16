@@ -5,8 +5,10 @@
 // hands the result to the model as a notification and nobody polls. A waiting call sends
 // notifications/progress when the client gave a progressToken, so an idle-call timeout does not end
 // it. WorkflowStop and WorkflowSkip are the user controls of the spec Seviye 1 null/throw table: stop
-// the run (script rejects, journal stays) and skip a live agent (agent() → null).
+// the run (script rejects, journal stays) and skip a live agent (agent() → null). WorkflowGuide
+// returns the script-writing guide (skill/SKILL.md), so a client that only connected the server has it.
 
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -43,6 +45,17 @@ const text = (value: unknown, isError = false): CallResult => ({
   ...(isError ? { isError: true } : {}),
 });
 
+export const WORKFLOW_GUIDE_TOOL_NAME = 'WorkflowGuide';
+// The package ships skill/ next to src/ (in the repository) and next to dist/ (when installed).
+const GUIDE_URL = new URL('../skill/SKILL.md', import.meta.url);
+const GUIDE_POINTER = `Before you write your first script in a session, call ${WORKFLOW_GUIDE_TOOL_NAME} and follow the guide it returns.`;
+
+/** The script-writing guide without its skill frontmatter. Read on each call: it is asked for rarely. */
+export async function readWorkflowGuide(): Promise<string> {
+  const raw = await readFile(GUIDE_URL, 'utf8');
+  return raw.replace(/^---\n[\s\S]*?\n---\n+/, '');
+}
+
 const RUN_ID_PROPERTY = { runId: { type: 'string', description: 'runId returned by the Workflow tool.' } };
 
 /** Settled runs whose outcome a server keeps for WorkflowResult; older ones answer "unknown runId". */
@@ -73,7 +86,13 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
       ? ctx.budget
       : new Budget({ total: ctx.budget ?? null, concurrency: ctx.concurrency ?? defaultConcurrency() });
   const runCtx = { ...ctx, budget };
-  const server = new Server({ name: 'maestro', version: '1.2.1' }, { capabilities: { tools: {} } });
+  const server = new Server(
+    { name: 'maestro', version: '1.3.0' },
+    {
+      capabilities: { tools: {} },
+      instructions: `Maestro runs multi-agent workflows from a JavaScript script given to the Workflow tool. ${GUIDE_POINTER}`,
+    },
+  );
   // The client is gone: nobody can poll the result, so live runs stop (their journals stay for resume).
   server.onclose = () => {
     for (const [runId, outcome] of outcomes)
@@ -136,7 +155,17 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
     const def = await maestroToolDefinitionFor(ctx);
     return {
       tools: [
-        { name: def.name, description: def.description, inputSchema: def.input_schema as any },
+        {
+          name: def.name,
+          description: `${def.description}\n\n${GUIDE_POINTER}`,
+          inputSchema: def.input_schema as any,
+        },
+        {
+          name: WORKFLOW_GUIDE_TOOL_NAME,
+          description:
+            'The guide to writing a Workflow script: the meta block, the script API, what returns null and what throws, determinism, pipeline or parallel, common patterns, resume. Returns Markdown. Call it once before writing your first script; it starts nothing and costs nothing.',
+          inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+        },
         {
           name: WORKFLOW_RESULT_TOOL_NAME,
           description:
@@ -255,6 +284,13 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
       return current.ok
         ? text({ runId, status: 'done', result: current.result })
         : text({ runId, status: 'failed', error: current.error }, true);
+    }
+    if (name === WORKFLOW_GUIDE_TOOL_NAME) {
+      try {
+        return text(await readWorkflowGuide());
+      } catch (err) {
+        return text(`the guide could not be read (${(err as Error).message})`, true);
+      }
     }
     return text(`unknown tool ${name}`, true);
   });
