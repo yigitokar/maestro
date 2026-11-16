@@ -3,6 +3,7 @@
   "theme": "mint",
   "name": "Maestro",
   "description": "Multi-agent workflows: a deterministic script drives clean-context agents.",
+  "favicon": "/favicon.svg",
   "colors": {
     "primary": "#B4532A",
     "light": "#E08A5B",
