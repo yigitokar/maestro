@@ -6,7 +6,7 @@
 //     [--cell-budget 400k] [--max-dollars 50] [--concurrency n] [--seed n]
 //     [--structured-mode two-stage|submit-tool|single-stage]
 //     [--bench eval/data/reviewbench] [--repos eval/data/rb-repos] [--accept-degraded] [--dry-run]
-// Arms: A one agent, B examples/workflows/review-changes.js, C its three finders without skeptics.
+// Arms: A one agent, B eval/workflows/review-changes.js, C its three finders without skeptics.
 // Cells finished in <out>/results.jsonl are skipped, so the same command continues a stopped run. A cell
 // whose run lost agents (null or skipped rows) is "degraded": it gets no findings file and is resumed by
 // the next run of the command; --accept-degraded scores it as it is.

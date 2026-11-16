@@ -324,7 +324,7 @@ describe('data flow', () => {
     expect(a!.tools.map((t) => t.name)).toEqual(['read_file', 'grep', 'glob', 'bash']);
     expect(a!.isolated).toBe(false);
     expect(a!.cwd).toBe(path.resolve(dir));
-    expect(a!.system).toContain('Son mesajın bu çağrının dönüş değeridir');
+    expect(a!.system).toContain('Your final message IS the return value of this call');
     expect(b!.model).toBe('m2');
     expect(b!.effort).toBe('high');
     expect(b!.tools.map((t) => t.name)).toEqual(['grep']);

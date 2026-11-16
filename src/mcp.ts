@@ -87,7 +87,7 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
       : new Budget({ total: ctx.budget ?? null, concurrency: ctx.concurrency ?? defaultConcurrency() });
   const runCtx = { ...ctx, budget };
   const server = new Server(
-    { name: 'maestro', version: '1.3.1' },
+    { name: 'maestro', version: '1.3.2' },
     {
       capabilities: { tools: {} },
       instructions: `Maestro runs multi-agent workflows from a JavaScript script given to the Workflow tool. ${GUIDE_POINTER}`,

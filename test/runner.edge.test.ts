@@ -258,7 +258,7 @@ describe('runner: abort at every point of a run → skipped', () => {
     expect(res).toMatchObject({ result: null, status: 'skipped', turns: 1 });
     expect(bodies).toHaveLength(2);
     const sent = bodies[1].messages;
-    expect(sent[sent.length - 1].content).toMatch(/devam et.*continue/); // it was the continuation
+    expect(sent[sent.length - 1].content).toMatch(/^Continue: your previous reply was cut off/); // it was the continuation
   });
 });
 

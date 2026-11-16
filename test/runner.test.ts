@@ -257,7 +257,7 @@ describe('AnthropicRunner: tool loop', () => {
       content: [{ type: 'text', text: 'part one, ' }],
     });
     expect(msgs[msgs.length - 1].role).toBe('user');
-    expect(msgs[msgs.length - 1].content).toMatch(/devam et.*continue/);
+    expect(msgs[msgs.length - 1].content).toMatch(/^Continue: your previous reply was cut off/);
   });
 
   it('second max_tokens → null, no third request', async () => {
@@ -526,7 +526,7 @@ describe('AnthropicRunner: structured final (stage 2)', () => {
     for (const body of bodies.slice(1)) {
       expect(lastMessage(body)).toEqual({
         role: 'user',
-        content: expect.stringMatching(/Bulgularını şemaya göre döndür.*schema/),
+        content: expect.stringMatching(/Return your findings in the required schema/),
       });
       expect(body.messages[body.messages.length - 2]).toEqual({
         role: 'assistant',
@@ -603,7 +603,7 @@ describe('AnthropicRunner: structured final (stage 2)', () => {
 describe('systemPrompt and schema helpers', () => {
   it('contains the return contract and CLAUDE.md; writer gets the commit instruction', async () => {
     const reader = systemPrompt({ cwd, writer: false });
-    expect(reader).toContain('Son mesajın bu çağrının dönüş değeridir. Açıklama, selamlama, özet ekleme.');
+    expect(reader).toContain('Your final message IS the return value of this call');
     expect(reader).toContain(RETURN_CONTRACT);
     expect(reader).toContain('return value');
     expect(reader).toContain('Always answer in lowercase.');

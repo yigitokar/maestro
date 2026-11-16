@@ -1,18 +1,18 @@
-// Spec Seviye 4, Örnek 1: node examples/review-changes.js --dry-run [--args '{"diffRef":"main...HEAD"}']
+// node examples/review-changes.js --dry-run [--args '{"diffRef":"main...HEAD"}']
 import { runExample } from './_harness.js';
 
 // Dry run: every finder reports two findings; skeptics refute the ones marked "flaky", so one
 // finding per dimension survives the 2-of-3 vote and reaches the synthesis barrier.
 const rules = [
   {
-    match: 'ÇÜRÜTMEYE',
+    match: 'Try to REFUTE',
     respond: (req) => ({
       result: { refuted: req.prompt.includes('flaky'), reason: 'dry run' },
       outputTokensPerTurn: 150,
     }),
   },
   {
-    match: 'doğrulanmış bulguları',
+    match: 'verified findings',
     respond: (req) => {
       const confirmed = JSON.parse(req.prompt.slice(req.prompt.indexOf('\n') + 1));
       return {
@@ -25,17 +25,27 @@ const rules = [
   {
     match: 'Diff:',
     respond: (req) => {
-      const dim = req.prompt.includes('güvenlik')
+      const dim = req.prompt.includes('security problems')
         ? 'security'
-        : req.prompt.includes('Veri kaybı')
+        : req.prompt.includes('data loss')
           ? 'data-loss'
           : 'correctness';
       return {
         turns: 3,
         result: {
           findings: [
-            { file: `src/${dim}.ts`, line: 10, claim: `${dim}: sınır değer kaçıyor`, failure: 'boş girdi' },
-            { file: `src/${dim}.ts`, line: 42, claim: `${dim}: flaky iddia`, failure: 'tekrar üretilemiyor' },
+            {
+              file: `src/${dim}.ts`,
+              line: 10,
+              claim: `${dim}: a boundary value is missed`,
+              failure: 'empty input',
+            },
+            {
+              file: `src/${dim}.ts`,
+              line: 42,
+              claim: `${dim}: flaky claim`,
+              failure: 'cannot be reproduced',
+            },
           ],
         },
       };

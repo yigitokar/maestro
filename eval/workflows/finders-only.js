@@ -5,7 +5,7 @@ export const meta = {
   maxAgents: 3,
 }
 
-// Ablasyon kolu: B'nin (examples/workflows/review-changes.js) bulucu prompt'ları birebir, oylama yok.
+// Ablasyon kolu: B'nin (eval/workflows/review-changes.js) bulucu prompt'ları birebir, oylama yok.
 // B ile farkı skeptiklerin, A ile farkı üç ayrı bakışın ne kattığını gösterir.
 // args: { diffRef: string }
 

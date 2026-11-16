@@ -20,18 +20,18 @@ if (!process.env.ANTHROPIC_API_KEY) {
 
 const script = `export const meta = {
   name: 'smoke',
-  description: 'İki ajanlı gerçek API duman testi',
+  description: 'Two-agent smoke test against the real API',
   phases: [{ title: 'Read' }, { title: 'Summarize' }],
   maxAgents: 2,
 }
 const FILES = { type: 'object', properties: {
   files: { type: 'array', items: { type: 'string' } },
   entry: { type: 'string' } }, required: ['files', 'entry'] }
-const listing = await agent('src/ dizinindeki .ts dosyalarını glob ile listele ve paketin giriş noktasını (index) söyle.',
+const listing = await agent('List the .ts files in src/ with glob and name the entry point of the package (index).',
   { label: 'list', phase: 'Read', schema: FILES, effort: 'low' })
 if (!listing) return { ok: false, reason: 'listing agent returned null' }
-log(listing.files.length + ' dosya bulundu')
-const summary = await agent('Şu dosya listesine bakarak bu paketin ne yaptığını tek cümleyle söyle: ' + listing.files.join(', '),
+log(listing.files.length + ' files found')
+const summary = await agent('From this list of files, say in one sentence what this package does: ' + listing.files.join(', '),
   { label: 'summary', phase: 'Summarize', effort: 'low' })
 return { ok: summary !== null, files: listing.files.length, entry: listing.entry, summary }`;
 

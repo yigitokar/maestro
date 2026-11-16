@@ -85,7 +85,7 @@ export function widgetModel(
 
   const lanes: string[] = [];
   const laneOf = (group?: string, phase?: string): number => {
-    const name = (group ? `▸ ${group} · ` : '') + (phase ?? 'fazsız');
+    const name = (group ? `▸ ${group} · ` : '') + (phase ?? 'no phase');
     let i = lanes.indexOf(name);
     if (i === -1) i = lanes.push(name) - 1;
     return i;
@@ -189,33 +189,33 @@ export function widgetModel(
 export function vizWidget(model: WidgetModel): string {
   const c = model.counts;
   const total = Object.values(c).reduce((a, b) => a + b, 0);
-  const statusText = model.status === 'done' ? 'bitti' : model.status === 'failed' ? 'başarısız' : 'sürüyor';
+  const statusText = model.status === 'done' ? 'done' : model.status === 'failed' ? 'failed' : 'running';
   const parts = [
-    c.running ? `${c.running} çalışıyor` : '',
-    c.queued ? `${c.queued} sırada` : '',
-    c.ok ? `${c.ok} tamam` : '',
+    c.running ? `${c.running} running` : '',
+    c.queued ? `${c.queued} queued` : '',
+    c.ok ? `${c.ok} ok` : '',
     c.null ? `${c.null} null` : '',
-    c.skipped ? `${c.skipped} atlandı` : '',
-    c.cached ? `${c.cached} önbellek` : '',
+    c.skipped ? `${c.skipped} skipped` : '',
+    c.cached ? `${c.cached} cached` : '',
   ].filter(Boolean);
   const summary =
-    `${model.name} run'ının zaman çizelgesi: ${total} ajan, ${fmtDur(model.dur)}, ${statusText}` +
+    `Timeline of the run ${model.name}: ${total} ${total === 1 ? 'agent' : 'agents'}, ${fmtDur(model.dur)}, ${statusText}` +
     (parts.length ? ` (${parts.join(', ')})` : '') +
     '.';
   const card = (k: string, v: string, s: string) =>
     `<div class="mzw-card"><div class="mzw-k">${escapeText(k)}</div><div class="mzw-v">${escapeText(v)}</div><div class="mzw-s">${escapeText(s)}</div></div>`;
-  const caption = [model.runId, model.runner, model.attempts > 1 ? `${model.attempt}. deneme` : '']
+  const caption = [model.runId, model.runner, model.attempts > 1 ? `attempt ${model.attempt}` : '']
     .filter(Boolean)
     .join(' · ');
   return `<style>${STYLE}</style>
 <h2 class="sr-only">${escapeText(summary)}</h2>
 <div class="mzw-cap"><span class="mzw-pill mzw-${model.status}">${escapeText(statusText)}</span><span>${escapeText(model.name)}</span><span class="mzw-muted">${escapeText(caption)}</span></div>
 ${model.error ? `<div class="mzw-err">${escapeText(model.error)}</div>` : ''}
-<div class="mzw-cards">${card('Ajan', String(total), parts.join(' · ') || 'henüz yok')}${card('Süre', fmtDur(model.dur), model.status === 'running' ? 'anlık görüntü' : 'baştan sona')}${card('Token', fmtTok(model.tokensIn + model.tokensOut), `${fmtTok(model.tokensIn)} giriş · ${fmtTok(model.tokensOut)} çıkış`)}${model.concurrency !== null ? card('Eşzamanlılık', String(model.concurrency), 'aynı anda en çok ajan') : ''}</div>
-<div class="mzw-legend"><span><i class="mzw-sw-wait"></i>sırada</span><span><i class="mzw-sw k-running"></i>çalışıyor</span><span><i class="mzw-sw k-ok"></i>tamam</span><span><i class="mzw-sw k-null"></i>null</span><span><i class="mzw-sw k-skipped"></i>atlandı</span><span><i class="mzw-sw k-cached"></i>önbellekten</span></div>
+<div class="mzw-cards">${card('Agents', String(total), parts.join(' · ') || 'none yet')}${card('Duration', fmtDur(model.dur), model.status === 'running' ? 'snapshot' : 'start to end')}${card('Tokens', fmtTok(model.tokensIn + model.tokensOut), `${fmtTok(model.tokensIn)} in · ${fmtTok(model.tokensOut)} out`)}${model.concurrency !== null ? card('Concurrency', String(model.concurrency), 'most agents at one time') : ''}</div>
+<div class="mzw-legend"><span><i class="mzw-sw-wait"></i>queued</span><span><i class="mzw-sw k-running"></i>running</span><span><i class="mzw-sw k-ok"></i>ok</span><span><i class="mzw-sw k-null"></i>null</span><span><i class="mzw-sw k-skipped"></i>skipped</span><span><i class="mzw-sw k-cached"></i>cached</span></div>
 <div id="mzw-tl"></div>
-${model.omitted ? `<div class="mzw-muted mzw-note">İlk ${WIDGET_MAX_AGENTS} ajan çiziliyor, ${model.omitted} ajan dışarıda kaldı.</div>` : ''}
-<div id="mzw-det" class="mzw-det">Bir çubuğa tıkla: o ajanın bekleme ve çalışma süresi, token'ları ve sonucunun başı burada görünür.</div>
+${model.omitted ? `<div class="mzw-muted mzw-note">The first ${WIDGET_MAX_AGENTS} agents are drawn; ${model.omitted} more are left out.</div>` : ''}
+<div id="mzw-det" class="mzw-det">Click a bar to see that agent's wait and run time, its tokens and the start of its result here.</div>
 <script>var M = ${scriptJson(model)};${SCRIPT}</script>
 `;
 }
@@ -253,7 +253,7 @@ const STYLE = `
 const SCRIPT = `
 (function () {
   ${FORMAT_JS}
-  var ROW = 22, PAD = 4, TEXT = { queued: 'sırada', running: 'çalışıyor', ok: 'tamam', null: 'null', skipped: 'atlandı', cached: 'önbellekten' };
+  var ROW = 22, PAD = 4, TEXT = { queued: 'queued', running: 'running', ok: 'ok', null: 'null', skipped: 'skipped', cached: 'cached' };
   var tl = document.getElementById('mzw-tl'), det = document.getElementById('mzw-det');
   var dur = Math.max(M.dur, 1000), sel = null;
   function el(tag, cls, text) { var n = document.createElement(tag); if (cls) n.className = cls; if (text !== undefined) n.textContent = String(text); return n; }
@@ -261,9 +261,9 @@ const SCRIPT = `
   var sec = fmtDur, tok = fmtTok;
   function tick(ms) {
     if (ms === 0) return '0';
-    if (ms < 60000) return String(ms / 1000).replace('.', ',') + 'sn';
+    if (ms < 60000) return String(ms / 1000) + 's';
     var m = Math.floor(ms / 60000), s = Math.round((ms % 60000) / 1000);
-    return m + 'dk' + (s ? ' ' + s + 'sn' : '');
+    return m + 'min' + (s ? ' ' + s + 's' : '');
   }
   function show(a, b) {
     if (sel) sel.classList.remove('sel');
@@ -273,13 +273,13 @@ const SCRIPT = `
     t.style.cssText = 'font-weight:500;color:var(--text-primary);margin-bottom:4px';
     det.appendChild(t);
     var end = a[4] === null ? M.dur : a[4];
-    var bits = ['Faz ' + M.lanes[a[1]]];
-    if (a[3] !== null && a[3] - a[2] >= 50) bits.push('sırada ' + sec(a[3] - a[2]));
-    if (a[3] !== null && a[5] !== 'cached') bits.push((a[4] === null ? 'çalışıyor ' : 'çalıştı ') + sec(end - a[3]));
-    if (a[3] === null) bits.push('slot bekliyor ' + sec(end - a[2]));
-    if (a[6] || a[7]) bits.push(tok(a[6]) + ' giriş, ' + tok(a[7]) + ' çıkış token' + (a[5] === 'cached' ? ' (ilk çalıştırmanın)' : ''));
+    var bits = ['Phase ' + M.lanes[a[1]]];
+    if (a[3] !== null && a[3] - a[2] >= 50) bits.push('queued ' + sec(a[3] - a[2]));
+    if (a[3] !== null && a[5] !== 'cached') bits.push((a[4] === null ? 'running ' : 'ran ') + sec(end - a[3]));
+    if (a[3] === null) bits.push('waiting for a slot ' + sec(end - a[2]));
+    if (a[6] || a[7]) bits.push(tok(a[6]) + ' input, ' + tok(a[7]) + ' output tokens' + (a[5] === 'cached' ? ' (from the first run)' : ''));
     det.appendChild(el('div', null, bits.join(' · ')));
-    if (a[8]) { var e = el('div', null, 'Hata: ' + a[8]); e.style.cssText = 'color:var(--text-danger);margin-top:4px'; det.appendChild(e); }
+    if (a[8]) { var e = el('div', null, 'Error: ' + a[8]); e.style.cssText = 'color:var(--text-danger);margin-top:4px'; det.appendChild(e); }
     if (a[9]) det.appendChild(el('pre', null, a[9]));
   }
   function render() {
@@ -313,7 +313,7 @@ const SCRIPT = `
       var lane = el('div', 'mzw-lane');
       var ln = el('div', 'mzw-ln', name);
       ln.title = name;
-      ln.appendChild(el('small', null, list.length ? list.length + ' ajan' : (M.status === 'running' ? 'bekliyor' : 'ajan yok')));
+      ln.appendChild(el('small', null, list.length ? list.length + (list.length === 1 ? ' agent' : ' agents') : (M.status === 'running' ? 'waiting' : 'no agents')));
       var trk = el('div', 'mzw-trk');
       trk.style.height = (rows * ROW + PAD * 2) + 'px';
       placed.forEach(function (p) {

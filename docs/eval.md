@@ -204,7 +204,7 @@ Kodda bu adım `eval/materialize.ts`'tir. Bu repoda remote yoktur ve yalnızca `
 
 | | A: tek ajan | B: review-changes |
 |---|---|---|
-| Script | `eval/workflows/single-review.js` | `examples/workflows/review-changes.js`, değişmeden |
+| Script | `eval/workflows/single-review.js` | `eval/workflows/review-changes.js`, değişmeden |
 | Ajanlar | 1 | 3 bulucu, bulgu başına 3 skeptik, 1 sentez |
 | Prompt | B'nin diff satırı ve üç boyut talimatı tek prompt'ta | spec Örnek 1 |
 | Şema | B'nin `FINDINGS` şeması | aynı |
@@ -344,7 +344,7 @@ Ana ölçüm lula seti yerine açık bir benchmark üzerinde yapılır: [ReviewB
 | Kol | Script | Ne ölçer |
 |---|---|---|
 | A | `eval/workflows/single-review.js` | tek ajan |
-| B | `examples/workflows/review-changes.js`, değişmeden | üç bulucu, bulgu başına üç skeptik, sentez |
+| B | `eval/workflows/review-changes.js`, değişmeden | üç bulucu, bulgu başına üç skeptik, sentez |
 | C | `eval/workflows/finders-only.js` | B'nin üç bulucusu, skeptik ve sentez yok |
 
 C bir ablasyondur: B yaklaşık 15 kat pahalıdır, bu yüzden B ile A arasındaki farkın üç ayrı bakıştan mı skeptiklerden mi geldiğini C gösterir.
