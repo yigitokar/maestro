@@ -1,18 +1,19 @@
 ---
 title: "Runners"
-description: "Run agents on Claude, on Codex, or on both in one run."
+description: "Run agents on Claude, Codex, or models through Vercel AI Gateway."
 icon: "server"
 ---
 
-A runner is what executes one agent. Maestro has three, chosen with `--runner` or the `runner` option of `run()`.
+A runner is what executes one agent. Choose one with `--runner` or the `runner` option of `run()`.
 
 | Runner | Agents run on | Needs |
 |---|---|---|
 | `anthropic` (default) | The Claude API | `ANTHROPIC_API_KEY` |
 | `codex` | The Codex CLI, one `codex exec` process per agent | Codex CLI installed and signed in |
-| `auto` | Either, chosen per agent by its model | Whatever the models in the script need |
+| `gateway` | Models through Vercel AI Gateway | `AI_GATEWAY_API_KEY` and a `provider/model` ID |
+| `auto` | Direct Claude or Codex, chosen per agent by its model | Whatever the models in the script need |
 
-`--dry-run` overrides all three with a fake runner that answers from the schema.
+`--dry-run` overrides every runner with a fake that answers from the schema and needs no API key.
 
 ## Claude
 
@@ -59,7 +60,41 @@ How Codex agents differ from Claude agents:
 
 An agent's result counts only if Codex reported a completed turn, reported no error and exited with status 0. Stopping a run also stops the processes Codex started.
 
-## Both in one run
+## Vercel AI Gateway
+
+Set `AI_GATEWAY_API_KEY` in the process environment, then select a model:
+
+```bash
+maestro run review.js --runner gateway --model openai/gpt-5.4
+maestro mcp --runner gateway --model openai/gpt-5.4
+```
+
+Use the exact `provider/model` ID from the [live catalog](https://ai-gateway.vercel.sh/v1/models). Gateway has no implicit model default: set `--model` or provide `opts.model` on every agent. Direct Claude model names are not converted to Gateway IDs.
+
+The workflow default and per-agent selection work together:
+
+```js
+export const meta = { name: 'gateway-review', description: 'Review with two models' }
+
+const findings = await agent('Review src/journal.ts.')
+return agent(`Verify these findings: ${findings}`, { model: 'anthropic/claude-sonnet-4.6' })
+```
+
+Run this with `--model openai/gpt-5.4`: the first agent inherits that model and the second uses Claude through the same Gateway key. In library calls, set the default with `run({ model, runner: new GatewayRunner() })`. An explicit `new GatewayRunner({ apiKey })` overrides the environment key.
+
+The runner reuses the existing SDK and tool loop through Gateway's [Anthropic-compatible Messages API](https://vercel.com/docs/ai-gateway/sdks-and-apis/anthropic-messages-api). Usage accounting, aborts, retries, worktree isolation, and turn limits follow the Claude runner. The budget still counts output tokens, not Gateway spending.
+
+Schema answers default to `submit-tool`, which returns the result through a schema-validated tool call. Override it with `--structured-mode` or `new GatewayRunner({ structuredMode })`. Choose a language model that supports tool calling; support for native structured outputs and `effort` varies by model.
+
+When using the MCP server from Codex, make `AI_GATEWAY_API_KEY` available in Codex's environment and register it:
+
+```bash
+codex mcp add maestro -- npx -y maestro-workflows mcp --runner gateway --model openai/gpt-5.4
+```
+
+The host remains Codex, while workflow agents are billed through Gateway. Gateway mode sends every agent to Gateway; `auto` continues to route only between direct Anthropic and Codex.
+
+## Claude and Codex in one run
 
 ```bash
 maestro run review.js --runner auto

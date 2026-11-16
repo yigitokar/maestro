@@ -25,7 +25,7 @@ export const toolReply = (name: string, input: unknown) =>
 /** Exercise the real SDK serialization/tool loop; no request can reach the network. */
 export function mockGateway(...replies: Array<unknown | Response>) {
   const requests: Array<{ url: string; headers: Headers; body: any; signal: unknown }> = [];
-  const fetch = vi.fn(async (url: unknown, init?: RequestInit) => {
+  const fetch = vi.fn(async (url: unknown, init?: RequestInit): Promise<Response> => {
     requests.push({
       url: String(url),
       headers: new Headers(init?.headers),

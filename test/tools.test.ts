@@ -185,17 +185,20 @@ describe('shell-words and the bash allowlist', () => {
     expect(await b.run({ command: "find . -name '*.txt' -maxdepth 1" }, ctx())).toContain('a.txt');
   });
 
-  it('agent commands do not see the runner credentials', async () => {
-    const saved = process.env.ANTHROPIC_API_KEY;
-    process.env.ANTHROPIC_API_KEY = 'sk-test-not-a-key';
-    try {
-      const out = await tool('shell').run({ command: 'echo "key=[$ANTHROPIC_API_KEY]"' }, ctx());
-      expect(out).toContain('key=[]');
-    } finally {
-      if (saved === undefined) delete process.env.ANTHROPIC_API_KEY;
-      else process.env.ANTHROPIC_API_KEY = saved;
-    }
-  });
+  it.each(['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'AI_GATEWAY_API_KEY'])(
+    'agent commands do not see the runner credential %s',
+    async (name) => {
+      const saved = process.env[name];
+      process.env[name] = 'test-not-a-key';
+      try {
+        const out = await tool('shell').run({ command: `echo "key=[$${name}]"` }, ctx());
+        expect(out).toContain('key=[]');
+      } finally {
+        if (saved === undefined) delete process.env[name];
+        else process.env[name] = saved;
+      }
+    },
+  );
 
   it('runs allowed commands without a shell', async () => {
     const b = tool('bash');
