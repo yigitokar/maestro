@@ -5,7 +5,7 @@ export const meta = {
   maxAgents: 1,
 }
 
-// docs/eval.md bölüm 4, A kolu. B (examples/workflows/review-changes.js) ile aynı model, aynı salt-okur
+// docs/eval.md bölüm 4, A kolu. B (eval/workflows/review-changes.js) ile aynı model, aynı salt-okur
 // araçlar, aynı çıktı şeması; fark yalnızca orkestrasyondur. Prompt, B'nin üç bulucusunun baktığı her
 // şeyi tek ajana verir.
 // args: { diffRef: string }

@@ -18,7 +18,7 @@ export function scriptJson(value: unknown): string {
 
 export function vizPage(boot: { mode: 'live' | 'static'; runId: string; [k: string]: unknown }): string {
   return `<!doctype html>
-<html lang="tr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -41,24 +41,24 @@ export function vizPage(boot: { mode: 'live' | 'static'; runId: string; [k: stri
 <main>
   <section class="panel">
     <div class="panel-head">
-      <h2>Zaman çizelgesi</h2>
+      <h2>Timeline</h2>
       <div class="legend">
-        <span><i class="sw-wait"></i>sırada (slot bekliyor)</span>
-        <span><i class="sw s-running"></i>çalışıyor</span>
-        <span><i class="sw s-ok"></i>tamam</span>
+        <span><i class="sw-wait"></i>queued (waiting for a slot)</span>
+        <span><i class="sw s-running"></i>running</span>
+        <span><i class="sw s-ok"></i>ok</span>
         <span><i class="sw s-null"></i>null</span>
-        <span><i class="sw s-skipped"></i>atlandı</span>
-        <span><i class="sw s-cached"></i>önbellekten</span>
+        <span><i class="sw s-skipped"></i>skipped</span>
+        <span><i class="sw s-cached"></i>cached</span>
       </div>
-      <div class="zoom" role="group" aria-label="Yakınlaştırma">
-        <button type="button" id="zoom-out" aria-label="Uzaklaştır">−</button>
-        <button type="button" id="zoom-in" aria-label="Yakınlaştır">+</button>
+      <div class="zoom" role="group" aria-label="Zoom">
+        <button type="button" id="zoom-out" aria-label="Zoom out">−</button>
+        <button type="button" id="zoom-in" aria-label="Zoom in">+</button>
       </div>
     </div>
     <div id="timeline" class="timeline"></div>
   </section>
   <section class="panel" id="outcome-panel" hidden>
-    <div class="panel-head"><h2 id="outcome-title">Çıktı</h2></div>
+    <div class="panel-head"><h2 id="outcome-title">Output</h2></div>
     <pre id="outcome-body"></pre>
   </section>
   <section class="panel">
@@ -69,7 +69,7 @@ export function vizPage(boot: { mode: 'live' | 'static'; runId: string; [k: stri
 <aside id="detail" class="detail" hidden aria-labelledby="d-title">
   <div class="d-head">
     <h2 id="d-title"></h2>
-    <button type="button" id="d-close" class="d-close" aria-label="Kapat">×</button>
+    <button type="button" id="d-close" class="d-close" aria-label="Close">×</button>
   </div>
   <div id="d-body" class="d-body"></div>
 </aside>
@@ -279,7 +279,7 @@ const SCRIPT = `
   var LIVE = BOOT.mode === 'live';
   var ROW_H = 26, BAR_H = 20, LANE_PAD = 4, GAP_PX = 2;
   var ZOOMS = [1, 2, 4, 8, 16];
-  var STATUS_TEXT = { queued: 'sırada', running: 'çalışıyor', ok: 'tamam', null: 'null', skipped: 'atlandı', cached: 'önbellekten' };
+  var STATUS_TEXT = { queued: 'queued', running: 'running', ok: 'ok', null: 'null', skipped: 'skipped', cached: 'cached' };
   var state = {
     lines: [], offset: 0, entries: [], outcome: null, outcomeVersion: null, skew: 0, attempt: null, selected: null, selectedT0: null, selectedRow: null, zoomIndex: 0,
     details: BOOT.details || {}, detailCache: {}, pollError: null, snapNow: null
@@ -342,7 +342,7 @@ const SCRIPT = `
         // An attempt without a run_end that a later one follows died (crash, kill): it ended at its last
         // event, and so did the agents it left open.
         if (cur && !cur.end) {
-          cur.end = { t: cur.last, ok: false, error: 'Yarıda kaldı: bu deneme bitiş kaydı yazmadan kesildi.' };
+          cur.end = { t: cur.last, ok: false, error: 'Interrupted: this attempt stopped without writing its end record.' };
           for (var k = 0; k < cur.order.length; k++) {
             var open = cur.agents[cur.order[k]];
             if (open.end === null || open.end === undefined) { open.end = cur.last; open.status = 'skipped'; open.noRow = true; }
@@ -426,14 +426,14 @@ const SCRIPT = `
   function fmtTick(ms) {
     if (ms === 0) return '0';
     if (ms < 1000) return ms + 'ms';
-    if (ms < 60000) return (ms / 1000).toString().replace('.', ',') + 'sn';
+    if (ms < 60000) return (ms / 1000) + 's';
     if (ms < 3600000) {
       var m = Math.floor(ms / 60000), s = Math.round((ms % 60000) / 1000);
-      return m + 'dk' + (s ? ' ' + s + 'sn' : '');
+      return m + 'min' + (s ? ' ' + s + 's' : '');
     }
-    return (ms / 3600000).toFixed(1).replace('.', ',') + 'sa';
+    return (ms / 3600000).toFixed(1) + 'h';
   }
-  function fmtNum(n) { return Number(n || 0).toLocaleString('tr-TR'); }
+  function fmtNum(n) { return Number(n || 0).toLocaleString('en-US'); }
   function fmtClock(t) {
     var d = new Date(t);
     function p(n) { return (n < 10 ? '0' : '') + n; }
@@ -441,7 +441,7 @@ const SCRIPT = `
   }
   function fmtDate(t) {
     var d = new Date(t);
-    try { return d.toLocaleString('tr-TR', { dateStyle: 'medium', timeStyle: 'short' }); } catch (e) { return d.toString(); }
+    try { return d.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }); } catch (e) { return d.toString(); }
   }
   function agentName(g) { return g.label || ('#' + g.id + ' ' + String(g.key || '').slice(0, 8)); }
   function niceStep(raw) {
@@ -471,12 +471,12 @@ const SCRIPT = `
     var title = $('outcome-title');
     var body = $('outcome-body');
     if (state.outcome.ok) {
-      title.textContent = 'Run sonucu';
+      title.textContent = 'Run result';
       body.className = '';
       var val = state.outcome.result;
       body.textContent = typeof val === 'string' ? val : JSON.stringify(val, null, 2);
     } else {
-      title.textContent = 'Run hatası';
+      title.textContent = 'Run error';
       body.className = 'err';
       body.textContent = String(state.outcome.error || '');
     }
@@ -525,20 +525,20 @@ const SCRIPT = `
     var banner = $('banner');
     banner.hidden = true; banner.className = 'banner'; banner.textContent = '';
     if (!a) {
-      pill.className = 'pill'; pill.textContent = LIVE ? 'olay bekleniyor' : 'olay yok';
+      pill.className = 'pill'; pill.textContent = LIVE ? 'waiting for events' : 'no events';
     } else if (a.end) {
       pill.className = 'pill ' + (a.end.ok ? 'done' : 'failed');
-      pill.textContent = a.end.ok ? '✓ bitti' : '✗ başarısız';
+      pill.textContent = a.end.ok ? '✓ done' : '✗ failed';
       if (!a.end.ok && a.end.error) {
         banner.hidden = false; banner.className = 'banner error'; banner.textContent = a.end.error;
       }
     } else {
       var idle = now() - a.last;
       pill.className = 'pill live';
-      pill.textContent = LIVE ? 'canlı' : 'dışa aktarılırken sürüyordu';
+      pill.textContent = LIVE ? 'live' : 'was running when exported';
       if (LIVE && idle > 5 * 60000) {
         banner.hidden = false;
-        banner.textContent = 'Son olay ' + fmtDur(idle) + ' önce geldi. Run hâlâ sürüyor olabilir ya da onu çalıştıran süreç kapanmış olabilir.';
+        banner.textContent = 'The last event came ' + fmtDur(idle) + ' ago. The run may still be going, or the process that ran it may have exited.';
       }
     }
     if (state.pollError) {
@@ -560,21 +560,21 @@ const SCRIPT = `
         }
       }
       var parts = [];
-      if (counts.running) parts.push(counts.running + ' çalışıyor');
-      if (counts.queued) parts.push(counts.queued + ' sırada');
+      if (counts.running) parts.push(counts.running + ' running');
+      if (counts.queued) parts.push(counts.queued + ' queued');
       if (counts.ok) parts.push(counts.ok + ' ✓');
       if (counts.null) parts.push(counts.null + ' null');
-      if (counts.skipped) parts.push(counts.skipped + ' atlandı');
-      if (counts.cached) parts.push(counts.cached + ' önbellek');
-      stats.appendChild(stat('Ajan', String(a.order.length), parts.join(' · ') || 'henüz yok'));
+      if (counts.skipped) parts.push(counts.skipped + ' skipped');
+      if (counts.cached) parts.push(counts.cached + ' cached');
+      stats.appendChild(stat('Agents', String(a.order.length), parts.join(' · ') || 'none yet'));
       var endT = a.end ? a.end.t : (LIVE ? now() : a.last);
-      stats.appendChild(stat('Süre', fmtDur(endT - a.t0), 'başlangıç ' + fmtClock(a.t0)));
-      stats.appendChild(stat('Token', fmtTok(inTok + outTok), fmtTok(inTok) + ' giriş · ' + fmtTok(outTok) + ' çıkış'));
-      if (inTok > 0 && cacheRead > 0) stats.appendChild(stat('Önbellek', '%' + Math.round((cacheRead / inTok) * 100), 'girişin önbellekten okunan kısmı'));
+      stats.appendChild(stat('Duration', fmtDur(endT - a.t0), 'started ' + fmtClock(a.t0)));
+      stats.appendChild(stat('Tokens', fmtTok(inTok + outTok), fmtTok(inTok) + ' in · ' + fmtTok(outTok) + ' out'));
+      if (inTok > 0 && cacheRead > 0) stats.appendChild(stat('Cache', Math.round((cacheRead / inTok) * 100) + '%', 'share of input read from the prompt cache'));
       if (a.budget && a.budget.total !== null && a.budget.total !== undefined) {
-        stats.appendChild(stat('Bütçe', '%' + Math.round((a.budget.spent / a.budget.total) * 100), fmtTok(a.budget.spent) + ' / ' + fmtTok(a.budget.total)));
+        stats.appendChild(stat('Budget', Math.round((a.budget.spent / a.budget.total) * 100) + '%', fmtTok(a.budget.spent) + ' / ' + fmtTok(a.budget.total)));
       }
-      if (a.start) stats.appendChild(stat('Eşzamanlılık', String(a.start.concurrency), 'aynı anda en çok ajan'));
+      if (a.start) stats.appendChild(stat('Concurrency', String(a.start.concurrency), 'most agents at one time'));
     }
 
     var box = $('attempts');
@@ -583,7 +583,7 @@ const SCRIPT = `
     if (attempts.length > 1) {
       var active = state.attempt === null ? attempts.length - 1 : state.attempt;
       attempts.forEach(function (at, idx) {
-        var b = el('button', null, (idx + 1) + '. deneme · ' + fmtClock(at.t0));
+        var b = el('button', null, 'Attempt ' + (idx + 1) + ' · ' + fmtClock(at.t0));
         b.type = 'button';
         b.setAttribute('aria-pressed', idx === active ? 'true' : 'false');
         b.addEventListener('click', function () {
@@ -655,7 +655,7 @@ const SCRIPT = `
       var lab = el('div', 'lane-label');
       lab.style.width = labelW + 'px';
       lab.style.minWidth = labelW + 'px';
-      var name = (lane.group ? '▸ ' + lane.group + ' · ' : '') + (lane.phase || 'fazsız');
+      var name = (lane.group ? '▸ ' + lane.group + ' · ' : '') + (lane.phase || 'no phase');
       var nEl = el('div', 'n', name);
       nEl.title = name;
       lab.appendChild(nEl);
@@ -665,7 +665,7 @@ const SCRIPT = `
         if (st === 'running') running++;
         else if (st === 'queued') queued++;
       });
-      var cText = lane.agents.length + ' ajan' + (running ? ' · ' + running + ' çalışıyor' : '') + (queued ? ' · ' + queued + ' sırada' : '');
+      var cText = lane.agents.length + (lane.agents.length === 1 ? ' agent' : ' agents') + (running ? ' · ' + running + ' running' : '') + (queued ? ' · ' + queued + ' queued' : '');
       var cEl = el('div', 'c', cText);
       cEl.title = cText;
       lab.appendChild(cEl);
@@ -673,7 +673,7 @@ const SCRIPT = `
       var track = el('div', 'track');
       track.style.width = trackW + 'px';
       track.style.height = h + 'px';
-      if (!lane.agents.length) track.appendChild(el('div', 'waiting', a.end ? 'ajan çalışmadı' : 'bekliyor'));
+      if (!lane.agents.length) track.appendChild(el('div', 'waiting', a.end ? 'no agent ran' : 'waiting'));
       packed.placed.forEach(function (p) {
         var g = p.g;
         var s = agentState(g);
@@ -697,9 +697,9 @@ const SCRIPT = `
           }
         }
         var tip = agentName(g) + ' · ' + STATUS_TEXT[s];
-        if (rs !== null && rs - g.start >= 50) tip += ' · sırada ' + fmtDur(rs - g.start);
+        if (rs !== null && rs - g.start >= 50) tip += ' · queued ' + fmtDur(rs - g.start);
         if (rs === null) tip += ' · ' + fmtDur(end - g.start);
-        else tip += ' · ' + (s === 'running' ? 'çalışıyor ' : '') + fmtDur(end - rs);
+        else tip += ' · ' + (s === 'running' ? 'running ' : '') + fmtDur(end - rs);
         b.title = tip;
         b.setAttribute('aria-label', tip);
         if (rs !== null) {
@@ -748,10 +748,10 @@ const SCRIPT = `
 
   function renderJournalOnly(host) {
     if (!state.entries.length) {
-      host.appendChild(el('p', 'empty', LIVE ? 'Henüz olay yok. Run başladığında burada görünecek.' : 'Bu run için kayıt yok.'));
+      host.appendChild(el('p', 'empty', LIVE ? 'No events yet. They appear here when the run starts.' : 'There is no record for this run.'));
       return;
     }
-    host.appendChild(el('p', 'empty', 'Bu run zaman kaydı (events.jsonl) tutulmadan önce çalışmış; yalnızca journal satırları var.'));
+    host.appendChild(el('p', 'empty', 'This run is older than the timing record (events.jsonl); only its journal rows exist.'));
     var list = el('div', 'jlist');
     state.entries.forEach(function (row) {
       var b = el('button', 'jrow');
@@ -773,7 +773,7 @@ const SCRIPT = `
   function renderLogs(a) {
     var ol = $('logs');
     ol.textContent = '';
-    if (!a || !a.logs.length) { ol.appendChild(el('li', 'empty', 'Log satırı yok.')); return; }
+    if (!a || !a.logs.length) { ol.appendChild(el('li', 'empty', 'No log lines.')); return; }
     a.logs.forEach(function (l, idx) {
       var li = el('li');
       li.id = 'log-' + idx;
@@ -854,58 +854,58 @@ const SCRIPT = `
 
     var facts = el('dl', 'facts');
     function fact(k, v) { if (v === undefined || v === null || v === '') return; facts.appendChild(el('dt', null, k)); facts.appendChild(el('dd', null, v)); }
-    fact('Faz', g.phase || 'fazsız');
-    fact('Grup', g.group);
+    fact('Phase', g.phase || 'no phase');
+    fact('Group', g.group);
     if (a && g.start !== null) {
       var live = s === 'running' || s === 'queued';
       var end = live ? now() : g.end;
       var rs = runStart(g);
-      fact('Süre', fmtDur(end - g.start) + (live ? ' (sürüyor)' : ''));
+      fact('Duration', fmtDur(end - g.start) + (live ? ' (still going)' : ''));
       if (slotted(g) && s !== 'cached') {
-        fact('Sırada', fmtDur((rs === null ? end : rs) - g.start) + (s === 'queued' ? ' (slot bekliyor)' : ''));
-        if (rs !== null && g.running !== null) fact('Çalıştı', fmtDur(end - rs));
+        fact('Queued', fmtDur((rs === null ? end : rs) - g.start) + (s === 'queued' ? ' (waiting for a slot)' : ''));
+        if (rs !== null && g.running !== null) fact('Ran', fmtDur(end - rs));
       }
-      fact('Başladı', '+' + fmtDur(g.start - a.t0) + ' · ' + fmtClock(g.start));
+      fact('Started', '+' + fmtDur(g.start - a.t0) + ' · ' + fmtClock(g.start));
     }
     var p = g.prompt;
     if (p) {
-      fact('Model', p.model || (a && a.start ? a.start.model + ' (varsayılan)' : null));
+      fact('Model', p.model || (a && a.start ? a.start.model + ' (default)' : null));
       fact('Effort', p.effort);
-      fact('İzolasyon', p.isolation ? 'worktree' : null);
-      fact('Araçlar', p.tools && p.tools.length ? p.tools.join(', ') : null);
-      fact('Şema', p.schema ? 'var' : 'yok');
+      fact('Isolation', p.isolation ? 'worktree' : null);
+      fact('Tools', p.tools && p.tools.length ? p.tools.join(', ') : null);
+      fact('Schema', p.schema ? 'yes' : 'no');
     }
     if (g.usage) {
-      fact('Giriş', fmtNum(totalIn(g.usage)) + ' token' + (g.usage.cache_read_input_tokens ? ' (' + fmtNum(g.usage.cache_read_input_tokens) + ' önbellekten)' : ''));
-      fact('Çıkış', fmtNum(g.usage.output_tokens) + ' token');
+      fact('Input', fmtNum(totalIn(g.usage)) + ' tokens' + (g.usage.cache_read_input_tokens ? ' (' + fmtNum(g.usage.cache_read_input_tokens) + ' from the prompt cache)' : ''));
+      fact('Output', fmtNum(g.usage.output_tokens) + ' tokens');
     }
-    if (s === 'cached') fact('Not', 'Sonuç journal\\'dan geldi; model çağrılmadı. Token sayısı ilk çalıştırmanın.');
+    if (s === 'cached') fact('Note', 'The result came from the journal; no model was called. The token counts are from the first run.');
     fact('Key', g.key);
     body.appendChild(facts);
 
-    if (p) body.appendChild(section('Prompt', pre(p.prompt), p.truncated ? 'İlk 4.000 karakter gösteriliyor.' : null));
+    if (p) body.appendChild(section('Prompt', pre(p.prompt), p.truncated ? 'Showing the first 4,000 characters.' : null));
 
     if (s === 'running' || s === 'queued') {
-      body.appendChild(section('Sonuç', el('p', 'note', s === 'queued' ? 'Ajan bir eşzamanlılık slotu bekliyor.' : 'Ajan hâlâ çalışıyor.')));
+      body.appendChild(section('Result', el('p', 'note', s === 'queued' ? 'The agent is waiting for a concurrency slot.' : 'The agent is still running.')));
     } else {
       var d = detailFor(g);
-      if (!d) body.appendChild(section('Sonuç', el('p', 'note', LIVE ? 'Yükleniyor…' : 'Bu dosyada sonuç yok.')));
-      else if (d.missing) body.appendChild(section('Sonuç', el('p', 'note', 'Journal satırı bulunamadı.')));
+      if (!d) body.appendChild(section('Result', el('p', 'note', LIVE ? 'Loading…' : 'This file holds no result.')));
+      else if (d.missing) body.appendChild(section('Result', el('p', 'note', 'No journal row found.')));
       else {
-        if (d.error) body.appendChild(section('Hata', el('p', 'err', d.error)));
-        body.appendChild(section('Sonuç', pre(d.result), d.resultTruncated ? 'İlk 20.000 karakter gösteriliyor.' : null));
-        if (d.raw) body.appendChild(section('Ham metin (şema doğrulanamadı)', pre(d.raw)));
+        if (d.error) body.appendChild(section('Error', el('p', 'err', d.error)));
+        body.appendChild(section('Result', pre(d.result), d.resultTruncated ? 'Showing the first 20,000 characters.' : null));
+        if (d.raw) body.appendChild(section('Raw text (did not match the schema)', pre(d.raw)));
         if (d.trace) {
           var ul = el('ul', 'calls');
-          if (!d.trace.toolCalls.length) ul.appendChild(el('li', null, 'Araç çağrısı yok.'));
+          if (!d.trace.toolCalls.length) ul.appendChild(el('li', null, 'No tool calls.'));
           d.trace.toolCalls.forEach(function (c) {
             var li = el('li', c.ok ? null : 'bad', (c.ok ? '✓ ' : '✗ ') + c.tool + '  ' + c.inputSummary);
             ul.appendChild(li);
           });
-          body.appendChild(section('Araç çağrıları (' + d.trace.toolCalls.length + ')', ul));
-          if (d.trace.finalText) body.appendChild(section('Son metin', pre(d.trace.finalText)));
+          body.appendChild(section('Tool calls (' + d.trace.toolCalls.length + ')', ul));
+          if (d.trace.finalText) body.appendChild(section('Final text', pre(d.trace.finalText)));
         }
-        if (d.worktree) body.appendChild(section('Kirli worktree', pre(d.worktree.path + '\\n' + d.worktree.diffStat)));
+        if (d.worktree) body.appendChild(section('Dirty worktree', pre(d.worktree.path + '\\n' + d.worktree.diffStat)));
       }
     }
     body.scrollTop = keepScroll;
@@ -948,7 +948,7 @@ const SCRIPT = `
         if (changed || hadError || running()) render();
       })
       .catch(function () {
-        state.pollError = 'Sunucuya ulaşılamıyor (maestro viz kapandı mı?). Tekrar deneniyor…';
+        state.pollError = 'Cannot reach the server (has maestro viz exited?). Retrying…';
         // A render that throws (a malformed line) must not end the polling chain.
         try { render(); } catch (e) {}
       })

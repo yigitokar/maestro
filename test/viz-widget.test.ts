@@ -111,7 +111,7 @@ describe('widgetModel', () => {
     expect(m.omitted).toBe(7);
     expect(m.counts.ok).toBe(WIDGET_MAX_AGENTS + 7);
     expect(m.agents[0]![9]).toHaveLength(WIDGET_PREVIEW_CHARS + 1);
-    expect(vizWidget(m)).toContain(`İlk ${WIDGET_MAX_AGENTS} ajan çiziliyor, 7 ajan dışarıda kaldı.`);
+    expect(vizWidget(m)).toContain(`The first ${WIDGET_MAX_AGENTS} agents are drawn; 7 more are left out.`);
   });
 });
 
@@ -130,7 +130,7 @@ return parallel(['a', 'b'].map((k) => () => agent('find ' + k, { label: 'find:' 
 
     expect(html).not.toMatch(/<!doctype|<html|<head|<body/i);
     expect(html).not.toMatch(/position:\s*fixed/);
-    expect(html).toMatch(/<h2 class="sr-only">w run&#39;ının zaman çizelgesi: 2 ajan/);
+    expect(html).toMatch(/<h2 class="sr-only">Timeline of the run w: 2 agents/);
     for (const m of html.matchAll(/font-size:\s*(\d+)px/g)) expect(Number(m[1])).toBeGreaterThanOrEqual(11);
     for (const m of html.matchAll(/font-weight:\s*(\d+)/g)) expect(['400', '500']).toContain(m[1]);
     expect(html).not.toContain('</script><script>alert(1)');

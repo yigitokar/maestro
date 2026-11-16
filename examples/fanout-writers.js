@@ -10,26 +10,26 @@ import { runExample } from './_harness.js';
 const git = (cwd, ...a) => execFileSync('git', a, { cwd, encoding: 'utf8' });
 
 const TASKS = [
-  { key: 'docs', brief: 'notes/docs.md dosyasına kullanım notu ekle' },
-  { key: 'util', brief: 'notes/util.md dosyasına yardımcı fonksiyon taslağı ekle' },
-  { key: 'tests', brief: 'notes/tests.md dosyasına test planı ekle' },
+  { key: 'docs', brief: 'Add a usage note to notes/docs.md' },
+  { key: 'util', brief: 'Add a draft of a helper function to notes/util.md' },
+  { key: 'tests', brief: 'Add a test plan to notes/tests.md' },
 ];
 
 const rules = [
   {
-    match: 'cherry-pick',
+    match: 'Cherry-pick these branches',
     respond: (req) => ({
       effect: () => {
         for (const b of req.prompt.match(/wf\/[^\s:]+/g) ?? []) git(req.cwd, 'cherry-pick', b);
       },
       result: {
-        summary: 'üç branch sırayla cherry-pick edildi, çatışma yok',
+        summary: 'three branches cherry-picked in order, no conflicts',
         filesTouched: TASKS.map((t) => `notes/${t.key}.md`),
       },
     }),
   },
   {
-    match: 'Bitince değişikliklerini commit et',
+    match: 'commit your changes',
     respond: (req) => {
       const file = /(notes\/\w+\.md)/.exec(req.prompt)[1];
       return {
@@ -41,7 +41,7 @@ const rules = [
           git(req.cwd, 'add', '-A');
           git(req.cwd, 'commit', '-q', '-m', `add ${file}`);
         },
-        result: { summary: `${file} yazıldı`, filesTouched: [file] },
+        result: { summary: `wrote ${file}`, filesTouched: [file] },
       };
     },
   },

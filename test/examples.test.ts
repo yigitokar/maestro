@@ -1,5 +1,5 @@
 // The Seviye 4 example scripts (examples/workflows/*.js) run through run() with FakeRunner rules:
-// Örnek 1 review-changes (null votes, finder null, no synthesis, no Find→Verify barrier), Örnek 2
+// Example 1 review-changes (null votes, finder null, no synthesis, no Find→Verify barrier), Example 2
 // find-edge-cases (dry/round termination, dedup on `seen`) and fan-out writers → coordinator merge on a
 // temporary git repo. Never the network.
 
@@ -64,7 +64,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // -----------------------------------------------------------------------------------------------------
 
-describe('Örnek 1: review-changes', () => {
+describe('Example 1: review-changes', () => {
   const finding = (file: string, line: number, claim: string) => ({
     file,
     line,
@@ -92,9 +92,9 @@ describe('Örnek 1: review-changes', () => {
     };
     const runner = new FakeRunner(async (req): Promise<FakeResponse> => {
       const p = req.prompt;
-      if (p.includes('Yalnızca mantık hatası')) return { result: { findings: [A, B] } };
-      if (p.includes('Yalnızca güvenlik')) return { status: 'null' };
-      if (p.includes('Veri kaybı')) {
+      if (p.includes('Look only for logic errors')) return { result: { findings: [A, B] } };
+      if (p.includes('Look only for security problems')) return { status: 'null' };
+      if (p.includes('Look only for data loss')) {
         // The flag flips only when the slow finder's result is produced, i.e. after its turn wait.
         return {
           delayMs: 400,
@@ -104,13 +104,13 @@ describe('Örnek 1: review-changes', () => {
           },
         };
       }
-      if (p.startsWith('Bu iddiayı ÇÜRÜTMEYE')) {
+      if (p.startsWith('Try to REFUTE this claim')) {
         verifySawSlowDone.push(slowFinderDone);
         const claim = /claim-[ABC]/.exec(p)![0];
-        const i = Number(/Perspektif (\d)/.exec(p)![1]);
+        const i = Number(/Perspective (\d)/.exec(p)![1]);
         return votes[claim]![i]!;
       }
-      if (p.includes('ciddiyete göre')) return { result: { findings: [{ ...A, failure: 'fix it' }] } };
+      if (p.includes('by severity')) return { result: { findings: [{ ...A, failure: 'fix it' }] } };
       throw new Error(`unexpected prompt: ${p}`);
     });
     const { handle, logs } = start(dir, {
@@ -122,20 +122,20 @@ describe('Örnek 1: review-changes', () => {
     const out = await handle.promise;
 
     expect(out).toEqual({ findings: [{ ...A, failure: 'fix it' }] });
-    expect(logs).toContain('security: bulucu null döndü');
-    expect(logs).toContain('1 bulgu oylamayı geçti');
+    expect(logs).toContain('security: finder returned null');
+    expect(logs).toContain('1 findings passed the vote');
     // No Find→Verify barrier: correctness verifiers ran while data-loss was still finding.
     expect(verifySawSlowDone.length).toBe(9);
     expect(verifySawSlowDone[0]).toBe(false);
     // Synthesis gets only the confirmed finding (A), with its dimension and votes.
-    const synth = runner.calls.filter((c) => c.prompt.includes('ciddiyete göre'));
+    const synth = runner.calls.filter((c) => c.prompt.includes('by severity'));
     expect(synth).toHaveLength(1);
     expect(synth[0]!.prompt).toContain('"claim":"claim-A"');
     expect(synth[0]!.prompt).toContain('"dimension":"correctness"');
     expect(synth[0]!.prompt).not.toContain('claim-B');
     expect(synth[0]!.prompt).not.toContain('claim-C');
     // Verifiers run with effort high (spec: refutation stages use high effort).
-    const verifiers = runner.calls.filter((c) => c.prompt.startsWith('Bu iddiayı ÇÜRÜTMEYE'));
+    const verifiers = runner.calls.filter((c) => c.prompt.startsWith('Try to REFUTE this claim'));
     expect(verifiers.every((c) => c.effort === 'high')).toBe(true);
   });
 
@@ -145,7 +145,8 @@ describe('Örnek 1: review-changes', () => {
       if (req.prompt.startsWith('Diff:')) {
         return { result: { findings: [{ file: 'a.ts', line: 1, claim: 'c', failure: 'f' }] } };
       }
-      if (req.prompt.startsWith('Bu iddiayı ÇÜRÜTMEYE')) return { result: { refuted: false, reason: 'r' } };
+      if (req.prompt.startsWith('Try to REFUTE this claim'))
+        return { result: { refuted: false, reason: 'r' } };
       return { result: { findings: [] } };
     });
     const { handle } = start(dir, {
@@ -155,10 +156,10 @@ describe('Örnek 1: review-changes', () => {
       args: { diffRef: 'main...HEAD', skepticEffort: 'medium' },
     });
     await handle.promise;
-    const verifiers = runner.calls.filter((c) => c.prompt.startsWith('Bu iddiayı ÇÜRÜTMEYE'));
+    const verifiers = runner.calls.filter((c) => c.prompt.startsWith('Try to REFUTE this claim'));
     expect(verifiers).toHaveLength(9);
     expect(verifiers.every((c) => c.effort === 'medium')).toBe(true);
-    const others = runner.calls.filter((c) => !c.prompt.startsWith('Bu iddiayı ÇÜRÜTMEYE'));
+    const others = runner.calls.filter((c) => !c.prompt.startsWith('Try to REFUTE this claim'));
     expect(others.every((c) => c.effort === undefined)).toBe(true);
   });
 
@@ -176,17 +177,17 @@ describe('Örnek 1: review-changes', () => {
     });
     expect(await handle.promise).toEqual({ findings: [] });
     expect(runner.liveCalls).toBe(3);
-    expect(runner.calls.some((c) => c.prompt.includes('ciddiyete göre'))).toBe(false);
-    expect(logs).toContain('0 bulgu oylamayı geçti');
+    expect(runner.calls.some((c) => c.prompt.includes('by severity'))).toBe(false);
+    expect(logs).toContain('0 findings passed the vote');
   });
 });
 
 // -----------------------------------------------------------------------------------------------------
 
-describe('Örnek 2: find-edge-cases (loop-until-dry)', () => {
-  const round = (p: string) => Number(/Tur (\d+)\./.exec(p)![1]);
-  const lens = (p: string) => ['boş girdi', 'eşzamanlılık', 'hata yolları'].findIndex((l) => p.includes(l));
-  const isVerify = (p: string) => p.includes('gerçek bir hata mı?');
+describe('Example 2: find-edge-cases (loop-until-dry)', () => {
+  const round = (p: string) => Number(/Round (\d+)\./.exec(p)![1]);
+  const lens = (p: string) => ['empty input', 'concurrency', 'error paths'].findIndex((l) => p.includes(l));
+  const isVerify = (p: string) => p.includes('a real bug?');
 
   it('stops after 2 dry rounds; dedup is on seen, so a rejected bug that comes back is not re-verified', async () => {
     const dir = await tmp();
@@ -226,19 +227,19 @@ describe('Örnek 2: find-edge-cases (loop-until-dry)', () => {
     const verifies = runner.calls.filter((c) => isVerify(c.prompt));
     expect(verifies).toHaveLength(3);
     expect(runner.calls.filter((c) => !isVerify(c.prompt))).toHaveLength(9);
-    expect(logs).toContain('tur 1: 3 yeni, 1 doğrulanmış');
-    expect(logs).toContain('tur 2: yeni yok (1/2)');
-    expect(logs).toContain('tur 3: yeni yok (2/2)');
-    expect(logs.some((m) => m.startsWith('tur tavanına'))).toBe(false);
+    expect(logs).toContain('round 1: 3 new, 1 confirmed');
+    expect(logs).toContain('round 2: nothing new (1/2)');
+    expect(logs).toContain('round 3: nothing new (2/2)');
+    expect(logs.some((m) => m.startsWith('round cap'))).toBe(false);
     // Each round tells the finders what is already known.
     const finders = runner.calls.filter((c) => !isVerify(c.prompt));
     expect(
-      finders.filter((c) => round(c.prompt) === 1).every((c) => c.prompt.endsWith('(tekrar etme): yok')),
+      finders.filter((c) => round(c.prompt) === 1).every((c) => c.prompt.endsWith('(do not repeat): none')),
     ).toBe(true);
     expect(
       finders
         .filter((c) => round(c.prompt) === 2)
-        .every((c) => c.prompt.endsWith('(tekrar etme): k1, k2, k3')),
+        .every((c) => c.prompt.endsWith('(do not repeat): k1, k2, k3')),
     ).toBe(true);
   });
 
@@ -259,14 +260,14 @@ describe('Örnek 2: find-edge-cases (loop-until-dry)', () => {
     expect(await handle.promise).toEqual({ confirmed: [], rounds: 6 });
     expect(runner.calls.filter((c) => !isVerify(c.prompt))).toHaveLength(18);
     expect(runner.calls.filter((c) => isVerify(c.prompt))).toHaveLength(18);
-    expect(logs).toContain('tur tavanına ulaşıldı, kuyruk tam taranmadı');
+    expect(logs).toContain('round cap reached, the search may not be complete');
   });
 });
 
 // -----------------------------------------------------------------------------------------------------
 
 describe('Fan-out writers → coordinator merge', () => {
-  const isCoordinator = (p: string) => p.startsWith("Şu branch'leri");
+  const isCoordinator = (p: string) => p.startsWith('Cherry-pick these branches');
 
   function commits(files: Record<string, string>, result: unknown): FakeResponse {
     return {
@@ -286,22 +287,22 @@ describe('Fan-out writers → coordinator merge', () => {
       if (p.startsWith('alpha')) {
         return commits(
           { 'shared.txt': 'alpha\n', 'alpha.txt': 'a\n' },
-          { summary: 'alpha özeti', filesTouched: ['shared.txt', 'alpha.txt'] },
+          { summary: 'alpha summary', filesTouched: ['shared.txt', 'alpha.txt'] },
         );
       }
       if (p.startsWith('beta')) {
         await sleep(50);
         return commits(
           { 'shared.txt': 'beta\n', 'beta.txt': 'b\n' },
-          { summary: 'beta özeti', filesTouched: ['shared.txt', 'beta.txt'] },
+          { summary: 'beta summary', filesTouched: ['shared.txt', 'beta.txt'] },
         );
       }
       if (p.startsWith('gamma')) return { status: 'null', error: 'gave up' };
       if (isCoordinator(p))
-        return commits({ 'merged.txt': 'm\n' }, { summary: 'birleşti', filesTouched: ['merged.txt'] });
+        return commits({ 'merged.txt': 'm\n' }, { summary: 'merged', filesTouched: ['merged.txt'] });
       throw new Error(`unexpected prompt: ${p}`);
     });
-    const tasks = ['alpha', 'beta', 'gamma'].map((key) => ({ key, brief: `${key} işini yap` }));
+    const tasks = ['alpha', 'beta', 'gamma'].map((key) => ({ key, brief: `${key}: do this task` }));
     const { handle, logs } = start(repo, {
       runner,
       runId: 'fan1',
@@ -311,12 +312,12 @@ describe('Fan-out writers → coordinator merge', () => {
     const out = await handle.promise;
 
     expect(out).toEqual({
-      summary: 'birleşti',
+      summary: 'merged',
       filesTouched: ['merged.txt'],
       branchName: 'wf/fan1/coordinator',
     });
-    expect(logs).toContain('2/3 branch geldi');
-    expect(logs).toContain('çakışma adayı dosyalar: shared.txt');
+    expect(logs).toContain('2/3 branches arrived');
+    expect(logs).toContain('files that may conflict: shared.txt');
 
     const writers = runner.calls.filter((c) => !isCoordinator(c.prompt));
     expect(writers).toHaveLength(3);
@@ -327,9 +328,9 @@ describe('Fan-out writers → coordinator merge', () => {
     const coord = runner.calls.filter((c) => isCoordinator(c.prompt));
     expect(coord).toHaveLength(1);
     const cp = coord[0]!.prompt;
-    expect(cp).toContain('Çakışma adayı dosyalar: shared.txt.');
-    expect(cp).toContain('- wf/fan1/alpha: alpha özeti (2 dosya)');
-    expect(cp).toContain('- wf/fan1/beta: beta özeti (2 dosya)');
+    expect(cp).toContain('Files that may conflict: shared.txt.');
+    expect(cp).toContain('- wf/fan1/alpha: alpha summary (2 files)');
+    expect(cp).toContain('- wf/fan1/beta: beta summary (2 files)');
     expect(cp).not.toContain('gamma');
     expect(coord[0]).toMatchObject({ isolated: true, effort: 'high' });
 
@@ -344,7 +345,7 @@ describe('Fan-out writers → coordinator merge', () => {
       if (isCoordinator(req.prompt)) throw new Error('coordinator must not run');
       return { status: 'null' };
     });
-    const tasks = ['alpha', 'beta'].map((key) => ({ key, brief: `${key} işini yap` }));
+    const tasks = ['alpha', 'beta'].map((key) => ({ key, brief: `${key}: do this task` }));
     const { handle, logs } = start(repo, {
       runner,
       runId: 'fan2',
@@ -352,7 +353,7 @@ describe('Fan-out writers → coordinator merge', () => {
       args: { tasks },
     });
     expect(await handle.promise).toBeNull();
-    expect(logs).toContain('0/2 branch geldi');
+    expect(logs).toContain('0/2 branches arrived');
     expect(runner.liveCalls).toBe(2);
     expect(runner.calls.some((c) => isCoordinator(c.prompt))).toBe(false);
   });

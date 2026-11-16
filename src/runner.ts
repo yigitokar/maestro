@@ -43,9 +43,8 @@ export function cachedSystem(system: string): BetaTextBlockParam[] {
   return [{ type: 'text', text: system, cache_control: EPHEMERAL }];
 }
 
-/** Return contract (spec Level 1 "Dönüş sözleşmesi"). */
+/** Return contract (spec Level 1, the return contract). */
 export const RETURN_CONTRACT =
-  'Son mesajın bu çağrının dönüş değeridir. Açıklama, selamlama, özet ekleme.\n' +
   'Your final message IS the return value of this call: it is raw data for the program that called you, ' +
   'not a message to a human. Do not add greetings, explanations or summaries around it.';
 
@@ -63,9 +62,9 @@ export const WRITER_INSTRUCTION =
 const execFileAsync = promisify(execFile);
 
 const CONTINUE_MESSAGE =
-  'devam et / continue: your previous reply was cut off by the output limit. Continue exactly where you ' +
+  'Continue: your previous reply was cut off by the output limit. Continue exactly where you ' +
   'stopped, without repeating what you already wrote.';
-const SCHEMA_MESSAGE = 'Bulgularını şemaya göre döndür / return your findings in the required schema.';
+const SCHEMA_MESSAGE = 'Return your findings in the required schema.';
 
 /** Sent once when an isolated writer ends its turn with uncommitted changes in the worktree. */
 export const COMMIT_REMINDER_MESSAGE =

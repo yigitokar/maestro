@@ -19,7 +19,7 @@ export interface BenchTask {
   lines_removed?: number;
 }
 
-/** What every arm returns: the FINDINGS schema of examples/workflows/review-changes.js. */
+/** What every arm returns: the FINDINGS schema of eval/workflows/review-changes.js. */
 export interface ArmFinding {
   file: string;
   line: number;
@@ -143,7 +143,7 @@ export function mean(values: (number | null | undefined)[]): number | null {
 /** The three arms: which workflow each runs. B is the shipped example, unchanged. */
 export const ARMS: Record<string, { script: string; label: string }> = {
   A: { script: 'eval/workflows/single-review.js', label: 'tek ajan' },
-  B: { script: 'examples/workflows/review-changes.js', label: 'review-changes' },
+  B: { script: 'eval/workflows/review-changes.js', label: 'review-changes' },
   C: { script: 'eval/workflows/finders-only.js', label: 'üç bulucu, skeptik yok' },
 };
 
