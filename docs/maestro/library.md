@@ -31,6 +31,20 @@ detach();
 | `events` | An `EventEmitter`. |
 | `stop(reason?)` | Stops every running agent. The promise rejects with code `run_stopped`. |
 | `skip(agentId)` | Skips one running agent. Its `agent()` call returns `null`. |
+| `liveAgents()` | Returns snapshots of queued/running agents: activity, elapsed time, turns, usage, `canMessage` and message receipts. |
+| `sendMessage(agentId, message)` | Returns a queued receipt, or `null` when unavailable. Invalid or excessive messages throw. |
+
+While `handle.promise` is pending, choose an agent from `handle.liveAgents()` with `canMessage: true` and send a follow-up:
+
+```ts
+const agent = handle.liveAgents().find((agent) => agent.canMessage);
+if (agent) {
+  const receipt = handle.sendMessage(agent.id, 'Also check cancellation.');
+  // Later snapshots report receipt.id as delivered or failed.
+}
+```
+
+Each agent accepts at most 32 messages of up to 16,000 characters. Messages are audited; a queued receipt is not a delivery guarantee. See [MCP controls](/maestro/claude-code#workflowmessage) for delivery and resume semantics.
 
 ### Options
 
@@ -61,6 +75,8 @@ handle.events.on('agent_end', (e) => console.error(e.label, e.status, e.usage.ou
 | Event | When |
 |---|---|
 | `agent_start` | An agent starts. Carries `id`, `key`, `label`, `phase`. |
+| `agent_status` | A live snapshot changes. Carries `agent`, including public activity and usage. |
+| `agent_message` | A message is queued, delivered or failed. Carries `agentId` and the receipt plus message text. |
 | `agent_end` | An agent ends. Adds `status`, `cached` and `usage`. |
 | `phase` | The script calls `phase()`. |
 | `log` | The script calls `log()`, or Maestro reports something. |
@@ -108,14 +124,17 @@ messages.push({ role: 'user', content: [toToolResultBlock(toolUse.id, res)] });
 Runs started this way are controlled by id:
 
 ```ts
-import { liveWorkflowAgents, skipWorkflowAgent, stopWorkflowRun } from 'maestro-workflows';
+import { liveWorkflowAgents, sendWorkflowAgentMessage, skipWorkflowAgent, stopWorkflowRun } from 'maestro-workflows';
 
-liveWorkflowAgents(runId);        // [{ id, label, phase, group }], or null once the run has ended
+liveWorkflowAgents(runId);        // live snapshots, or null once the run has ended
+sendWorkflowAgentMessage(runId, id, 'Focus on cancellation.'); // queued receipt, or null if unavailable
 skipWorkflowAgent(runId, id);     // that agent() returns null, the run goes on
 stopWorkflowRun(runId, 'enough'); // running agents are recorded as skipped, onComplete gets ok: false
 ```
 
-All three return `false` or `null` for an unknown or finished run.
+These helpers return `false` or `null` for an unknown or finished run. Invalid or excessive messages throw.
+
+Custom runners can report public activity with `req.onProgress?.(...)` and register a message handler with `req.registerMessageHandler?.(handler)`. The handler resolves when it accepts an instruction, rejects delivery failures, and unregisters when the runner ends. Without a registered handler, `canMessage` stays false.
 
 ### One budget for several runs
 

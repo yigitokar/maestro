@@ -131,6 +131,7 @@ class RunState {
     this.turns++;
     addUsage(this.usage, usage);
     this.req.onUsage(usage); // immediately, per turn
+    this.req.onProgress?.({ activity: 'model', summary: 'Model response received', turns: this.turns });
     if (this.req.signal.aborted) throw new Aborted();
   }
 
@@ -163,6 +164,59 @@ class RunState {
   fail(error: string): RunResult {
     this.req.log(error);
     return this.done(null, 'null', { error });
+  }
+}
+
+/** Follow-ups wait for a model boundary; finishing a run must settle every delivery promise. */
+class LiveMessages {
+  private readonly pending: Array<{ text: string; resolve(): void; reject(error: Error): void }> = [];
+  private closed = false;
+  private readonly unregister: (() => void) | undefined;
+
+  constructor(private readonly req: RunRequest) {
+    this.unregister = req.registerMessageHandler?.((text) => {
+      if (this.closed || req.signal.aborted)
+        return Promise.reject(new Error('Agent is no longer accepting messages'));
+      const delivery = new Promise<void>((resolve, reject) => this.pending.push({ text, resolve, reject }));
+      // The host normally handles rejection immediately, but an external caller may attach later.
+      delivery.catch(() => {});
+      return delivery;
+    });
+  }
+
+  get enabled(): boolean {
+    return this.req.registerMessageHandler !== undefined;
+  }
+
+  get hasPending(): boolean {
+    return this.pending.length > 0;
+  }
+
+  appendTo(messages: MessageParam[], apply?: () => void): boolean {
+    if (!this.hasPending) return false;
+    if (this.req.signal.aborted) throw new Aborted();
+    const batch = this.pending.splice(0);
+    for (const item of batch) messages.push({ role: 'user', content: item.text });
+    try {
+      apply?.();
+    } catch (error) {
+      for (const item of batch) item.reject(error instanceof Error ? error : new Error(String(error)));
+      throw error;
+    }
+    for (const item of batch) item.resolve();
+    this.req.onProgress?.({
+      activity: 'message',
+      summary: 'Follow-up instruction added to the model context',
+    });
+    return true;
+  }
+
+  close(): void {
+    this.closed = true;
+    this.unregister?.();
+    for (const item of this.pending.splice(0)) {
+      item.reject(new Error('Agent finished before the follow-up could be delivered'));
+    }
   }
 }
 
@@ -541,16 +595,20 @@ export class AnthropicRunner implements AgentRunner {
       );
     }
     const st = new RunState(req);
+    let messages: LiveMessages | undefined;
     try {
       if (req.signal.aborted) throw new Aborted();
-      return await this.#run(req, st, writers.length > 0);
+      messages = new LiveMessages(req);
+      return await this.#run(req, st, writers.length > 0, messages);
     } catch (e) {
       if (isAbortError(e, req.signal)) return st.done(null, 'skipped', { error: 'aborted' });
       return st.fail(errorText(e));
+    } finally {
+      messages?.close();
     }
   }
 
-  async #run(req: RunRequest, st: RunState, hasWriters: boolean): Promise<RunResult> {
+  async #run(req: RunRequest, st: RunState, hasWriters: boolean, inbox: LiveMessages): Promise<RunResult> {
     const client = this.client;
     const ctx: ToolContext = { cwd: req.cwd, signal: req.signal };
     const mode: StructuredMode = req.schema ? this.structuredMode : 'two-stage';
@@ -568,9 +626,19 @@ export class AnthropicRunner implements AgentRunner {
       // A throw becomes tool_result is_error:true in the SDK (runRunnableTool); the agent continues.
       run: async (input: unknown) => {
         const call = st.toolCall(t.name, input);
-        const out = await t.run(input, ctx);
-        call.ok = true;
-        return out;
+        req.onProgress?.({ activity: 'tool', summary: `Running ${t.name}`, tool: t.name, turns: st.turns });
+        try {
+          const out = await t.run(input, ctx);
+          call.ok = true;
+          return out;
+        } finally {
+          req.onProgress?.({
+            activity: 'tool',
+            summary: `${t.name} ${call.ok ? 'completed' : 'failed'}`,
+            tool: t.name,
+            turns: st.turns,
+          });
+        }
       },
       parse: (input: unknown) => input,
     }));
@@ -634,6 +702,8 @@ export class AnthropicRunner implements AgentRunner {
     let carry = ''; // text of a reply cut by max_tokens, prefixed to its continuation
 
     for (;;) {
+      req.onProgress?.({ activity: 'model', summary: 'Waiting for model response', turns: st.turns });
+      if (inbox.appendTo(messages)) carry = '';
       const runner = client.beta.messages.toolRunner(
         {
           model: req.model,
@@ -680,13 +750,31 @@ export class AnthropicRunner implements AgentRunner {
                   (await hasUncommittedChanges(req.cwd, req.signal));
                 if (!dirty) {
                   const cleaned = stripSyntheticNulls(req.schema, toolUses[0]!.input);
-                  if (validateValue(req.schema, cleaned).length === 0) {
+                  if (validateValue(req.schema, cleaned).length === 0 && !inbox.hasPending) {
                     submitted = { value: cleaned };
                     break;
                   }
                 }
               }
             }
+          }
+          if (inbox.enabled) {
+            // Complete tools before adding user instructions. The SDK caches this response, so the
+            // automatic loop will not repeat tools if there is no follow-up to append.
+            const toolResponse =
+              message.stop_reason === 'tool_use' ? await runner.generateToolResponse() : null;
+            if (inbox.hasPending && loopTurns < this.maxTurns && message.stop_reason !== 'max_tokens') {
+              const next: MessageParam[] = [
+                ...runner.params.messages,
+                { role: 'assistant', content: message.content },
+                ...(toolResponse ? [toolResponse] : []),
+              ];
+              inbox.appendTo(next, () => runner.setMessagesParams({ ...runner.params, messages: next }));
+              submitted = undefined;
+              carry = '';
+              submitReminded = false;
+            }
+            req.onProgress?.({ activity: 'model', summary: 'Waiting for model response', turns: st.turns });
           }
         }
       } catch (e) {
@@ -786,8 +874,10 @@ export class AnthropicRunner implements AgentRunner {
     const parseMessages: MessageParam[] = [...messages, { role: 'user', content: SCHEMA_MESSAGE }];
     let maxTokens = this.maxTokens;
     for (let attempt = startAttempt; attempt <= 2; attempt++) {
-      const response = await this.#withRetry(req, () =>
-        client.beta.messages.parse(
+      req.onProgress?.({ activity: 'model', summary: 'Formatting structured result', turns: st.turns });
+      const response = await this.#withRetry(req, () => {
+        inbox.appendTo(parseMessages);
+        return client.beta.messages.parse(
           {
             model: req.model,
             max_tokens: maxTokens,
@@ -805,8 +895,8 @@ export class AnthropicRunner implements AgentRunner {
           maxTokens > this.maxTokens
             ? { signal: req.signal, timeout: Math.max(600_000, (3_600_000 * maxTokens) / 128_000) }
             : { signal: req.signal },
-        ),
-      );
+        );
+      });
       st.turn(response.usage);
       raw = textOf(response);
       if (response.stop_reason === 'refusal') {

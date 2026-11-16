@@ -47,6 +47,12 @@ The rule: an error at agent level falls to null silently, an error at script lev
 
 An agent's final text is raw data for the caller. The agent knows what is wanted only from its prompt, so the prompt must be enough by itself.
 
+## Live feedback and status
+
+While a run is active, call `WorkflowResult({ runId, wait: false })` to inspect `liveAgents`: queued/running state, elapsed time, public activity, turns, usage, `canMessage` and message receipts. To add an instruction, call `WorkflowMessage({ runId, agentId, message })` for an agent with `canMessage: true`. The returned receipt is initially `queued`; check later status for `delivered` or `failed`. Delivery means acceptance, not completion of the requested work. Waiting result calls also provide concise progress when supported by the client.
+
+Anthropic receives feedback before the next safe model request; running tools are not interrupted or repeated. Codex app-server uses live steering. Queued agents, custom runners without a handler and legacy Codex exec cannot receive feedback. Each agent accepts at most 32 messages of 16,000 characters each. Messages are audited, so never send credentials. Successful steered results are reused on resume with an explicit log; edit the prompt in the script when changing a durable instruction.
+
 ## Determinism
 
 `Date.now()`, `Math.random()` and `new Date()` without arguments throw. `process`, `require`, `fetch`, `console` and `setTimeout` are not defined. The reason is resume: the cache key is `sha256(prompt + opts)` plus which call with that content it is. If a prompt changes on every run, the cache never hits.

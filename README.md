@@ -82,11 +82,11 @@ const result = await handle.promise;                 // the script's return valu
 detach();
 ```
 
-`run()` returns `{ runId, runDir, promise, events, stop, skip }` at once. The `agent_start`, `agent_end`, `phase`, `log` and `budget_tick` events arrive through `events`.
+`run()` returns `{ runId, runDir, promise, events, stop, skip, liveAgents, sendMessage }` at once. The `agent_start`, `agent_status`, `agent_message`, `agent_end`, `phase`, `log` and `budget_tick` events arrive through `events`. `liveAgents()` returns current activity and usage; `sendMessage(id, text)` queues a follow-up for an agent whose `canMessage` is true.
 
 ## Running agents with Codex
 
-If the Codex CLI is installed and signed in with a ChatGPT account, the agents can run on the Codex plan. `ANTHROPIC_API_KEY` is not needed. Each agent gets its own `codex exec` process:
+If the Codex CLI is installed and signed in with a ChatGPT account, the agents can run on the Codex plan. `ANTHROPIC_API_KEY` is not needed. Each agent gets its own Codex process; normal workflow runs use `codex app-server` for live steering:
 
 ```bash
 node bin/maestro run review.js --runner codex --args '{"diffRef":"main...HEAD"}' --concurrency 4
@@ -103,13 +103,13 @@ const result = await run({ scriptPath: 'review.js', runner: new CodexRunner() })
 
 The default of `--runner` is `anthropic`. `codex` runs all agents through the Codex CLI. `auto` (`RoutingRunner`) routes each call by its model name (`claude-*` / `anthropic/*` → `AnthropicRunner`, other models such as `gpt-*` / `o3` / `codex-*` → `CodexRunner`). So in one run, for example, GPT/Codex finders and a Claude Opus jury can share the same journal, semaphore, budget and worktree pool. `--dry-run` overrides the chosen runner. The model order is `new CodexRunner({ model })`, then the workflow's `model` option (including `--model`), then the Codex config default. A workflow model that starts with `claude-` is not sent to Codex, so Maestro's default Claude model does not change the Codex model. `effort: 'low' | 'medium' | 'high' | 'xhigh'` passes through unchanged and `'max'` is sent as `'xhigh'`. Without an effort, the Codex default applies.
 
-Codex uses its own shell tools for built-in operations. Custom `ToolDef` tools that are not built in are bridged to the `codex exec` process through a temporary stdio MCP server (`maestro_tools`) by default (turn this off with `customToolsMcp: false`). The bridge opens no socket. It runs the `tool.run(input, ctx)` function in the main Maestro process through an atomic file queue in a temporary directory, with `AbortSignal` support, and records the calls in the agent's trace. An agent without isolation runs in the `read-only` sandbox, an agent in a worktree in the `workspace-write` sandbox. A writer does not commit inside Codex. It leaves its changes in the working tree. A real execution on 2026-11-07 showed that the Codex sandbox keeps the `.git` metadata read-only and that passing the shared Git directory with `--add-dir` does not change this. After a successful isolated agent that was not cancelled, the runner commits with the user's Git identity if there are changes. The message starts with `maestro(codex): ` and is cut to 72 characters in total from the first line of the task prompt. A failed agent is not committed, and the dirty worktree stays for inspection. If the runner's commit fails, the result is `null` too, with the error information.
+Codex uses its own shell tools for built-in operations. Custom `ToolDef` tools that are not built in are bridged to the Codex process through a temporary stdio MCP server (`maestro_tools`) by default (turn this off with `customToolsMcp: false`). The bridge opens no socket. It runs the `tool.run(input, ctx)` function in the main Maestro process through an atomic file queue in a temporary directory, with `AbortSignal` support, and records the calls in the agent's trace. An agent without isolation runs in the `read-only` sandbox, an agent in a worktree in the `workspace-write` sandbox. A writer does not commit inside Codex. It leaves its changes in the working tree. A real execution on 2026-11-07 showed that the Codex sandbox keeps the `.git` metadata read-only and that passing the shared Git directory with `--add-dir` does not change this. After a successful isolated agent that was not cancelled, the runner commits with the user's Git identity if there are changes. The message starts with `maestro(codex): ` and is cut to 72 characters in total from the first line of the task prompt. A failed agent is not committed, and the dirty worktree stays for inspection. If the runner's commit fails, the result is `null` too, with the error information.
 
-The user's Codex config is read by default. In the API, turn this off with `ignoreUserConfig: true`. Each concurrent agent is its own process, so watch memory use at high `--concurrency` values. The prompt is sent over stdin and stdin is closed at once, so large prompts do not hit the command-line argument limit.
+The user's Codex config is read by default. In the API, `ignoreUserConfig: true` or exec-only `extraArgs` retain the legacy `codex exec` transport without live messaging. Direct runner calls without the host message hook also use exec. Each concurrent agent is its own process, so watch memory use at high `--concurrency` values. Prompts travel over stdin, avoiding command-line argument limits.
 
-Usage is reported to the budget on every `turn.completed` event. The CLI can collect all the model calls it makes into one turn for this event. The Anthropic runner's turn and token limits per model call do not apply in the Codex runner.
+App-server token updates are reported to the budget as cumulative-usage deltas; legacy exec reports usage on `turn.completed`. Codex can collect several model calls into one turn. The Anthropic runner's turn and token limits per model call do not apply in the Codex runner.
 
-A result can be used only if `turn.completed` was seen, no failure came after it, no `error` event was recorded and the process exited with 0. Without these conditions a progress message does not count as a successful result. A cancel stops the process group, which includes the child processes Codex started.
+A result requires a completed Codex turn and valid final output. App-server is closed deliberately after completion; legacy exec additionally requires a successful process exit and no subsequent failure. Public progress text does not count as a final answer. A cancel stops the process group, including the child processes Codex started.
 
 ## Host API
 
@@ -189,24 +189,28 @@ The optional `cwd` field moves the run to another directory. It can be an absolu
 Runs started with the tool are controlled by runId (spec "Seviye 1", the user rows of the null/throw table):
 
 ```ts
-import { liveWorkflowAgents, skipWorkflowAgent, stopWorkflowRun } from 'maestro-workflows';
+import { liveWorkflowAgents, sendWorkflowAgentMessage, skipWorkflowAgent, stopWorkflowRun } from 'maestro-workflows';
 
-liveWorkflowAgents(runId);       // [{ id, label, phase, group }]: the live agents; null once the run has ended
+liveWorkflowAgents(runId);       // live state, activity, usage, canMessage and delivery receipts
+sendWorkflowAgentMessage(runId, id, 'Focus on cancellation.'); // queued receipt, or null if unavailable
 skipWorkflowAgent(runId, id);    // agent() returns null, the journal line is 'skipped', the run goes on
 stopWorkflowRun(runId, 'enough'); // live agents are recorded as 'skipped', onComplete gets ok:false (run_stopped)
 ```
 
-All three return `false`/`null` for an unknown or finished run. To make the main loop and all workflows share the same budget pool (spec 3.5), give one `new Budget({ total })` instance as `budget` in place of a number, and pass the same instance in every call.
+These helpers return `false`/`null` for an unknown or finished run. Invalid or excessive messages throw. To make the main loop and all workflows share the same budget pool (spec 3.5), give one `new Budget({ total })` instance as `budget` in place of a number, and pass the same instance in every call.
 
 ## Connecting to Claude Code
 
-The same Workflow tool is served as an MCP server over stdio, and `tools/list` returns five tools:
+The same Workflow tool is served as an MCP server over stdio, and `tools/list` returns six tools:
 
 - `Workflow`: starts the run and returns `{ runId, scriptPath, status: 'started' }` at once. With a `cwd`, the run works in that repository and not in the session's directory (see the `cwd` paragraph above).
-- `WorkflowResult({ runId, wait?, cwd? })`: returns `{ status: 'running', liveAgents }` while the run is going, then `done` or `failed`. The final result of a finished run is also written to `<runDir>/outcome.json`, so `WorkflowResult` can read it from disk for an old `runId` even after the MCP server has restarted (if the `cwd` was different, pass it too). With `wait: true` the call stays open until the run ends, and there is no need to poll: Claude Code moves an MCP call that takes longer than 2 minutes to the background and gives the result to the model as a notification. If the client sent a `progressToken`, the waiting call sends `notifications/progress` every 30 seconds with the names of the live agents, so the idle-call timeout does not cut the call. A one-shot `claude -p` session closes when its turn ends, so it does not wait for a background result. Use an interactive session to collect the result.
+- `WorkflowResult({ runId, wait?, cwd? })`: returns `{ status: 'running', liveAgents }` while the run is going, then `done` or `failed`. The final result of a finished run is also written to `<runDir>/outcome.json`, so `WorkflowResult` can read it from disk for an old `runId` even after the MCP server has restarted (if the `cwd` was different, pass it too). With `wait: true` the call stays open until the run ends, and there is no need to poll: Claude Code moves an MCP call that takes longer than 2 minutes to the background and gives the result to the model as a notification. If the client sent a `progressToken`, the waiting call sends `notifications/progress` every 30 seconds with concise live activity, usage and message status, so the idle-call timeout does not cut the call. A one-shot `claude -p` session closes when its turn ends, so it does not wait for a background result. Use an interactive session to collect the result.
 - `WorkflowGuide()`: returns the script-writing guide ([skill/SKILL.md](skill/SKILL.md)) as Markdown. It takes no input and starts nothing. The server's `instructions` field and the `Workflow` description tell the model to call it before the first script, so a client that has not installed the skill separately reaches the guide too.
 - `WorkflowStop({ runId })`: stops the run. The script rejects with `run_stopped`, the journal stays and the run can be resumed later with `resumeFromRunId`.
 - `WorkflowSkip({ runId, agentId })`: skips one agent in `liveAgents`. That `agent()` call returns `null`.
+- `WorkflowMessage({ runId, agentId, message })`: queues a follow-up instruction for a live agent with `canMessage: true`. It returns a `queued` receipt; inspect `WorkflowResult.liveAgents[].messages` for `delivered` or `failed`.
+
+Live agents report queued/running state, elapsed time, last public activity, turns, tokens and messaging support. Waiting result calls include concise activity, usage and delivery progress. Anthropic receives messages before the next safe model request, without interrupting or repeating tools; Codex app-server uses `turn/steer`. Queued agents, custom runners without a message hook, and legacy Codex exec report `canMessage: false`. Messages are limited to 16,000 characters and 32 per agent, and are recorded in the journal and event log. Do not send credentials. A successful steered result is reused on resume with an explicit log; edit the workflow prompt when changing a durable instruction.
 
 To use it in your own project, add the server to Claude Code. The package is published on npm as `maestro-workflows`. `npx maestro` downloads the unrelated `maestro` package on npm; do not use it. To run from this repository, make the end of the command `node "$PWD/bin/maestro" mcp` (after `npm run build`).
 
@@ -233,7 +237,7 @@ maestro run <script.js> [--args <json>] [--args-file f] [--resume <runId>] [--bu
                         [--structured-mode <two-stage|submit-tool|single-stage>]
 maestro runs [--cwd d] [--state-dir d] [--limit n]          (alias: ls)
 maestro gc [--delete] [--force] [--cwd d]
-maestro show <runId> [label] [--cwd d] [--state-dir d]
+maestro show <runId> [label-or-live-id] [--cwd d] [--state-dir d]
 maestro viz <runId> [--cwd d] [--state-dir d] [--port n] [--no-open] [--out f.html] [--widget]
 maestro mcp [--cwd d] [--state-dir d] [--tools-dir d] [--budget 500k] [--concurrency n] [--model m]
             [--runner <anthropic|codex|auto>]
@@ -241,6 +245,8 @@ maestro mcp [--cwd d] [--state-dir d] [--tools-dir d] [--budget 500k] [--concurr
 ```
 
 `maestro run` writes the result to stdout as JSON, and progress goes to stderr. Ctrl-C stops the run and shows the resume command. `maestro runs` (`ls`) lists the stored runs from newest to oldest with status, duration, agent count and a token/cache summary. `maestro mcp` exits with 0 when stdin ends. There, `--budget` is not per run; it is one pool shared for the whole session.
+
+The terminal progress tree displays live activity and tokens. `maestro show <runId> [label or live agent id]` reads the latest recorded activity; it can be stale after a process dies. Completed labeled rows include the message audit. Send live messages through the owning MCP server or library handle.
 
 `maestro gc` lists dirty worktrees and `wf/*` branches. The branches that count as merged are those that are an ancestor of HEAD or whose commits have all been cherry-picked. `--delete` deletes the worktrees that stayed clean and the merged branches. Dirty worktrees (uncommitted work) and unmerged branches are deleted only with `--delete --force`.
 
@@ -367,7 +373,7 @@ The items that did not pass from the spec into the code one to one, and the reas
 - **The Policy component is not a separate module ("Seviye 2").** The opt-in rule lives as text in the Workflow tool description (`WORKFLOW_TOOL_DESCRIPTION`) and in the skill. The numeric limits are in code (`meta.maxAgents`, the global cap, the budget).
 - **In a nested workflow the child's `meta.maxAgents` value is not applied (3.4).** The counter is shared, so the cap of the parent run applies. The child's value is written to the log.
 - **The determinism override does not resist an attacker (3.3).** `Object.getPrototypeOf(Date)` still reaches the original `Date`. As the spec also says, `vm` is not a security boundary. However, `Intl.DateTimeFormat#format` without arguments, which reads the clock, is overridden too.
-- **The MCP server lists five tools, not two (scope addition).** Next to `Workflow` and `WorkflowResult` there are `WorkflowStop`, `WorkflowSkip` and `WorkflowGuide`. The rows "Kullanıcı run'ı durdurur" and "Kullanıcı ajanı canlı atlar" of the null/throw table could not be produced in any other way for runs started with the tool or with MCP.
+- **The MCP server lists six tools, not two (scope addition).** Next to `Workflow` and `WorkflowResult` there are `WorkflowStop`, `WorkflowSkip`, `WorkflowGuide` and `WorkflowMessage`. The control tools support stopping, skipping and steering agents through the MCP connection.
 - **A root `{ type: 'object' }` schema is accepted without `properties` ("Seviye 1").** The table counts only a root that is not an object and the `required ⊄ properties` case as a throw. An empty object satisfies this schema.
 - **In Stage 2 a `max_tokens` stop is retried with a larger `max_tokens`, not with "continue" (3.2).** A continuation turn would produce a new document, not the rest of the cut JSON document. In the tool loop the rule is applied one to one.
 - **In the Codex runner a writer does not commit (3.6).** The Codex sandbox keeps `.git` read-only. After a successful isolated agent the runner makes the commit, and the agent gets one instruction ("do not commit"). The schema answer is also one attempt; there is no second parse attempt.

@@ -355,7 +355,11 @@ return agent('c');`;
     const { handle, events } = start(dir, { runner, budget: 1_000_000, script });
     await handle.promise;
     const runId = handle.runId;
-    const noTicks = events.filter((e) => e.type !== 'budget_tick' && e.type !== 'log');
+    const noTicks = events.filter(
+      (e) => e.type !== 'budget_tick' && e.type !== 'log' && e.type !== 'agent_status',
+    );
+    expect(events.some((e) => e.type === 'agent_status' && e.agent.state === 'queued')).toBe(true);
+    expect(events.some((e) => e.type === 'agent_status' && e.agent.state === 'running')).toBe(true);
     expect(noTicks.map((e) => e.type)).toEqual([
       'phase',
       'agent_start',

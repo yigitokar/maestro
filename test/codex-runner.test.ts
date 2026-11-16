@@ -147,6 +147,36 @@ async function makeWorktree(): Promise<{ repo: string; worktree: string; base: s
 }
 
 describe('CodexRunner: results and subprocess protocol', () => {
+  it.each([{ extraArgs: ['--color', 'never'] }, { ignoreUserConfig: true }])(
+    'retains exec for legacy options %j and exposes progress without a message handler',
+    async (options) => {
+      scenario({
+        finalText: 'done',
+        steps: [
+          { event: { type: 'item.started', item: { type: 'command_execution', command: 'git status' } } },
+          { event: message('Checked the worktree') },
+          { event: turn({}) },
+        ],
+      });
+      const registerMessageHandler = vi.fn(() => () => {});
+      const onProgress = vi.fn();
+      const result = await new CodexRunner({ bin, ...options }).run(
+        makeReq({ registerMessageHandler, onProgress }).req,
+      );
+      expect(result.status).toBe('ok');
+      expect(records()[0]!.argv[0]).toBe('exec');
+      expect(registerMessageHandler).not.toHaveBeenCalled();
+      expect(onProgress).toHaveBeenCalledWith(
+        expect.objectContaining({
+          activity: 'status',
+          summary: expect.stringContaining('Live messages unavailable'),
+        }),
+      );
+      expect(onProgress).toHaveBeenCalledWith({ activity: 'tool', tool: 'shell', summary: 'git status' });
+      expect(onProgress).toHaveBeenCalledWith({ activity: 'message', summary: 'Checked the worktree' });
+    },
+  );
+
   it('closes stdin, returns the output file and cleans its temporary directory', async () => {
     scenario({ finalText: 'file result', steps: [{ event: message('stream result') }, { event: turn({}) }] });
     const result = await new CodexRunner({ bin }).run(makeReq().req);

@@ -9,6 +9,7 @@ import {
   handleWorkflowToolCall,
   liveWorkflowAgents,
   maestroToolDefinition,
+  sendWorkflowAgentMessage,
   skipWorkflowAgent,
   stopWorkflowRun,
   toToolResultBlock,
@@ -235,6 +236,8 @@ return { r, extra, edited: true };`;
     const res = await handleWorkflowToolCall({ script: SCRIPT, args: '{"who":"a"}' }, c);
     if ('is_error' in res) throw new Error(res.content);
     await until(() => (liveWorkflowAgents(res.runId) ?? []).length === 1);
+    expect(liveWorkflowAgents(res.runId)![0]!.canMessage).toBe(false);
+    expect(sendWorkflowAgentMessage(res.runId, 0, 'Unsupported runner.')).toBeNull();
     expect(stopWorkflowRun(res.runId, 'enough')).toBe(true);
     const { outcome } = await done;
     expect(outcome).toEqual({ ok: false, error: expect.stringMatching(/stopped: enough/) });
@@ -242,7 +245,9 @@ return { r, extra, edited: true };`;
     // Settled runs leave the registry.
     expect(stopWorkflowRun(res.runId)).toBe(false);
     expect(liveWorkflowAgents(res.runId)).toBeNull();
+    expect(sendWorkflowAgentMessage(res.runId, 0, 'Too late.')).toBeNull();
     expect(stopWorkflowRun('never-started')).toBe(false);
+    expect(sendWorkflowAgentMessage('never-started', 0, 'Unknown.')).toBeNull();
   });
 
   it('skipWorkflowAgent skips one live agent: agent() returns null, its row is skipped, the run goes on', async () => {

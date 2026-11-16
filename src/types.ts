@@ -16,6 +16,40 @@ export interface Usage {
   cache_creation_input_tokens?: number;
 }
 
+/** Public activity only: never include internal reasoning or complete tool output. */
+export interface AgentProgress {
+  activity: 'model' | 'tool' | 'message' | 'status';
+  summary: string;
+  tool?: string;
+  turns?: number;
+}
+
+export interface AgentMessageReceipt {
+  id: number;
+  status: 'queued' | 'delivered' | 'failed';
+  queuedAt: number;
+  deliveredAt?: number;
+  error?: string;
+}
+
+/** A snapshot of an agent that has not settled yet. Times are epoch milliseconds. */
+export interface LiveAgentStatus {
+  id: number;
+  label?: string;
+  phase?: string;
+  group?: string;
+  state: 'queued' | 'running';
+  startedAt: number;
+  runningAt?: number;
+  updatedAt: number;
+  elapsedMs: number;
+  turns: number;
+  usage: Usage;
+  progress?: AgentProgress;
+  canMessage: boolean;
+  messages: AgentMessageReceipt[];
+}
+
 /** One tool call of an agent, for the journal trace. */
 export interface TraceToolCall {
   tool: string;
@@ -58,6 +92,8 @@ export interface Entry {
   /** Audit-only trace of the live run; `{ blob: key }` when `traceBlob` (over 64 KB, blobs/<key>.trace.json). */
   trace?: Trace | { blob: string };
   traceBlob?: true;
+  /** Live steering is recorded for audit; resumed cache hits explicitly report its reuse. */
+  messages?: Array<AgentMessageReceipt & { text: string }>;
 }
 
 /** Options accepted by the script-facing `agent()` (spec Level 1). */
@@ -111,6 +147,10 @@ export interface RunRequest {
   onUsage(usage: Usage): void;
   /** Diagnostic log line ("turn cap", refusal category, 400 text, ...). */
   log(message: string): void;
+  /** Report bounded public activity to the host. Optional for existing/custom runners. */
+  onProgress?(progress: AgentProgress): void;
+  /** Register live steering; resolve each message only when accepted by the runner/model context. */
+  registerMessageHandler?(handler: (message: string) => Promise<void>): () => void;
 }
 
 export interface RunResult {
@@ -150,6 +190,8 @@ export interface WorkflowMeta {
 
 /** Observability events (spec 3.7). */
 export type WorkflowEvent =
+  | { type: 'agent_status'; runId: string; agent: LiveAgentStatus }
+  | { type: 'agent_message'; runId: string; agentId: number; message: AgentMessageReceipt & { text: string } }
   | {
       type: 'agent_start';
       runId: string;

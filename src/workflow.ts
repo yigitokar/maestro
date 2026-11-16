@@ -7,6 +7,7 @@ import { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
 import { readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { AgentControl } from './agent-control.js';
 import { Budget, type BudgetLease } from './budget.js';
 import { EMPTY_TOOL_REGISTRY, loadCustomTools, type ToolRegistry } from './custom-tools.js';
 import { EVENT_LOG_PROMPT_CHARS, EventLog } from './event-log.js';
@@ -24,10 +25,12 @@ import {
 import { defaultConcurrency, Scheduler } from './scheduler.js';
 import { buildTools } from './tools.js';
 import type {
+  AgentMessageReceipt,
   AgentOpts,
   AgentRunner,
   Entry,
   EntryStatus,
+  LiveAgentStatus,
   RunResult,
   ToolDef,
   Usage,
@@ -79,6 +82,10 @@ export interface RunHandle {
   stop(reason?: string): void;
   /** Skips one live agent (spec Seviye 1 "kullanıcı ajanı canlı atlar"): agent() → null, row 'skipped'. */
   skip(agentId: number): boolean;
+  /** Current agent snapshots, including queued agents and bounded public activity. */
+  liveAgents(): LiveAgentStatus[];
+  /** Queue steering for a runner that accepts it; null for unknown, settled or unsupported agents. */
+  sendMessage(agentId: number, message: string): AgentMessageReceipt | null;
 }
 
 /** One script execution: the top run (depth 0) or a nested workflow() child (depth 1, "▸ name" group). */
@@ -141,6 +148,7 @@ export function run(opts: RunOptions): RunHandle {
   const runController = new AbortController();
   const inflight = new Set<Promise<unknown>>();
   const skipControllers = new Map<number, AbortController>();
+  const controls = new Map<number, AgentControl>();
   let nextId = 0;
   /** Usage of every live model turn of this run (journal hits excluded), for the run-end cache line. */
   const liveUsage: Usage = { input_tokens: 0, output_tokens: 0 };
@@ -210,6 +218,12 @@ export function run(opts: RunOptions): RunHandle {
 
     const hit = journal!.get(key);
     if (hit) {
+      if (hit.messages?.some((message) => message.status === 'delivered')) {
+        emitLog(
+          `agent ${o.label ?? key}: reusing cached result with live steering recorded in the journal`,
+          frame.group,
+        );
+      }
       // Step 2: cache hit. No cap, no budget, no worktree, no slot. A cached writer still owns its
       // branch (its hand-off, spec 3.6): a live same-label sibling must not -B reset it.
       if (writer) getIsolation().claim({ key, label: o.label, hash, n, writer });
@@ -242,7 +256,15 @@ export function run(opts: RunOptions): RunHandle {
     skipControllers.set(id, skipController);
     const signal = AbortSignal.any([lease.signal, runController.signal, skipController.signal]);
     const base = eventBase(frame, id, key, o);
+    const control = new AgentControl(
+      { id, label: o.label, phase: o.phase ?? frame.phase, group: frame.group },
+      signal,
+      (agent) => emit({ type: 'agent_status', runId, agent }),
+      (message) => emit({ type: 'agent_message', runId, agentId: id, message }),
+    );
+    controls.set(id, control);
     emit({ type: 'agent_start', ...base });
+    emit({ type: 'agent_status', runId, agent: control.snapshot() });
     recordPrompt(id, a.prompt, o, a.tools);
 
     const abortText = (): string =>
@@ -272,6 +294,8 @@ export function run(opts: RunOptions): RunHandle {
         } catch (e) {
           lease.release(false);
           skipControllers.delete(id);
+          await control.finish();
+          controls.delete(id);
           emit({ type: 'agent_end', ...base, status: 'null', cached: false, usage: turnUsage });
           throw e;
         }
@@ -285,6 +309,7 @@ export function run(opts: RunOptions): RunHandle {
           // Step 5-6: the slot covers only the live runner call.
           res = await scheduler!.withSlot(() => {
             eventLog.record({ type: 'agent_running', id });
+            control.running();
             return getRunner().run({
               prompt: a.prompt,
               system: systemPrompt({ cwd: agentCwd, writer }),
@@ -298,9 +323,12 @@ export function run(opts: RunOptions): RunHandle {
               onUsage: (u) => {
                 addUsage(turnUsage, u);
                 addUsage(liveUsage, u);
+                control.usage(u);
                 lease.report(finite(u.output_tokens));
               },
               log: (m) => emitLog(m, frame.group),
+              onProgress: (progress) => control.progress(progress),
+              registerMessageHandler: (handler) => control.register(handler),
             });
           }, signal);
           status = res.status;
@@ -322,6 +350,8 @@ export function run(opts: RunOptions): RunHandle {
         }
       }
     } finally {
+      await control.finish();
+      controls.delete(id);
       if (wt) {
         const close = await wt.close(status === 'ok');
         if (writer && status === 'ok') {
@@ -356,6 +386,7 @@ export function run(opts: RunOptions): RunHandle {
       error,
       worktree,
       trace: res?.trace,
+      messages: control.messages(),
     });
     // Step 7: write first, return second; otherwise an interruption re-runs the agent.
     try {
@@ -668,6 +699,15 @@ export function run(opts: RunOptions): RunHandle {
       if (!c || c.signal.aborted) return false;
       c.abort(new Error('skipped by user'));
       return true;
+    },
+    liveAgents(): LiveAgentStatus[] {
+      return [...controls.values()].map((control) => control.snapshot());
+    },
+    sendMessage(agentId: number, message: string): AgentMessageReceipt | null {
+      if (!Number.isSafeInteger(agentId) || agentId < 0)
+        throw new Error('agentId must be a non-negative integer');
+      if (stopped || finished || settled) return null;
+      return controls.get(agentId)?.send(message) ?? null;
     },
   };
 }
