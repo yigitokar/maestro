@@ -105,7 +105,7 @@ describe('maestro mcp', () => {
     const res = (await client.callTool({ name: WORKFLOW_GUIDE_TOOL_NAME, arguments: {} })) as any;
     expect(res.isError).toBeFalsy();
     const guide: string = res.content[0].text;
-    expect(guide.startsWith('# Maestro workflow')).toBe(true);
+    expect(guide.startsWith('# Writing a Maestro workflow script')).toBe(true);
     expect(guide).toContain('export const meta');
     expect(client.getInstructions()).toContain(WORKFLOW_GUIDE_TOOL_NAME);
     const workflow = (await client.listTools()).tools.find((t) => t.name === 'Workflow')!;

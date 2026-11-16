@@ -1,159 +1,159 @@
 ---
 name: maestro-workflow-authoring
-description: Maestro Workflow tool'u için script yazma rehberi (meta bloğu, host API, null/throw davranışı, determinizm, pipeline/parallel seçimi, kalıplar, resume). Workflow tool'una script vermeden önce oku.
+description: Guide to writing a script for the Maestro Workflow tool (the meta block, the host API, what returns null and what throws, determinism, pipeline or parallel, patterns, resume). Read it before you give the Workflow tool a script.
 ---
 
-# Maestro workflow script'i yazmak
+# Writing a Maestro workflow script
 
-Kontrol akışı kodda, muhakeme ajanda. Script'i sen yazarsın, çalıştıran düz bir JavaScript runtime'ıdır. Her `agent()` temiz context'le başlar; ajanlar birbirini görmez, veri yalnızca script üzerinden akar.
+The control flow is in code and the reasoning is in the agents. You write the script; a plain JavaScript runtime executes it. Every `agent()` starts with a clean context. Agents do not see each other, and data moves only through the script.
 
-Script'i Workflow tool'una `script` alanında inline ver (`scriptPath` ya da kayıtlı `name` de olur). Tool hemen `runId` döner; sonuç bitince gelir.
+Give the script to the Workflow tool inline, in the `script` field (`scriptPath` or a saved `name` also work). The tool returns a `runId` at once; the result comes when the run ends.
 
-Run, MCP sunucusunun dizininde (oturumun açıldığı klasörde) çalışır. İş başka bir repo üzerindeyse `cwd` ile o dizini ver. Tercihen o reponun bir worktree'sini ver, birinin kullandığı ana checkout'u değil. Ajanlar orada çalışır, yazanlar oranın git reposundan branch açar, `.maestro/` de oraya yazılır. Resume ederken aynı `cwd`'yi ver.
+The run works in the MCP server's directory (the folder the session was opened in). If the work is on another repository, pass that directory as `cwd`. Prefer a worktree of that repository over a main checkout that someone is using. The agents work there, writers branch from that git repository, and `.maestro/` is written there. When you resume, pass the same `cwd`.
 
-## Meta bloğu
+## The meta block
 
-Her script `export const meta = {...}` ile başlar. **Saf literal** olmalı: değişken, fonksiyon çağrısı, spread, ifadeli template string yok.
+Every script starts with `export const meta = {...}`. It must be a **pure literal**: no variables, no function calls, no spread, no template strings with expressions.
 
 ```js
 export const meta = {
-  name: 'review-changes',                 // zorunlu
-  description: 'Diff\'i üç boyutta incele', // zorunlu, izin diyaloğunda görünür
+  name: 'review-changes',                       // required
+  description: 'Review a diff from three angles', // required, shown in the permission dialog
   phases: [{ title: 'Find' }, { title: 'Verify' }],
-  maxAgents: 60,                          // isteğe bağlı sert tavan (varsayılan 1000)
+  maxAgents: 60,                                // optional hard cap (default 1000)
 }
 ```
 
-`meta.phases` varsa `phase(title)` ve `opts.phase` yalnızca buradaki başlıkları kabul eder, başka başlık throw eder. Bilinmeyen `meta` alanları (ör. `maxAgent` yazım hatası) run başında uyarı log'u üretir; geçerli alanlar `name`, `description`, `phases`, `maxAgents` ve `whenToUse`'dur. Tavanı prompt'a "10 ajan altı kal" diye yazma, `maxAgents` ile koda koy.
+When `meta.phases` is present, `phase(title)` and `opts.phase` accept only the titles listed there; any other title throws. Unknown `meta` fields (for example the typo `maxAgent`) produce a warning log at the start of the run; the valid fields are `name`, `description`, `phases`, `maxAgents` and `whenToUse`. Do not put a cap in a prompt ("stay under 10 agents"); put it in code with `maxAgents`.
 
 ## Host API
 
-Script gövdesi async'tir: `await` ve en üstte `return` serbest. Dönüş değeri run'ın sonucudur.
+The script body is async: `await` and a top-level `return` are allowed. The returned value is the result of the run.
 
-| API | Davranış |
+| API | Behavior |
 |---|---|
-| `agent(prompt, opts?)` | Ajan koşar. `schema` varsa doğrulanmış obje, yoksa final metin döner. Terminal API hatası, kullanıcının atlaması veya koşarken bütçe aşımı → **null**. Geçersiz schema (kök `object` değil, `required ⊄ properties`), bütçe girişte yetmiyor, ajan tavanı doldu, izolasyonsuz yazma aracı istendi → **throw**. |
-| `parallel(thunks)` | Hepsini bekler (bariyer). Ajan/çalışma zamanı hatası atan thunk'ın slotu **null** olur; programcı/konfigürasyon hataları (`ReferenceError`, `Math.random()`, `unknown_tool`, `unknown_phase`, izolasyonsuz yazma aracı vb.) doğrudan **throw** eder. |
-| `pipeline(items, ...stages)` | Her öğe aşamaları bağımsız geçer, aşamalar arası bariyer yok. Aşama `(prev, item, index)` alır; ilk aşamada `prev === item`. Çalışma zamanı hatası atan aşama öğeyi null yapar ve kalan aşamaları atlar; programcı/konfigürasyon hataları doğrudan **throw** eder. Null **dönen** aşama normal değerdir, sonraki aşamaya geçer. |
-| `phase(title)` | Sonraki ajanları bu ilerleme kutusuna koyar. Paralel kodda `opts.phase` kullan. |
-| `log(msg)` | İlerleme ağacının üstünde anlatıcı satırı. |
-| `args` | Tool çağrısındaki `args`, olduğu gibi. Diziyi string'e çevirip verme. |
-| `budget` | `{ total, spent(), remaining() }`. `total` yoksa null ve `remaining()` Infinity. Havuz paylaşılır, sınır serttir. |
-| `workflow(nameOrRef, args?)` | Başka bir workflow'u alt adım olarak koşar. Aynı semafor, sayaç ve bütçe. Yalnızca bir seviye: çocuğun içinde `workflow()` throw eder. |
+| `agent(prompt, opts?)` | Runs an agent. With a `schema` it returns the validated object, otherwise the final text. A terminal API error, a skip by the user, or the budget running out while it runs → **null**. An invalid schema (root is not `object`, `required ⊄ properties`), not enough budget at entry, the agent cap reached, or a write tool requested without isolation → **throw**. |
+| `parallel(thunks)` | Waits for all of them (a barrier). The slot of a thunk that fails with an agent or runtime error becomes **null**; programmer and configuration errors (`ReferenceError`, `Math.random()`, `unknown_tool`, `unknown_phase`, a write tool without isolation and so on) **throw** directly. |
+| `pipeline(items, ...stages)` | Each item goes through the stages on its own, with no barrier between stages. A stage receives `(prev, item, index)`; in the first stage `prev === item`. A stage that fails with a runtime error makes the item null and skips its remaining stages; programmer and configuration errors **throw** directly. A stage that **returns** null has returned a normal value, which goes to the next stage. |
+| `phase(title)` | Puts the agents that follow in this progress box. In parallel code use `opts.phase`. |
+| `log(msg)` | A narrator line above the progress tree. |
+| `args` | The `args` of the tool call, as given. Do not turn an array into a string. |
+| `budget` | `{ total, spent(), remaining() }`. Without a total, `total` is null and `remaining()` is Infinity. The pool is shared and the limit is hard. |
+| `workflow(nameOrRef, args?)` | Runs another workflow as a sub-step, with the same semaphore, counter and budget. One level only: `workflow()` inside the child throws. |
 
-`opts`: `label` (görüntü adı), `phase`, `schema`, `model`, `effort` (`low` … `max`), `isolation: 'worktree'`, `tools` (izinli araçlar). Sunucu `--runner auto` ile çalışıyorsa `opts.model` ajan bazında farklı sağlayıcılara yönlendirilebilir (`claude-*` → Anthropic, `gpt-*` / `o3` → Codex). Varsayılan araçlar salt-okurdur: `read_file`, `grep`, `glob`, `bash` (ls, cat, git log/diff/status/show, rg, find). Yazma araçları (`write_file`, `edit_file`, `shell`, `git_commit`) yalnızca `isolation: 'worktree'` ile verilir. Script'in dışında tanımlanmış özel araçlar (`.maestro/tools/*.js`, örneğin `arxiv_search`) de adıyla seçilir; hangilerinin olduğu Workflow aracının açıklamasının sonunda yazar. `tools` varsayılan seti genişletmez, yerine geçer: özel aracın yanında gereken okuma araçlarını da say.
+`opts`: `label` (display name), `phase`, `schema`, `model`, `effort` (`low` … `max`), `isolation: 'worktree'`, `tools` (the allowed tools). When the server runs with `--runner auto`, `opts.model` routes each agent to a provider (`claude-*` → Anthropic, `gpt-*` / `o3` → Codex). The default tools are read-only: `read_file`, `grep`, `glob`, `bash` (ls, cat, git log/diff/status/show, rg, find). Write tools (`write_file`, `edit_file`, `shell`, `git_commit`) are given only with `isolation: 'worktree'`. Custom tools defined outside the script (`.maestro/tools/*.js`, for example `arxiv_search`) are selected by name too; the end of the Workflow tool's description lists the ones that exist. `tools` replaces the default set, it does not extend it: next to a custom tool, list the read tools the agent needs as well.
 
-Kural: ajan seviyesindeki hata sessizce null'a düşer, script seviyesindeki hata run'ı öldürür. Sonuçlara `.filter(Boolean)` uygula ve kaç öğenin düştüğünü `log()` ile söyle.
+The rule: an error at agent level falls to null silently, an error at script level ends the run. Apply `.filter(Boolean)` to results and say with `log()` how many items were dropped.
 
-Ajanın final metni çağıranın kullanacağı ham veridir. Ajan ne istendiğini yalnızca prompt'tan bilir, bu yüzden prompt kendi başına yetmeli.
+An agent's final text is raw data for the caller. The agent knows what is wanted only from its prompt, so the prompt must be enough by itself.
 
-## Determinizm
+## Determinism
 
-`Date.now()`, `Math.random()`, argümansız `new Date()` throw eder. `process`, `require`, `fetch`, `console`, `setTimeout` tanımlı değildir. Sebep resume: cache anahtarı `sha256(prompt + opts)` + aynı içeriğin kaçıncı çağrısı olduğu. Prompt her koşuda değişirse cache hiç tutmaz.
+`Date.now()`, `Math.random()` and `new Date()` without arguments throw. `process`, `require`, `fetch`, `console` and `setTimeout` are not defined. The reason is resume: the cache key is `sha256(prompt + opts)` plus which call with that content it is. If a prompt changes on every run, the cache never hits.
 
-- Zaman damgası gerekiyorsa `args` ile ver: `new Date(args.ts)` çalışır.
-- Rastgelelik yerine index'e göre prompt varyasyonu kullan.
-- `label` ve `phase` anahtara girmez; değiştirmek cache'i bozmaz.
+- If you need a timestamp, pass it in `args`: `new Date(args.ts)` works.
+- Instead of randomness, vary the prompt by index.
+- `label` and `phase` are not part of the key; changing them does not break the cache.
 
-## Pipeline varsayılan
+## Pipeline is the default
 
-Çok aşamalı işte `pipeline` kullan. Bariyer (`parallel` sonra `parallel`) yalnızca aşama N'nin aşama N-1'in **tüm** sonuçlarına ihtiyacı varsa meşrudur: tüm sonuçlar üzerinde dedup, "hiç bulgu yok → doğrulamayı atla" gibi erken çıkış, ya da "diğer bulgularla karşılaştır".
+For work with several stages, use `pipeline`. A barrier (`parallel`, then `parallel`) is justified only when stage N needs **all** the results of stage N-1: dedup over all results, an early exit such as "no findings → skip verification", or "compare with the other findings".
 
 Smell test:
 
 ```js
 const a = await parallel(...)
-const b = transform(a)          // map/filter/flatten, öğeler arası bağımlılık yok
+const b = transform(a)          // map/filter/flatten, no dependency between items
 const c = await parallel(b.map(...))
 ```
 
-Ortadaki dönüşüm bariyer istemiyor; onu bir pipeline aşamasının içine al. En yavaş bulucu en hızlının üç katı sürüyorsa bariyer, hızlıların bekleme süresinin üçte ikisini boşa harcar.
+The transform in the middle needs no barrier; move it into a pipeline stage. If the slowest finder takes three times as long as the fastest, the barrier wastes two thirds of the fast ones' time in waiting.
 
-## Kalıplar
+## Patterns
 
-- **Adversarial verify**: her bulguya N bağımsız skeptik, her biri ÇÜRÜTMEYE çalışır; çoğunluk çürütürse at. "Emin değilsen refuted=true" de.
-- **Perspektif çeşitliliği**: aynı skeptiği N kez çağırmak yerine her birine ayrı mercek ver (tekrar üretilebilirlik, niyet/edge case, mevcut testler).
-- **Judge panel**: N farklı açıdan (MVP-first, risk-first, user-first) tasarım üret, paralel jüriyle puanla, kazanandan sentezle.
-- **Loop-until-dry**: boyutu bilinmeyen keşifte iki tur üst üste yeni şey çıkmayana kadar dön. Dedup'ı `seen` üzerinden yap, `confirmed` üzerinden değil; yoksa jürinin reddettiği bulgu her turda geri gelir.
-- **Multi-modal sweep**: aynı soruyu farklı arama yollarıyla (dosya adı, içerik, sembol, git log) paralel ajanlara ver.
-- **Completeness critic**: son ajan "ne eksik?" diye sorar; bulduğu şey bir sonraki turun işi olur.
-- **No silent caps**: top-N, örnekleme, tur tavanı gibi her sınırı `log()` ile söyle.
-- **Fan-out writers → coordinator merge**: N izole yazan ajan (`isolation: 'worktree'`, yazma araçları) paralel çalışır. Her biri, runtime'ın açtığı `wf/<runId>/<label>` branch'ine commit eder ve `{ summary, filesTouched }` döner; `branchName`'i runtime ekler. Commit etmeyen veya branch değiştiren ajan null döner. Diff metnini script'e alma. Tek bir izole koordinatör branch'leri cherry-pick eder ve çatışmaları çözer; birleştirme script'in işi değildir. Yazan ajanlara benzersiz `label` ver.
+- **Adversarial verify**: N independent skeptics per finding, each trying to REFUTE it; drop the finding if the majority refutes it. Tell them "if you are not sure, refuted=true".
+- **Perspective diversity**: instead of calling the same skeptic N times, give each a different lens (reproducibility, intent and edge cases, the existing tests).
+- **Judge panel**: produce designs from N angles (MVP-first, risk-first, user-first), score them with a parallel jury, synthesize from the winner.
+- **Loop-until-dry**: for discovery of unknown size, loop until two rounds in a row bring nothing new. Dedup against `seen`, not against `confirmed`; otherwise a finding the jury rejected comes back every round.
+- **Multi-modal sweep**: give the same question to parallel agents with different search routes (file name, content, symbol, git log).
+- **Completeness critic**: a last agent asks "what is missing?"; what it finds is the work of the next round.
+- **No silent caps**: say every limit (top-N, sampling, a round cap) with `log()`.
+- **Fan-out writers → coordinator merge**: N isolated writer agents (`isolation: 'worktree'`, write tools) work in parallel. Each commits to the branch the runtime opened, `wf/<runId>/<label>`, and returns `{ summary, filesTouched }`; the runtime adds `branchName`. An agent that does not commit, or that changes branch, returns null. Do not bring diff text into the script. One isolated coordinator cherry-picks the branches and resolves conflicts; merging is not the script's job. Give writers unique `label`s.
 
-## Örnek: bul → doğrula → sentezle
+## Example: find → verify → synthesize
 
 ```js
-export const meta = { name: 'review-changes', description: 'Üç boyut, her bulguya üç skeptik',
+export const meta = { name: 'review-changes', description: 'Three dimensions, three skeptics per finding',
   phases: [{ title: 'Find' }, { title: 'Verify' }, { title: 'Synthesize' }] }
 
 const DIMENSIONS = ['correctness', 'security', 'data-loss']
 const perDim = await pipeline(DIMENSIONS,
-  d => agent(`Diff: ${args.diffRef}. Yalnızca ${d} sorunlarını ara.`, { label: `find:${d}`, phase: 'Find', schema: FINDINGS }),
+  d => agent(`Diff: ${args.diffRef}. Look only for ${d} problems.`, { label: `find:${d}`, phase: 'Find', schema: FINDINGS }),
   async (found, d) => {
-    if (!found) { log(`${d}: bulucu null`); return [] }
+    if (!found) { log(`${d}: finder returned null`); return [] }
     return parallel(found.findings.map(f => async () => {
       const votes = await parallel([0, 1, 2].map(i => () =>
-        agent(`Bu iddiayı ÇÜRÜTMEYE çalış: ${f.claim} (${f.file}:${f.line}). Emin değilsen refuted=true. Perspektif ${i}.`,
+        agent(`Try to REFUTE this claim: ${f.claim} (${f.file}:${f.line}). If you are not sure, refuted=true. Perspective ${i}.`,
           { label: `verify:${f.file}:${f.line}#${i}`, phase: 'Verify', schema: VERDICT, effort: 'high' })))
       return votes.filter(Boolean).filter(v => !v.refuted).length >= 2 ? { ...f, dimension: d } : null
     }))
   })
 const confirmed = perDim.filter(Boolean).flat().filter(Boolean)
-log(`${confirmed.length} bulgu oylamayı geçti`)
+log(`${confirmed.length} findings passed the vote`)
 if (!confirmed.length) return { findings: [] }
-return agent(`Ciddiyete göre sırala, her birine tek cümle düzeltme öner:\n${JSON.stringify(confirmed)}`,
+return agent(`Order by severity and suggest a one-sentence fix for each:\n${JSON.stringify(confirmed)}`,
   { phase: 'Synthesize', schema: FINDINGS })
 ```
 
-`Verify`, `Find`'ın bitmesini beklemez; tek bariyer sentezdir.
+`Verify` does not wait for `Find` to finish; the only barrier is the synthesis.
 
-## Örnek: loop-until-dry
+## Example: loop-until-dry
 
 ```js
-export const meta = { name: 'find-edge-cases', description: 'Yeni şey çıkmayana kadar ara',
+export const meta = { name: 'find-edge-cases', description: 'Search until nothing new turns up',
   phases: [{ title: 'Find' }, { title: 'Verify' }] }
 
-const LENSES = ['sınır değerler', 'eşzamanlılık', 'hata yolları']
+const LENSES = ['boundary values', 'concurrency', 'error paths']
 const seen = new Set(), confirmed = []
 let dry = 0, round = 0
 while (dry < 2 && round < 6) {
   round++
   const found = (await parallel(LENSES.map((lens, i) => () =>
-    agent(`${args.target} içinde edge case ara. Mercek: ${lens}. Bilinenler: ${[...seen].join(', ') || 'yok'}`,
+    agent(`Look for edge cases in ${args.target}. Lens: ${lens}. Already known: ${[...seen].join(', ') || 'none'}`,
       { label: `find:${i}:r${round}`, phase: 'Find', schema: BUGS })))).filter(Boolean).flatMap(r => r.bugs)
   const fresh = found.filter(b => !seen.has(b.key))
   if (!fresh.length) { dry++; continue }
   dry = 0
   fresh.forEach(b => seen.add(b.key))
   const judged = await parallel(fresh.map(b => () =>
-    agent(`"${b.desc}" gerçek bir hata mı? Kanıt göster.`, { phase: 'Verify', schema: VERDICT })
+    agent(`Is "${b.desc}" a real bug? Show evidence.`, { phase: 'Verify', schema: VERDICT })
       .then(v => v && v.real ? b : null)))
   confirmed.push(...judged.filter(Boolean))
 }
-if (round >= 6) log('tur tavanına ulaşıldı')
+if (round >= 6) log('round cap reached')
 return { confirmed, rounds: round }
 ```
 
-Tam hâlleri (`FINDINGS`, `VERDICT`, `BUGS` şemalarıyla): `examples/workflows/`.
+The full versions, with the `FINDINGS`, `VERDICT` and `BUGS` schemas, are in the repository: https://github.com/yigitokar/maestro/tree/main/examples/workflows
 
-## Resume ve journal
+## Resume and the journal
 
-Her run `.maestro/runs/<runId>/` altında `script.js`, `args.json`, `journal.jsonl` ve `blobs/` tutar. Script'i düzenleyip `resumeFromRunId` ile tekrar koşunca değişmeyen her çağrı cache'den döner. İsabet çağrı başına bakılır: ortadaki bir prompt değişirse yalnızca o çağrı ve sonucunu prompt'una alan çağrılar canlı koşar, bağımsız kardeşler cache'den gelir. Aynı script ve aynı args sıfır canlı çağrı demektir. Yalnızca `ok` kayıtlar cache isabetidir: null (API hatası) ve skipped (bütçe veya atlama) kayıtlar resume'da tekrar koşar. Bütçeyi artırıp resume etmek yarım kalan ajanları böyle canlandırır.
+Every run keeps `script.js`, `args.json`, `journal.jsonl` and `blobs/` under `.maestro/runs/<runId>/`. When you edit the script and run it again with `resumeFromRunId`, every call that did not change comes from the cache. A hit is decided per call: if one prompt in the middle changes, only that call and the calls that take its result into their prompt run live, and independent siblings come from the cache. The same script with the same args means zero live calls. Only `ok` records are cache hits: null records (an API error) and skipped records (budget or a skip) run again on resume. This is how raising the budget and resuming revives the agents that were cut off.
 
-Beklenmedik ya da boş bir sonucu teşhis etmeden önce `journal.jsonl`'i oku (veya `npx -y maestro-workflows runs --cwd <cwd>` ve `maestro show <runId> --cwd <cwd>` çalıştır). Her satır bir çağrının gerçek dönüş değerini ve status'unu tutar. Cache'teki sonucun dolu olduğunu varsayma.
+Before you diagnose an unexpected or empty result, read `journal.jsonl` (or run `npx -y maestro-workflows runs --cwd <cwd>` and `npx -y maestro-workflows show <runId> --cwd <cwd>`). Each line holds the real return value and status of one call. Do not assume a cached result is non-empty.
 
-Kullanıcı run'ı izlemek isterse ona şu komutu ver:
-
-```bash
-npx -y maestro-workflows viz <runId> --cwd <run'ın cwd'si>
-```
-
-Komut tarayıcıda canlı bir zaman çizelgesi açar. `--out rapor.html` ile tek dosyalık bir rapor yazar. Ajanların ne zaman başladığı, slot beklediği ve bittiği `events.jsonl`'de durur.
-
-Run bittiğinde oturumda satır içi bir widget aracı varsa (Claude masaüstündeki `show_widget` gibi) zaman çizelgesini sohbette göster:
+If the user wants to watch the run, give them this command:
 
 ```bash
-npx -y maestro-workflows viz <runId> --cwd <run'ın cwd'si> --widget
+npx -y maestro-workflows viz <runId> --cwd <the run's cwd>
 ```
 
-Komutun stdout'unu hiç değiştirmeden widget koduna ver. Aracın kendi kuralı ilk kullanımdan önce bir hazırlık çağrısı istiyorsa önce onu yap. Parça bir anlık görüntüdür. Run sürerken göstermek istersen bittiğinde yeniden üret. Çok büyük run'larda (yüzlerce ajan) parça uzar; kullanıcı istemedikçe tarayıcı komutunu öner.
+It opens a live timeline in the browser. With `--out report.html` it writes a one-file report. When each agent started, waited for a slot and finished is recorded in `events.jsonl`.
+
+When the run has ended and the session has an inline widget tool (such as `show_widget` in the Claude desktop app), show the timeline in the chat:
+
+```bash
+npx -y maestro-workflows viz <runId> --cwd <the run's cwd> --widget
+```
+
+Give the command's stdout to the widget code unchanged. If the tool's own rule asks for a setup call before first use, make that call first. The fragment is a snapshot: if you show it while the run is going, produce it again when the run ends. For very large runs (hundreds of agents) the fragment is long; suggest the browser command unless the user asks for the widget.
