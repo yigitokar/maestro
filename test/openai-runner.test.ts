@@ -82,7 +82,7 @@ function request(overrides: Partial<RunRequest> = {}) {
   const req: RunRequest = {
     prompt: 'hello',
     system: 'Return a result.',
-    model: 'gpt-5.4',
+    model: 'gpt-6.2-astra',
     tools: [],
     cwd,
     isolated: false,
@@ -120,7 +120,7 @@ describe('OpenAIRunner', () => {
   it('sends a stateless Responses request with the OpenAI key only', async () => {
     const { requests } = mockOpenAI(textReply());
     const runner = new OpenAIRunner({ apiKey: 'sk-explicit', maxTokens: 1234 });
-    const { req, usages } = request({ model: 'openai/gpt-5.4', effort: 'max' });
+    const { req, usages } = request({ model: 'openai/gpt-6.2-astra', effort: 'max' });
     const res = await runner.run(req);
     expect(res).toMatchObject({ result: 'done', status: 'ok', turns: 1, trace: { finalText: 'done' } });
     expect(requests).toHaveLength(1);
@@ -129,11 +129,11 @@ describe('OpenAIRunner', () => {
     expect(sent.headers.get('authorization')).toBe('Bearer sk-explicit');
     expect(JSON.stringify([...sent.headers])).not.toContain('unrelated');
     expect(sent.body).toEqual({
-      model: 'gpt-5.4',
+      model: 'gpt-6.2-astra',
       instructions: 'Return a result.',
       store: false,
       include: ['reasoning.encrypted_content'],
-      reasoning: { effort: 'xhigh' },
+      reasoning: { effort: 'max' },
       input: [{ role: 'user', content: 'hello' }],
       max_output_tokens: 1234,
     });
@@ -170,8 +170,8 @@ describe('OpenAIRunner', () => {
   );
 
   it('normalizes Gateway-style openai/ IDs', () => {
-    expect(openaiModelId('openai/gpt-5.4')).toBe('gpt-5.4');
-    expect(openaiModelId(' gpt-5.4-mini ')).toBe('gpt-5.4-mini');
+    expect(openaiModelId('openai/gpt-6.2-astra')).toBe('gpt-6.2-astra');
+    expect(openaiModelId(' gpt-6-luna ')).toBe('gpt-6-luna');
   });
 
   it('runs the tool loop and passes reasoning and function call items back', async () => {
@@ -421,15 +421,15 @@ describe('OpenAIRunner', () => {
     const handle = run({
       cwd,
       runner: new OpenAIRunner(),
-      model: 'gpt-5.4',
+      model: 'gpt-6.2-astra',
       script: `
 export const meta = { name: 'openai', description: 'd' };
 const a = await agent('default');
-const b = await agent('override', { model: 'gpt-5.4-mini' });
+const b = await agent('override', { model: 'gpt-6-luna' });
 return { a, b };`,
     });
     expect(await handle.promise).toEqual({ a: 'a', b: 'b' });
-    expect(requests.map((r) => r.body.model)).toEqual(['gpt-5.4', 'gpt-5.4-mini']);
+    expect(requests.map((r) => r.body.model)).toEqual(['gpt-6.2-astra', 'gpt-6-luna']);
   });
 });
 
@@ -452,16 +452,16 @@ describe('--runner openai', () => {
 
   it('runs with the io.env key and --model', async () => {
     const { requests } = mockOpenAI(textReply('hi'));
-    const res = await cli(['--model', 'gpt-5.4'], { OPENAI_API_KEY: 'sk-cli' });
+    const res = await cli(['--model', 'gpt-6.2-astra'], { OPENAI_API_KEY: 'sk-cli' });
     expect(res.code, res.stderr).toBe(0);
     expect(JSON.parse(res.stdout)).toBe('hi');
     expect(requests[0]!.headers.get('authorization')).toBe('Bearer sk-cli');
-    expect(requests[0]!.body.model).toBe('gpt-5.4');
+    expect(requests[0]!.body.model).toBe('gpt-6.2-astra');
   });
 
   it.each([{}, { OPENAI_API_KEY: ' ' }])('preflights a missing/blank key: %j', async (env) => {
     const { fetch } = mockOpenAI();
-    const res = await cli(['--model', 'gpt-5.4'], env);
+    const res = await cli(['--model', 'gpt-6.2-astra'], env);
     expect(res.code).toBe(1);
     expect(res.stderr).toContain('OPENAI_API_KEY is missing or blank');
     expect(fetch).not.toHaveBeenCalled();

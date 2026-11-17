@@ -146,11 +146,11 @@ Gateway defaults to `submit-tool` for schema answers. Set `--structured-mode` to
 Set `OPENAI_API_KEY` in the environment, then choose an OpenAI model:
 
 ```bash
-node bin/maestro run review.js --runner openai --model gpt-5.4 --args '{"diffRef":"main...HEAD"}'
-node bin/maestro mcp --runner openai --model gpt-5.4
+node bin/maestro run review.js --runner openai --model gpt-6.2-astra --args '{"diffRef":"main...HEAD"}'
+node bin/maestro mcp --runner openai --model gpt-6.2-astra
 ```
 
-Agents call the OpenAI Responses API directly and use Maestro's own tools. `openai/gpt-5.4` is accepted too, so a script written for Gateway runs unchanged. Schema answers default to `submit-tool`. For details, see [Runners](docs/maestro/runners.md#openai); for library use, [`OpenAIRunner`](docs/maestro/library.md#runners).
+Agents call the OpenAI Responses API directly and use Maestro's own tools. A Gateway-style `openai/<model>` ID is accepted too, so a script written for Gateway runs unchanged. Schema answers default to `submit-tool`. For details, see [Runners](docs/maestro/runners.md#openai); for library use, [`OpenAIRunner`](docs/maestro/library.md#runners).
 
 ## Host API
 

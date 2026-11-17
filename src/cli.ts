@@ -71,7 +71,7 @@ export const USAGE = `usage:
                      defaults: anthropic/gemini/auto two-stage; gateway/openai submit-tool
   gemini             requires GEMINI_API_KEY (or GOOGLE_API_KEY); defaults to gemini-4-hydrogen
   gateway            requires AI_GATEWAY_API_KEY and provider/model IDs via --model or agent opts.model
-  openai             requires OPENAI_API_KEY and OpenAI model IDs (gpt-5.4) via --model or agent opts.model
+  openai             requires OPENAI_API_KEY and OpenAI model IDs (gpt-6.2-astra) via --model or agent opts.model
   --tools-dir        custom tools agents may name in opts.tools: *.js files that default-export a tool
                      (default <state-dir>/tools)
   gc                 lists dirty worktrees and merged / unmerged wf/* branches; deletes only with --delete
