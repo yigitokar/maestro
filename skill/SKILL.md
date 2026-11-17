@@ -43,6 +43,8 @@ The script body is async: `await` and a top-level `return` are allowed. The retu
 
 `opts`: `label` (display name), `phase`, `schema`, `model`, `effort` (`low` … `max`), `isolation: 'worktree'`, `tools` (the allowed tools). When the server runs with `--runner auto`, `opts.model` routes each agent to a provider (`claude-*` → Anthropic, `gpt-*` / `o3` → Codex). The default tools are read-only: `read_file`, `grep`, `glob`, `bash` (ls, cat, git log/diff/status/show, rg, find). Write tools (`write_file`, `edit_file`, `shell`, `git_commit`) are given only with `isolation: 'worktree'`. Custom tools defined outside the script (`.maestro/tools/*.js`, for example `arxiv_search`) are selected by name too; the end of the Workflow tool's description lists the ones that exist. `tools` replaces the default set, it does not extend it: next to a custom tool, list the read tools the agent needs as well.
 
+With `--runner gateway`, every agent uses Vercel AI Gateway. Set `opts.model` to an exact `provider/model` ID, or inherit the server's `--model`; the direct Claude default is not a Gateway ID. The server needs `AI_GATEWAY_API_KEY` in its environment. Keep credentials out of workflow scripts and `args`. Choose models that support tool calling; structured output and effort support depend on the model.
+
 The rule: an error at agent level falls to null silently, an error at script level ends the run. Apply `.filter(Boolean)` to results and say with `log()` how many items were dropped.
 
 An agent's final text is raw data for the caller. The agent knows what is wanted only from its prompt, so the prompt must be enough by itself.
