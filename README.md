@@ -18,7 +18,7 @@ The command is `maestro`. To run it without an install, write `npx -y maestro-wo
 
 If you work in this repository, the command is `node bin/maestro` after `npm install` and `npm run build`. The examples below use this form.
 
-The package is ESM and its only dependency layer is the Anthropic TypeScript SDK (`@anthropic-ai/sdk`). It also brings `zod`, `acorn` and, for the MCP server, `@modelcontextprotocol/sdk`. The default Anthropic runner needs the `ANTHROPIC_API_KEY` environment variable. The Codex runner uses the Codex CLI, installed and signed in. The Gateway runner uses `AI_GATEWAY_API_KEY` for Vercel AI Gateway. The tests and `--dry-run` never touch the network.
+The package is ESM and its only dependency layer is the Anthropic TypeScript SDK (`@anthropic-ai/sdk`). It also brings `zod`, `acorn` and, for the MCP server, `@modelcontextprotocol/sdk`. The default Anthropic runner needs the `ANTHROPIC_API_KEY` environment variable. The Codex runner uses the Codex CLI, installed and signed in. The Gateway runner uses `AI_GATEWAY_API_KEY` for Vercel AI Gateway. The OpenAI runner uses `OPENAI_API_KEY` and calls OpenAI over `fetch`, with no extra package. The tests and `--dry-run` never touch the network.
 
 Runs are stored under `.maestro/` in the working directory (`runs/<runId>/`, `worktrees/`, `workflows/`, `tools/`). Add this directory to the `.gitignore` of your own repository.
 
@@ -141,6 +141,17 @@ Codex writes and starts the workflows; their agents use Gateway and are billed t
 
 Gateway defaults to `submit-tool` for schema answers. Set `--structured-mode` to override it. Choose a language model that supports tool calling; structured output modes and `effort` support depend on the selected model. For library use, see [`GatewayRunner`](docs/maestro/library.md#runners).
 
+## Running agents on OpenAI with your own key
+
+Set `OPENAI_API_KEY` in the environment, then choose an OpenAI model:
+
+```bash
+node bin/maestro run review.js --runner openai --model gpt-5.4 --args '{"diffRef":"main...HEAD"}'
+node bin/maestro mcp --runner openai --model gpt-5.4
+```
+
+Agents call the OpenAI Responses API directly and use Maestro's own tools. `openai/gpt-5.4` is accepted too, so a script written for Gateway runs unchanged. Schema answers default to `submit-tool`. For details, see [Runners](docs/maestro/runners.md#openai); for library use, [`OpenAIRunner`](docs/maestro/library.md#runners).
+
 ## Host API
 
 This is the surface the script sees (spec "Seviye 1"). Beyond it there are only the JS built-ins. `process`, `require`, `fetch`, `console` and `setTimeout` are not defined.
@@ -156,7 +167,7 @@ This is the surface the script sees (spec "Seviye 1"). Beyond it there are only 
 | `budget` | `{ total, spent(), remaining() }` | Without a `total` it is null and `remaining()` is Infinity. |
 | `workflow(nameOrRef, args?)` | The return value of the child workflow | Nesting goes one level only; inside the child it throws. The same semaphore, counter and budget are shared. |
 
-`agent` opts: `label`, `phase`, `schema`, `model`, `effort` (`low` … `max`), `isolation: 'worktree'`, `tools`, `pdfs` (base64 PDF documents for Gemini nodes; see [Runners](docs/maestro/runners.md#pdf-documents)). The default tools are read-only: `read_file`, `grep`, `glob` and an allowlisted `bash` (ls, cat, git log/diff/status/show, rg, find). The path arguments of `bash` commands, like `read_file`, cannot leave the working directory. Commands run through `bash` and `shell` do not see the `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or `AI_GATEWAY_API_KEY` variables. `write_file`, `edit_file`, `shell` and `git_commit` are given only with `isolation: 'worktree'`. A writer commits to the branch the runtime opened, `wf/<runId>/<label>`. In `AnthropicRunner`, a writer that finishes its work and forgets to call `git_commit` gets one reminder turn. At exit the branch, a clean status and at least one commit are verified from Git, and `branchName` is added to the result. Unknown keys in the `meta` block (for example the typo `maxAgent`) go to the log as a warning at the start of the run.
+`agent` opts: `label`, `phase`, `schema`, `model`, `effort` (`low` … `max`), `isolation: 'worktree'`, `tools`, `pdfs` (base64 PDF documents for Gemini nodes; see [Runners](docs/maestro/runners.md#pdf-documents)). The default tools are read-only: `read_file`, `grep`, `glob` and an allowlisted `bash` (ls, cat, git log/diff/status/show, rg, find). The path arguments of `bash` commands, like `read_file`, cannot leave the working directory. Commands run through `bash` and `shell` do not see the `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `AI_GATEWAY_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, or `OPENAI_API_KEY` variables. `write_file`, `edit_file`, `shell` and `git_commit` are given only with `isolation: 'worktree'`. A writer commits to the branch the runtime opened, `wf/<runId>/<label>`. In `AnthropicRunner`, a writer that finishes its work and forgets to call `git_commit` gets one reminder turn. At exit the branch, a clean status and at least one commit are verified from Git, and `branchName` is added to the result. Unknown keys in the `meta` block (for example the typo `maxAgent`) go to the log as a warning at the start of the run.
 
 `AnthropicRunner` supports three structured output modes for agents with a schema (`--structured-mode` / `structuredMode`): `two-stage` (the default, the two-stage parse of spec 3.2), `submit-tool` (adds the schema to the Stage 1 tool list as the strict `__maestro_submit_result` tool; this stops Stage 2 from breaking the prompt cache of the transcript) and `single-stage` (gives the `output_config.format` schema directly to the Stage 1 requests).
 
@@ -254,7 +265,7 @@ The server carries the script-writing guide too: the model reads it with the `Wo
 mkdir -p ~/.claude/skills/maestro-workflow-authoring && cp skill/SKILL.md ~/.claude/skills/maestro-workflow-authoring/SKILL.md
 ```
 
-With the default runner the server uses the `ANTHROPIC_API_KEY` in Claude Code's environment. The agents' cost is billed to the account of this key. `mcp --runner codex` uses the Codex CLI session. `mcp --runner gateway --model <provider/model>` uses `AI_GATEWAY_API_KEY` and bills through Vercel AI Gateway.
+With the default runner the server uses the `ANTHROPIC_API_KEY` in Claude Code's environment. The agents' cost is billed to the account of this key. `mcp --runner codex` uses the Codex CLI session. `mcp --runner gateway --model <provider/model>` uses `AI_GATEWAY_API_KEY` and bills through Vercel AI Gateway. `mcp --runner openai --model <model>` uses `OPENAI_API_KEY` and bills your OpenAI account.
 
 The `maestro mcp` server takes the `--cwd`, `--state-dir`, `--tools-dir`, `--budget`, `--concurrency`, `--model`, `--runner` and `--dry-run` options. `--budget` is one pool for the whole session: every run the server starts spends from the same `Budget` instance. stdout is the MCP channel and diagnostics go to stderr. When the client closes the connection (stdin ends) or the client process is gone, the server shuts down, runs in progress are stopped (their journals stay for resume) and the command exits with 0.
 
@@ -263,14 +274,14 @@ The `maestro mcp` server takes the `--cwd`, `--state-dir`, `--tools-dir`, `--bud
 ```text
 maestro run <script.js> [--args <json>] [--args-file f] [--resume <runId>] [--budget 500k]
                         [--dry-run] [--cwd d] [--state-dir d] [--tools-dir d] [--concurrency n] [--model m]
-                        [--runner <anthropic|codex|gateway|auto>]
+                        [--runner <anthropic|codex|gateway|openai|auto>]
                         [--structured-mode <two-stage|submit-tool|single-stage>]
 maestro runs [--cwd d] [--state-dir d] [--limit n]          (alias: ls)
 maestro gc [--delete] [--force] [--cwd d]
 maestro show <runId> [label-or-live-id] [--cwd d] [--state-dir d]
 maestro viz <runId> [--cwd d] [--state-dir d] [--port n] [--no-open] [--out f.html] [--widget]
 maestro mcp [--cwd d] [--state-dir d] [--tools-dir d] [--budget 500k] [--concurrency n] [--model m]
-            [--runner <anthropic|codex|gateway|auto>]
+            [--runner <anthropic|codex|gateway|openai|auto>]
             [--structured-mode <two-stage|submit-tool|single-stage>] [--dry-run]
 ```
 
