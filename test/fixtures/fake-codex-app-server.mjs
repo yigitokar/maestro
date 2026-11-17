@@ -100,7 +100,10 @@ async function receive(request) {
       finish();
       return;
     }
-    if (scenario.ignoreSteer) return;
+    if (scenario.ignoreSteer) {
+      if (scenario.finishAfterIgnoredSteerMs) setTimeout(finish, scenario.finishAfterIgnoredSteerMs);
+      return;
+    }
     if (scenario.ackAndFinishTogether) {
       finished = true;
       process.stdout.write(

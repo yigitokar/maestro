@@ -46,7 +46,7 @@ When an agent has a `schema`, the runner has three ways to get the answer. Choos
 maestro run review.js --runner codex --concurrency 4
 ```
 
-Each agent is its own Codex process, so memory use grows with `--concurrency`. Normal workflow calls use `codex app-server`, which accepts live instructions through `turn/steer` and reports tool activity and token usage. A delivered message means Codex accepted it for the active turn; a message racing with completion can fail.
+Each agent is its own Codex process, so memory use grows with `--concurrency`. Normal workflow calls use `codex app-server`, which accepts live instructions through `turn/steer` and reports tool activity and token usage. The app-server is an experimental part of the Codex CLI. If the installed CLI does not have it, Maestro says so in the log and runs the agents with `codex exec`; they work as before but cannot receive live messages (`canMessage: false`). A delivered message means Codex accepted it for the active turn; a message racing with completion can fail.
 
 Direct `CodexRunner.run()` calls without the host message hook use legacy `codex exec`. The `ignoreUserConfig` and exec-only `extraArgs` options also retain that transport. These calls still report available activity but cannot accept messages (`canMessage: false`).
 

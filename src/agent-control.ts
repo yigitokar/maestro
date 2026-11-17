@@ -4,6 +4,11 @@ import { addUsage } from './usage.js';
 export const MAX_AGENT_MESSAGE_CHARS = 16_000;
 export const MAX_AGENT_MESSAGES = 32;
 const SUMMARY_CHARS = 300;
+/**
+ * Progress and usage arrive per streamed text fragment; at most one status per agent goes out in this
+ * many milliseconds for them. State changes (running, messages, the end) are never delayed.
+ */
+export const STATUS_THROTTLE_MS = 250;
 
 /** One agent's bounded control state. Never waits for a backend when accepting a message. */
 export class AgentControl {
@@ -11,12 +16,15 @@ export class AgentControl {
   private closed = false;
   private readonly audit: NonNullable<Entry['messages']> = [];
   private readonly state: LiveAgentStatus;
+  private lastEmit = 0;
+  private trailing: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
     identity: Pick<LiveAgentStatus, 'id' | 'label' | 'phase' | 'group'>,
     private readonly signal: AbortSignal,
     private readonly changed: (agent: LiveAgentStatus) => void,
     private readonly messageChanged: (message: NonNullable<Entry['messages']>[number]) => void,
+    private readonly throttleMs = STATUS_THROTTLE_MS,
   ) {
     const now = Date.now();
     this.state = {
@@ -49,8 +57,26 @@ export class AgentControl {
   }
 
   private update(): void {
-    this.state.updatedAt = Date.now();
+    clearTimeout(this.trailing);
+    this.trailing = undefined;
+    this.state.updatedAt = this.lastEmit = Date.now();
     this.changed(this.snapshot());
+  }
+
+  /** For progress and usage: the first change goes out at once, the rest of a burst as one trailing status. */
+  private updateSoon(): void {
+    this.state.updatedAt = Date.now();
+    if (this.trailing) return;
+    const wait = this.lastEmit + this.throttleMs - Date.now();
+    if (wait <= 0) {
+      this.update();
+      return;
+    }
+    this.trailing = setTimeout(() => {
+      this.trailing = undefined;
+      if (!this.closed) this.update();
+    }, wait);
+    this.trailing.unref?.();
   }
 
   running(): void {
@@ -69,13 +95,13 @@ export class AgentControl {
     if (progress.turns !== undefined && Number.isFinite(progress.turns)) {
       this.state.turns = Math.max(this.state.turns, Math.max(0, Math.floor(progress.turns)));
     }
-    this.update();
+    this.updateSoon();
   }
 
   usage(usage: Usage): void {
     if (this.closed) return;
     addUsage(this.state.usage, usage);
-    this.update();
+    this.updateSoon();
   }
 
   register(handler: (message: string) => Promise<void>): () => void {

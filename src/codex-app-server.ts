@@ -18,8 +18,24 @@ interface Options {
   model?: string;
   schema?: JSONSchema;
   killGraceMs: number;
+  /** Sent as clientInfo.version in `initialize`. */
+  clientVersion: string;
+  /** How long a `turn/steer` may go unanswered before that one message fails (default 30 seconds). */
+  steerTimeoutMs?: number;
   onEvent(event: unknown): void;
   onUsage(usage: Usage): void;
+}
+
+/**
+ * The process ended before it answered `initialize`: this Codex CLI has no usable `app-server`. The
+ * prompt was never sent, so nothing ran and the caller can safely run the agent with `codex exec`.
+ * A failure after the handshake is a real error and is reported as one.
+ */
+export class CodexAppServerUnavailable extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CodexAppServerUnavailable';
+  }
 }
 
 /** A successful turn is followed by deliberate server shutdown; it does not exit by itself. */
@@ -48,6 +64,7 @@ export function executeCodexAppServer(opts: Options): Promise<{
     let sending = false;
     let stopped = false;
     let completed = false;
+    let handshake = false;
     let settled = false;
     let failure: Error | undefined;
     let stderr = '';
@@ -76,7 +93,13 @@ export function executeCodexAppServer(opts: Options): Promise<{
       child.stdin.write(`${JSON.stringify(value)}\n`);
     }
 
-    function rpc(method: string, params: unknown, onResult?: (result: any) => void): Promise<any> {
+    function rpc(
+      method: string,
+      params: unknown,
+      onResult?: (result: any) => void,
+      /** Set for a request whose timeout must fail only that request, not the agent. */
+      softTimeoutMs?: number,
+    ): Promise<any> {
       if (stopped) return Promise.reject(new Error('Codex agent is no longer running'));
       return new Promise((resolveRequest, rejectRequest) => {
         const requestId = ++id;
@@ -84,8 +107,8 @@ export function executeCodexAppServer(opts: Options): Promise<{
           pending.delete(requestId);
           const error = new Error(`Codex app-server ${method} timed out`);
           rejectRequest(error);
-          fail(error);
-        }, 30_000);
+          if (softTimeoutMs === undefined) fail(error);
+        }, softTimeoutMs ?? 30_000);
         pending.set(requestId, {
           resolve: (result) => {
             try {
@@ -136,19 +159,23 @@ export function executeCodexAppServer(opts: Options): Promise<{
       child.stdin.destroy();
       child.stdout.destroy();
       child.stderr.destroy();
-      if (failure) reject(failure);
+      if (!handshake && !req.signal.aborted) {
+        const detail =
+          failure?.message ?? `exited (${signal ?? code}): ${stderr.trim() || 'no error details'}`;
+        reject(new CodexAppServerUnavailable(`codex app-server did not start: ${detail}`));
+      } else if (failure) reject(failure);
       else
         resolve(
           completed && !req.signal.aborted ? { code: 0, signal: null, stderr } : { code, signal, stderr },
         );
     }
 
-    function signalGroup(signal: NodeJS.Signals): void {
+    function signalGroup(signal: NodeJS.Signals, quiet = false): void {
       if (child.pid === undefined) return;
       try {
         process.kill(-child.pid, signal);
       } catch (error) {
-        if (object(error)?.code !== 'ESRCH') failure ??= error as Error;
+        if (!quiet && object(error)?.code !== 'ESRCH') failure ??= error as Error;
       }
     }
 
@@ -194,6 +221,8 @@ export function executeCodexAppServer(opts: Options): Promise<{
                 // Settle in the JSONL callback: completion may be the next line in the same chunk.
                 message.resolve();
               },
+              // A lost acknowledgement fails this message only; the agent keeps working.
+              opts.steerTimeoutMs ?? 30_000,
             );
           } catch (error) {
             message.reject(error instanceof Error ? error : new Error(String(error)));
@@ -346,13 +375,20 @@ export function executeCodexAppServer(opts: Options): Promise<{
     child.on('close', (code, signal) => {
       closed = true;
       exited = { code, signal };
-      if (!stopped || killed) finish(code, signal);
+      if (completed && stopped && !killed) {
+        // The turn is done and the server has gone: nothing is left to wait for. Descendants that
+        // outlived it get the SIGKILL now instead of after the grace period; a failed kill here must
+        // not turn a finished agent into an error.
+        signalGroup('SIGKILL', true);
+        finish(code, signal);
+      } else if (!stopped || killed) finish(code, signal);
     });
     req.signal.addEventListener('abort', stop, { once: true });
     if (req.signal.aborted) stop();
 
     void (async () => {
-      await rpc('initialize', { clientInfo: { name: 'maestro', version: '1.0.0' } });
+      await rpc('initialize', { clientInfo: { name: 'maestro', version: opts.clientVersion } });
+      handshake = true;
       if (stopped) return;
       send({ method: 'initialized', params: {} });
       const response = await rpc('thread/start', {

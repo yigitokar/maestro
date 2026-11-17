@@ -34,6 +34,7 @@ import {
   type WorkflowOutcome,
   type WorkflowToolContext,
 } from './tool.js';
+import { MAESTRO_VERSION } from './version.js';
 import { readOutcome, SAFE_ID } from './workflow.js';
 
 export const WORKFLOW_RESULT_TOOL_NAME = 'WorkflowResult';
@@ -115,7 +116,7 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
       : new Budget({ total: ctx.budget ?? null, concurrency: ctx.concurrency ?? defaultConcurrency() });
   const runCtx = { ...ctx, budget };
   const server = new Server(
-    { name: 'maestro', version: '1.3.2' },
+    { name: 'maestro', version: MAESTRO_VERSION },
     {
       capabilities: { tools: {} },
       instructions: `Maestro runs multi-agent workflows from a JavaScript script given to the Workflow tool. ${GUIDE_POINTER}`,

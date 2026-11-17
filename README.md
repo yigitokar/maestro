@@ -86,7 +86,7 @@ detach();
 
 ## Running agents with Codex
 
-If the Codex CLI is installed and signed in with a ChatGPT account, the agents can run on the Codex plan. `ANTHROPIC_API_KEY` is not needed. Each agent gets its own Codex process; normal workflow runs use `codex app-server` for live steering:
+If the Codex CLI is installed and signed in with a ChatGPT account, the agents can run on the Codex plan. `ANTHROPIC_API_KEY` is not needed. Each agent gets its own Codex process; normal workflow runs use `codex app-server` for live steering, and fall back to `codex exec` (without live messages) when the installed CLI has no app-server:
 
 ```bash
 node bin/maestro run review.js --runner codex --args '{"diffRef":"main...HEAD"}' --concurrency 4

@@ -104,7 +104,7 @@ describe('Codex app-server live transport', () => {
     scenario({ finalText: '{"value":"ok"}' });
     const result = await runner().run(req);
     expect(result).toMatchObject({ status: 'ok', result: { value: 'ok' }, turns: 1 });
-    expect(records()[0].argv).toEqual(['app-server', '--stdio']);
+    expect(records()[0].argv).toEqual(['app-server']);
     expect(calls('initialize')).toHaveLength(1);
     expect(calls('initialized')).toHaveLength(1);
     expect(calls('thread/start')[0].params).toMatchObject({
@@ -293,6 +293,43 @@ describe('Codex app-server live transport', () => {
     expect(unregister).toHaveBeenCalledOnce();
     const start = records()[0];
     expect(() => process.kill(start.pid, 0)).toThrow();
+  });
+
+  it('finishes as soon as the server has gone, without waiting for the default kill grace period', async () => {
+    const started = Date.now();
+    const result = await new CodexRunner({ bin, killGraceMs: 5_000 }).run(request().req);
+    expect(result).toMatchObject({ status: 'ok', result: 'done' });
+    expect(Date.now() - started).toBeLessThan(2_500);
+  });
+
+  it('a steer that is never acknowledged fails that message only; the agent finishes', async () => {
+    scenario({ hold: true, ignoreSteer: true, finishAfterIgnoredSteerMs: 150 });
+    const { req, ready } = request();
+    const result = new CodexRunner({ bin, killGraceMs: 15, steerTimeoutMs: 30 }).run(req);
+    await expect((await ready)('lost')).rejects.toThrow('turn/steer timed out');
+    expect(await result).toMatchObject({ status: 'ok', result: 'done' });
+  });
+
+  it('a CLI without app-server runs the agent with codex exec, and later agents skip the probe', async () => {
+    const old = path.join(import.meta.dirname, 'fixtures', 'fake-codex-old.mjs');
+    const seen = path.join(cwd, 'old.txt');
+    vi.stubEnv('FAKE_CODEX_OLD_RECORD', seen);
+    vi.stubEnv('FAKE_CODEX_RECORD', path.join(cwd, 'exec.jsonl'));
+    vi.stubEnv(
+      'FAKE_CODEX_SCENARIO',
+      JSON.stringify({ steps: [{ event: { type: 'turn.completed' } }], finalText: 'from exec' }),
+    );
+    const logs: string[] = [];
+    const codex = new CodexRunner({ bin: old, killGraceMs: 15 });
+    const first = request({ log: (m) => logs.push(m) });
+    expect(await codex.run(first.req)).toMatchObject({ status: 'ok', result: 'from exec' });
+    expect(logs.join(' ')).toContain('codex app-server did not start');
+    expect(logs.join(' ')).toContain('codex exec from now on');
+    expect(first.progress.some((p) => p.summary.includes('Live messages unavailable'))).toBe(true);
+    const second = request({ log: (m) => logs.push(m) });
+    expect(await codex.run(second.req)).toMatchObject({ status: 'ok', result: 'from exec' });
+    expect(second.progress.some((p) => p.summary.includes('no usable app-server'))).toBe(true);
+    expect(readFileSync(seen, 'utf8').trim().split('\n')).toEqual(['app-server', 'exec', 'exec']);
   });
 
   it('usage-budget abort stops before a successful result', async () => {
