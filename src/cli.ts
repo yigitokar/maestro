@@ -55,7 +55,7 @@ export const USAGE = `usage:
   --structured-mode  schema output mode: two-stage, submit-tool, or single-stage
                      defaults: anthropic/auto two-stage; gateway/openai submit-tool
   gateway            requires AI_GATEWAY_API_KEY and provider/model IDs via --model or agent opts.model
-  openai             requires OPENAI_API_KEY and OpenAI model IDs (gpt-5.4) via --model or agent opts.model
+  openai             requires OPENAI_API_KEY and OpenAI model IDs (gpt-6.2-astra) via --model or agent opts.model
   --tools-dir        custom tools agents may name in opts.tools: *.js files that default-export a tool
                      (default <state-dir>/tools)
   gc                 lists dirty worktrees and merged / unmerged wf/* branches; deletes only with --delete

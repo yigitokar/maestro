@@ -104,19 +104,19 @@ The host remains Codex, while workflow agents are billed through Gateway. Gatewa
 Set `OPENAI_API_KEY` in the process environment, then select a model:
 
 ```bash
-maestro run review.js --runner openai --model gpt-5.4
-maestro mcp --runner openai --model gpt-5.4
+maestro run review.js --runner openai --model gpt-6.2-astra
+maestro mcp --runner openai --model gpt-6.2-astra
 ```
 
 Agents call the [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses) with your key and are billed to your OpenAI account. No Vercel account and no Codex CLI are involved, and agents use Maestro's own tools, the same as Claude agents.
 
-The model has no default: set `--model` or `opts.model` on every agent. A Gateway-style ID such as `openai/gpt-5.4` is accepted and sent as `gpt-5.4`. A Claude or other provider's model is rejected. In library calls, use `run({ model, runner: new OpenAIRunner() })`; `new OpenAIRunner({ apiKey })` overrides the environment key, and `baseURL` points it at another server that speaks the Responses API.
+The model has no default: set `--model` or `opts.model` on every agent. A Gateway-style ID such as `openai/gpt-6.2-astra` is accepted and sent as `gpt-6.2-astra`. A Claude or other provider's model is rejected. In library calls, use `run({ model, runner: new OpenAIRunner() })`; `new OpenAIRunner({ apiKey })` overrides the environment key, and `baseURL` points it at another server that speaks the Responses API.
 
 How OpenAI agents differ from Claude agents:
 
 - **Requests.** Each request carries the whole transcript and is sent with `store: false`, so OpenAI keeps no conversation state. Reasoning items come back encrypted and are passed back on the next turn. If a model refuses that, the runner stops asking for them.
 - **Caching.** OpenAI caches repeated prefixes on its own. Cached tokens are reported as `cache_read_input_tokens`.
-- **Effort.** `low`, `medium`, `high` and `xhigh` are sent as `reasoning.effort`. `max` is sent as `xhigh`. Support depends on the model.
+- **Effort.** Every value, `low` through `max`, is sent unchanged as `reasoning.effort`. Which values a model accepts depends on the model; check its page in OpenAI's model list.
 - **Structured answers.** The default is `submit-tool`, as with Gateway. `two-stage` and `single-stage` use OpenAI's strict JSON schema output. Every mode checks the answer against your original schema.
 - **Retries.** A 429, 5xx or connection error is retried twice, after 5 and 10 seconds. A 429 for an exhausted quota is not retried.
 

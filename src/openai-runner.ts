@@ -23,7 +23,6 @@ import {
 } from './runner.js';
 import {
   type AgentRunner,
-  type Effort,
   type JSONSchema,
   LIMITS,
   MaestroError,
@@ -86,11 +85,6 @@ class OpenAIAPIError extends Error {
 export function openaiModelId(model: string): string {
   const m = model.trim();
   return m.startsWith('openai/') ? m.slice('openai/'.length) : m;
-}
-
-/** Maestro effort → Responses `reasoning.effort`; `max` has no OpenAI equivalent above `xhigh`. */
-function openaiEffort(effort: Effort): string {
-  return effort === 'max' ? 'xhigh' : effort;
 }
 
 /** OpenAI reports cached tokens inside input_tokens; Maestro's input_tokens is the uncached part. */
@@ -201,7 +195,7 @@ export class OpenAIRunner implements AgentRunner {
     if (!req.signal.aborted && (/^claude-/i.test(model) || model.includes('/'))) {
       throw new Error(
         `The openai runner needs an OpenAI model ID, got "${req.model}". Set --model, run({ model }), or agent ` +
-          'opts.model (for example gpt-5.4); the default Claude model is not an OpenAI model.',
+          'opts.model (for example gpt-6.2-astra); the default Claude model is not an OpenAI model.',
       );
     }
     // A remote error may echo credentials; keep them out of logs and persisted error diagnostics.
@@ -258,7 +252,7 @@ export class OpenAIRunner implements AgentRunner {
       instructions,
       store: false,
       ...(tools.length > 0 ? { tools } : {}),
-      ...(req.effort ? { reasoning: { effort: openaiEffort(req.effort) } } : {}),
+      ...(req.effort ? { reasoning: { effort: req.effort } } : {}),
     };
     const stage1Format = mode === 'single-stage' && schema ? { text: textFormat(schema) } : {};
 
