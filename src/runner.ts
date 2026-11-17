@@ -61,10 +61,10 @@ export const WRITER_INSTRUCTION =
 
 const execFileAsync = promisify(execFile);
 
-const CONTINUE_MESSAGE =
+export const CONTINUE_MESSAGE =
   'Continue: your previous reply was cut off by the output limit. Continue exactly where you ' +
   'stopped, without repeating what you already wrote.';
-const SCHEMA_MESSAGE = 'Return your findings in the required schema.';
+export const SCHEMA_MESSAGE = 'Return your findings in the required schema.';
 
 /** Sent once when an isolated writer ends its turn with uncommitted changes in the worktree. */
 export const COMMIT_REMINDER_MESSAGE =
@@ -75,8 +75,8 @@ export const COMMIT_REMINDER_MESSAGE =
 /** Synthetic strict tool used by `structuredMode: 'submit-tool'` so the transcript cache stays intact. */
 export const SUBMIT_RESULT_TOOL_NAME = '__maestro_submit_result';
 
-const SUBMIT_SYSTEM_INSTRUCTION = `When you have your final answer, call \`${SUBMIT_RESULT_TOOL_NAME}\` with an input matching its schema.`;
-const SUBMIT_REMINDER_MESSAGE = `Call \`${SUBMIT_RESULT_TOOL_NAME}\` now with your final structured findings.`;
+export const SUBMIT_SYSTEM_INSTRUCTION = `When you have your final answer, call \`${SUBMIT_RESULT_TOOL_NAME}\` with an input matching its schema.`;
+export const SUBMIT_REMINDER_MESSAGE = `Call \`${SUBMIT_RESULT_TOOL_NAME}\` now with your final structured findings.`;
 
 /**
  * How `AnthropicRunner` obtains a schema-validated result:
@@ -110,14 +110,14 @@ export interface AnthropicRunnerOptions {
 }
 
 /** Thrown internally to unwind when the run's signal fires. */
-class Aborted extends Error {}
+export class Aborted extends Error {}
 
 /** Trace limits: input summary per tool call, final text per agent. */
 const TRACE_INPUT_CHARS = 200;
 const TRACE_TEXT_CHARS = 2_000;
 
 /** Per-run bookkeeping: summed usage, turn count, onUsage per turn (spec 3.2 invariant), trace. */
-class RunState {
+export class RunState {
   usage: Usage = { input_tokens: 0, output_tokens: 0 };
   turns = 0;
   readonly toolCalls: TraceToolCall[] = [];
@@ -168,7 +168,7 @@ class RunState {
 }
 
 /** Follow-ups wait for a model boundary; finishing a run must settle every delivery promise. */
-class LiveMessages {
+export class LiveMessages {
   private readonly pending: Array<{ text: string; resolve(): void; reject(error: Error): void }> = [];
   private closed = false;
   private readonly unregister: (() => void) | undefined;
@@ -192,7 +192,10 @@ class LiveMessages {
     return this.pending.length > 0;
   }
 
-  appendTo(messages: MessageParam[], apply?: () => void): boolean {
+  appendTo(
+    messages: { push(message: { role: 'user'; content: string }): unknown },
+    apply?: () => void,
+  ): boolean {
     if (!this.hasPending) return false;
     if (this.req.signal.aborted) throw new Aborted();
     const batch = this.pending.splice(0);
@@ -249,7 +252,7 @@ function errorText(e: unknown): string {
   return `error: ${e instanceof Error ? e.message : String(e)}`;
 }
 
-function sleep(ms: number, signal: AbortSignal): Promise<void> {
+export function sleep(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.reject(new Aborted());
   return new Promise((resolve, reject) => {
     const t = setTimeout(() => {
@@ -424,7 +427,7 @@ export function validateValue(schema: unknown, value: unknown, at = '$'): string
   return errs;
 }
 
-async function hasUncommittedChanges(cwd: string, signal: AbortSignal): Promise<boolean> {
+export async function hasUncommittedChanges(cwd: string, signal: AbortSignal): Promise<boolean> {
   if (signal.aborted) throw new Aborted();
   try {
     const { stdout } = await execFileAsync('git', ['status', '--porcelain'], {

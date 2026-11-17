@@ -1,6 +1,6 @@
 ---
 title: "Runners"
-description: "Run agents on Claude, Codex, or models through Vercel AI Gateway."
+description: "Run agents on Claude, Codex, OpenAI, or models through Vercel AI Gateway."
 icon: "server"
 ---
 
@@ -11,6 +11,7 @@ A runner is what executes one agent. Choose one with `--runner` or the `runner` 
 | `anthropic` (default) | The Claude API | `ANTHROPIC_API_KEY` |
 | `codex` | The Codex CLI, one process per agent | Codex CLI installed and signed in |
 | `gateway` | Models through Vercel AI Gateway | `AI_GATEWAY_API_KEY` and a `provider/model` ID |
+| `openai` | OpenAI models, directly through the Responses API | `OPENAI_API_KEY` and an OpenAI model ID |
 | `auto` | Direct Claude or Codex, chosen per agent by its model | Whatever the models in the script need |
 
 `--dry-run` overrides every runner with a fake that answers from the schema and needs no API key.
@@ -97,6 +98,29 @@ codex mcp add maestro -- npx -y maestro-workflows mcp --runner gateway --model o
 ```
 
 The host remains Codex, while workflow agents are billed through Gateway. Gateway mode sends every agent to Gateway; `auto` continues to route only between direct Anthropic and Codex.
+
+## OpenAI
+
+Set `OPENAI_API_KEY` in the process environment, then select a model:
+
+```bash
+maestro run review.js --runner openai --model gpt-5.4
+maestro mcp --runner openai --model gpt-5.4
+```
+
+Agents call the [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses) with your key and are billed to your OpenAI account. No Vercel account and no Codex CLI are involved, and agents use Maestro's own tools, the same as Claude agents.
+
+The model has no default: set `--model` or `opts.model` on every agent. A Gateway-style ID such as `openai/gpt-5.4` is accepted and sent as `gpt-5.4`. A Claude or other provider's model is rejected. In library calls, use `run({ model, runner: new OpenAIRunner() })`; `new OpenAIRunner({ apiKey })` overrides the environment key, and `baseURL` points it at another server that speaks the Responses API.
+
+How OpenAI agents differ from Claude agents:
+
+- **Requests.** Each request carries the whole transcript and is sent with `store: false`, so OpenAI keeps no conversation state. Reasoning items come back encrypted and are passed back on the next turn. If a model refuses that, the runner stops asking for them.
+- **Caching.** OpenAI caches repeated prefixes on its own. Cached tokens are reported as `cache_read_input_tokens`.
+- **Effort.** `low`, `medium`, `high` and `xhigh` are sent as `reasoning.effort`. `max` is sent as `xhigh`. Support depends on the model.
+- **Structured answers.** The default is `submit-tool`, as with Gateway. `two-stage` and `single-stage` use OpenAI's strict JSON schema output. Every mode checks the answer against your original schema.
+- **Retries.** A 429, 5xx or connection error is retried twice, after 5 and 10 seconds. A 429 for an exhausted quota is not retried.
+
+Limits, live follow-up messages, the writer's commit reminder and the one continuation after the output limit work as for Claude.
 
 ## Claude and Codex in one run
 
