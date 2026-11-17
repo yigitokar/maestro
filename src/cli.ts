@@ -16,6 +16,7 @@ import { GatewayRunner } from './gateway-runner.js';
 import { gc } from './isolation.js';
 import { readEntries, readResultBlob, readTrace } from './journal.js';
 import { serveMcp } from './mcp.js';
+import { OpenAIRunner } from './openai-runner.js';
 import { attachTerminalProgress, formatLiveAgent, type ProgressStream } from './progress.js';
 import { RoutingRunner } from './routing-runner.js';
 import { AnthropicRunner, type StructuredMode } from './runner.js';
@@ -29,7 +30,7 @@ import { readOutcome, run, SAFE_ID } from './workflow.js';
 export const USAGE = `usage:
   maestro run <script.js> [--args <json>] [--args-file <file>] [--resume <runId>] [--budget <500k>]
                           [--dry-run] [--cwd <dir>] [--state-dir <dir>] [--tools-dir <dir>] [--concurrency <n>]
-                          [--model <model>] [--runner <anthropic|codex|auto|gateway>]
+                          [--model <model>] [--runner <anthropic|codex|auto|gateway|openai>]
                           [--structured-mode <two-stage|submit-tool|single-stage>]
   maestro run --resume <runId> [options]     resume with the stored script.js and args.json
   maestro runs [--cwd <dir>] [--state-dir <dir>] [--limit <n>]
@@ -43,16 +44,18 @@ export const USAGE = `usage:
                                              (--out writes the page as one self-contained HTML file instead;
                                              --widget prints a snapshot fragment for a chat's inline widget tool)
   maestro mcp [--cwd <dir>] [--state-dir <dir>] [--tools-dir <dir>] [--budget <500k>] [--concurrency <n>]
-              [--model <model>] [--runner <anthropic|codex|auto|gateway>]
+              [--model <model>] [--runner <anthropic|codex|auto|gateway|openai>]
               [--structured-mode <two-stage|submit-tool|single-stage>] [--dry-run]
                                              serve the Workflow tool over stdio as an MCP server
                                              (--budget is one pool for the whole session; exits 0 when stdin ends)
 
   --dry-run          run every agent with an in-memory fake runner (schema stubs, no network)
-  --runner           agent runner: anthropic (default), codex, auto (routes by model), or gateway; --dry-run takes precedence
+  --runner           agent runner: anthropic (default), codex, auto (routes by model), gateway, or openai;
+                     --dry-run takes precedence
   --structured-mode  schema output mode: two-stage, submit-tool, or single-stage
-                     defaults: anthropic/auto two-stage; gateway submit-tool
+                     defaults: anthropic/auto two-stage; gateway/openai submit-tool
   gateway            requires AI_GATEWAY_API_KEY and provider/model IDs via --model or agent opts.model
+  openai             requires OPENAI_API_KEY and OpenAI model IDs (gpt-6.2-astra) via --model or agent opts.model
   --tools-dir        custom tools agents may name in opts.tools: *.js files that default-export a tool
                      (default <state-dir>/tools)
   gc                 lists dirty worktrees and merged / unmerged wf/* branches; deletes only with --delete
@@ -130,10 +133,16 @@ function str(p: Parsed, name: string): string | undefined {
   return typeof v === 'string' ? v : undefined;
 }
 
-function runnerName(p: Parsed): 'anthropic' | 'codex' | 'auto' | 'gateway' {
+function runnerName(p: Parsed): 'anthropic' | 'codex' | 'auto' | 'gateway' | 'openai' {
   const name = str(p, 'runner') ?? 'anthropic';
-  if (name !== 'anthropic' && name !== 'codex' && name !== 'auto' && name !== 'gateway') {
-    throw new UsageError(`invalid --runner "${name}" (expected anthropic, codex, auto or gateway)`);
+  if (
+    name !== 'anthropic' &&
+    name !== 'codex' &&
+    name !== 'auto' &&
+    name !== 'gateway' &&
+    name !== 'openai'
+  ) {
+    throw new UsageError(`invalid --runner "${name}" (expected anthropic, codex, auto, gateway or openai)`);
   }
   return name;
 }
@@ -239,6 +248,14 @@ async function runCommand(p: Parsed, io: CliIO): Promise<number> {
       return 1;
     }
     runner = new GatewayRunner({ apiKey: io.env.AI_GATEWAY_API_KEY, structuredMode });
+  } else if (selectedRunner === 'openai') {
+    if (!io.env.OPENAI_API_KEY?.trim()) {
+      io.stderr.write(
+        'maestro: OPENAI_API_KEY is missing or blank. Export the key first, or use --dry-run for offline runs.\n',
+      );
+      return 1;
+    }
+    runner = new OpenAIRunner({ apiKey: io.env.OPENAI_API_KEY, structuredMode });
   } else {
     if (!io.env.ANTHROPIC_API_KEY) {
       io.stderr.write(
@@ -331,6 +348,11 @@ async function mcpCommand(p: Parsed, io: CliIO): Promise<number> {
       'maestro mcp: AI_GATEWAY_API_KEY is missing or blank; Workflow runs will fail until it is set.\n',
     );
   }
+  if (!dryRun && selectedRunner === 'openai' && !io.env.OPENAI_API_KEY?.trim()) {
+    io.stderr.write(
+      'maestro mcp: OPENAI_API_KEY is missing or blank; Workflow runs will fail until it is set.\n',
+    );
+  }
   const cwd = path.resolve(io.cwd, str(p, 'cwd') ?? '.');
   const stateDir = str(p, 'state-dir');
   const toolsDir = str(p, 'tools-dir');
@@ -345,7 +367,9 @@ async function mcpCommand(p: Parsed, io: CliIO): Promise<number> {
             ? new RoutingRunner({ anthropic: { structuredMode } })
             : selectedRunner === 'gateway'
               ? new GatewayRunner({ apiKey: io.env.AI_GATEWAY_API_KEY ?? '', structuredMode })
-              : new AnthropicRunner({ structuredMode }),
+              : selectedRunner === 'openai'
+                ? new OpenAIRunner({ apiKey: io.env.OPENAI_API_KEY ?? '', structuredMode })
+                : new AnthropicRunner({ structuredMode }),
       cwd,
       budget,
       ...(stateDir !== undefined ? { stateDir: path.resolve(io.cwd, stateDir) } : {}),

@@ -85,7 +85,7 @@ handle.events.on('agent_end', (e) => console.error(e.label, e.status, e.usage.ou
 ## Runners
 
 ```ts
-import { AnthropicRunner, CodexRunner, GatewayRunner, FakeRunner, RoutingRunner, run } from 'maestro-workflows';
+import { AnthropicRunner, CodexRunner, GatewayRunner, OpenAIRunner, FakeRunner, RoutingRunner, run } from 'maestro-workflows';
 
 await run({ scriptPath: 'review.js', runner: new CodexRunner() }).promise;
 ```
@@ -93,6 +93,7 @@ await run({ scriptPath: 'review.js', runner: new CodexRunner() }).promise;
 - `AnthropicRunner({ client?, maxTurns?, maxTokens?, structuredMode? })`
 - `CodexRunner({ model?, ignoreUserConfig?, customToolsMcp? })`
 - `GatewayRunner({ apiKey?, maxTurns?, maxTokens?, structuredMode? })`: uses `AI_GATEWAY_API_KEY` unless `apiKey` is supplied; defaults to `submit-tool` for schema answers.
+- `OpenAIRunner({ apiKey?, baseURL?, maxTurns?, maxTokens?, maxRetries?, structuredMode? })`: calls the OpenAI Responses API with `OPENAI_API_KEY` unless `apiKey` is supplied; defaults to `submit-tool` for schema answers.
 - `RoutingRunner({ anthropic?, codex?, route? })`
 - `FakeRunner`, for tests and dry runs: it answers from the schema and never touches the network.
 

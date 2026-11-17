@@ -42,6 +42,8 @@ export {
   WORKFLOW_SKIP_TOOL_NAME,
   WORKFLOW_STOP_TOOL_NAME,
 } from './mcp.js';
+export type { OpenAIRunnerOptions } from './openai-runner.js';
+export { OpenAIRunner, openaiModelId } from './openai-runner.js';
 export type { ProgressStream, ProgressTreeOptions } from './progress.js';
 export { attachTerminalProgress, formatEventLine, GLYPHS, ProgressTree } from './progress.js';
 export type { RouteTarget, RoutingRunnerOptions } from './routing-runner.js';

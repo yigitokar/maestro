@@ -45,6 +45,8 @@ The script body is async: `await` and a top-level `return` are allowed. The retu
 
 With `--runner gateway`, every agent uses Vercel AI Gateway. Set `opts.model` to an exact `provider/model` ID, or inherit the server's `--model`; the direct Claude default is not a Gateway ID. The server needs `AI_GATEWAY_API_KEY` in its environment. Keep credentials out of workflow scripts and `args`. Choose models that support tool calling; structured output and effort support depend on the model.
 
+With `--runner openai`, every agent calls OpenAI directly with the server's `OPENAI_API_KEY`. Set `opts.model` to an OpenAI model ID (for example `gpt-6.2-astra`), or inherit the server's `--model`.
+
 The rule: an error at agent level falls to null silently, an error at script level ends the run. Apply `.filter(Boolean)` to results and say with `log()` how many items were dropped.
 
 An agent's final text is raw data for the caller. The agent knows what is wanted only from its prompt, so the prompt must be enough by itself.

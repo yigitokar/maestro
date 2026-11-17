@@ -185,7 +185,7 @@ describe('shell-words and the bash allowlist', () => {
     expect(await b.run({ command: "find . -name '*.txt' -maxdepth 1" }, ctx())).toContain('a.txt');
   });
 
-  it.each(['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'AI_GATEWAY_API_KEY'])(
+  it.each(['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'AI_GATEWAY_API_KEY', 'OPENAI_API_KEY'])(
     'agent commands do not see the runner credential %s',
     async (name) => {
       const saved = process.env[name];
