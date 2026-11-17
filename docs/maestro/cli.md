@@ -17,6 +17,8 @@ maestro run --resume <runId> [options]
 
 The script's return value goes to stdout as JSON. Progress goes to stderr. Ctrl-C stops the run and prints the command that resumes it.
 
+The terminal progress tree updates live agent activity and token usage when attached to a TTY.
+
 | Flag | Meaning |
 |---|---|
 | `--args <json>` | The script's `args`, as JSON. |
@@ -45,10 +47,12 @@ Each line shows the run id, its status (`done`, `failed` or `running`), the work
 ## `maestro show`
 
 ```text
-maestro show <runId> [label] [--cwd <dir>] [--state-dir <dir>]
+maestro show <runId> [label-or-live-id] [--cwd <dir>] [--state-dir <dir>]
 ```
 
-Without a label, lists the run's agents and its outcome. With a label, or the start of an agent's key, prints that agent's trace: tool calls, final text, result and error.
+Without a label, lists the run's agents, outcome and latest recorded live activity. A live agent can be selected by label or numeric id. Recorded activity can be stale if its process died. For completed agents, a label or key prefix prints the trace, result, error and message audit.
+
+Live instructions are sent through `WorkflowMessage` on the owning MCP connection or the library's `sendMessage` handle, not through a separate CLI process.
 
 ## `maestro viz`
 

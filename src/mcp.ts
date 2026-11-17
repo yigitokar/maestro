@@ -24,19 +24,23 @@ import { Budget } from './budget.js';
 import { defaultConcurrency } from './scheduler.js';
 import {
   handleWorkflowToolCall,
+  type LiveWorkflowAgent,
   liveWorkflowAgents,
   maestroToolDefinitionFor,
+  sendWorkflowAgentMessage,
   skipWorkflowAgent,
   stopWorkflowRun,
   WORKFLOW_TOOL_NAME,
   type WorkflowOutcome,
   type WorkflowToolContext,
 } from './tool.js';
+import { MAESTRO_VERSION } from './version.js';
 import { readOutcome, SAFE_ID } from './workflow.js';
 
 export const WORKFLOW_RESULT_TOOL_NAME = 'WorkflowResult';
 export const WORKFLOW_STOP_TOOL_NAME = 'WorkflowStop';
 export const WORKFLOW_SKIP_TOOL_NAME = 'WorkflowSkip';
+export const WORKFLOW_MESSAGE_TOOL_NAME = 'WorkflowMessage';
 
 type CallResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
 
@@ -71,6 +75,31 @@ export interface McpServerOptions extends Omit<WorkflowToolContext, 'onComplete'
 
 type Extra = RequestHandlerExtra<ServerRequest, ServerNotification>;
 
+/** Keep notifications useful even for large runs, without sending full tool output or transcripts. */
+function liveProgressSummary(agents: LiveWorkflowAgent[]): string {
+  if (agents.length === 0) return 'running';
+  const lines = agents.slice(0, 8).map((agent) => {
+    const label = (agent.label ?? `agent ${agent.id}`).replace(/\s+/g, ' ').slice(0, 60);
+    const activity = agent.progress?.summary.replace(/\s+/g, ' ').slice(0, 120);
+    const pending = agent.messages.filter((message) => message.status === 'queued').length;
+    const delivered = agent.messages.filter((message) => message.status === 'delivered').length;
+    const failed = agent.messages.filter((message) => message.status === 'failed').length;
+    const details = [
+      agent.state,
+      `${Math.floor(agent.elapsedMs / 1000)}s`,
+      `${agent.turns} turns`,
+      `${agent.usage.input_tokens} in/${agent.usage.output_tokens} out`,
+      ...(activity ? [activity] : []),
+      ...(agent.messages.length
+        ? [`messages ${pending} queued/${delivered} delivered/${failed} failed`]
+        : []),
+    ];
+    return `${label} [${details.join('; ')}]`;
+  });
+  const suffix = agents.length > 8 ? `; +${agents.length - 8} more agents` : '';
+  return `running: ${lines.join('; ')}${suffix}`.slice(0, 2048);
+}
+
 /**
  * Builds the MCP server. `ctx` configures runs exactly like handleWorkflowToolCall's context, except
  * that a numeric `budget` becomes one Budget shared by every run of this server: spec 3.5 "tek
@@ -87,7 +116,7 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
       : new Budget({ total: ctx.budget ?? null, concurrency: ctx.concurrency ?? defaultConcurrency() });
   const runCtx = { ...ctx, budget };
   const server = new Server(
-    { name: 'maestro', version: '1.3.2' },
+    { name: 'maestro', version: MAESTRO_VERSION },
     {
       capabilities: { tools: {} },
       instructions: `Maestro runs multi-agent workflows from a JavaScript script given to the Workflow tool. ${GUIDE_POINTER}`,
@@ -129,9 +158,7 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
           ? undefined
           : setInterval(() => {
               const live = liveWorkflowAgents(runId) ?? [];
-              const message = live.length
-                ? `running: ${live.map((a) => a.label ?? `agent ${a.id}`).join(', ')}`
-                : 'running';
+              const message = liveProgressSummary(live);
               extra
                 .sendNotification({
                   method: 'notifications/progress',
@@ -169,7 +196,7 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
         {
           name: WORKFLOW_RESULT_TOOL_NAME,
           description:
-            'Result of a Workflow run started earlier: { status: "running" } while it runs, then { status: "done", result } or { status: "failed", error }. Also reads settled runs persisted on disk (<stateDir>/runs/<runId>/outcome.json) across MCP sessions. Prefer wait: true over polling: the call then returns only once the run settles. Claude Code moves a call that runs past 2 minutes to the background and delivers its result as a notification, so you can keep working meanwhile. If a timeout ends the call, the run goes on: call WorkflowResult again.',
+            'Result of a Workflow run started earlier: { status: "running", liveAgents } while it runs, then { status: "done", result } or { status: "failed", error }. Each live agent reports queued/running state, elapsed time, public activity, turns, token usage, canMessage and message delivery receipts. Also reads settled runs persisted on disk (<stateDir>/runs/<runId>/outcome.json) across MCP sessions. Prefer wait: true when awaiting completion: the call then returns only once the run settles, with concise live progress when the client requests notifications. Use wait: false to inspect agents before WorkflowMessage. Claude Code moves a call that runs past 2 minutes to the background and delivers its result as a notification. If a timeout ends the call, the run goes on: call WorkflowResult again.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -200,6 +227,30 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
           },
         },
         {
+          name: WORKFLOW_MESSAGE_TOOL_NAME,
+          description:
+            'Send a follow-up instruction to one live agent. Use an id from WorkflowResult.liveAgents with canMessage: true. Returns a queued receipt immediately; WorkflowResult shows when it is delivered or failed. Delivery means the runner accepted the instruction, not that the agent has finished acting on it. Anthropic agents receive it before their next model request; Codex app-server agents use live steering. Messages are limited to 16,000 characters and 32 per agent and are recorded with the run: do not send credentials.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              ...RUN_ID_PROPERTY,
+              agentId: {
+                type: 'integer',
+                minimum: 0,
+                description: 'id of a live agent that supports messages, from WorkflowResult.liveAgents.',
+              },
+              message: {
+                type: 'string',
+                minLength: 1,
+                maxLength: 16_000,
+                description: 'Follow-up instruction.',
+              },
+            },
+            required: ['runId', 'agentId', 'message'],
+            additionalProperties: false,
+          },
+        },
+        {
           name: WORKFLOW_SKIP_TOOL_NAME,
           description:
             "Skip one live agent of a running Workflow run: its agent() call returns null and its journal row is 'skipped'. Live agent ids are listed by WorkflowResult while the run is running.",
@@ -209,6 +260,7 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
               ...RUN_ID_PROPERTY,
               agentId: {
                 type: 'integer',
+                minimum: 0,
                 description: 'id of a live agent, from WorkflowResult.liveAgents.',
               },
             },
@@ -237,7 +289,8 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
     if (
       name === WORKFLOW_RESULT_TOOL_NAME ||
       name === WORKFLOW_STOP_TOOL_NAME ||
-      name === WORKFLOW_SKIP_TOOL_NAME
+      name === WORKFLOW_SKIP_TOOL_NAME ||
+      name === WORKFLOW_MESSAGE_TOOL_NAME
     ) {
       const runId = (input as { runId?: unknown } | undefined)?.runId;
       if (typeof runId !== 'string' || !runId) return text('runId is required', true);
@@ -271,11 +324,30 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
       }
       if (name === WORKFLOW_SKIP_TOOL_NAME) {
         const agentId = (input as { agentId?: unknown }).agentId;
-        if (typeof agentId !== 'number' || !Number.isInteger(agentId))
-          return text('agentId must be an integer', true);
+        if (typeof agentId !== 'number' || !Number.isInteger(agentId) || agentId < 0)
+          return text('agentId must be a nonnegative integer', true);
         if (outcome !== 'running' || !skipWorkflowAgent(runId, agentId))
           return text(`agent ${agentId} of run ${runId} is not live`, true);
         return text({ runId, agentId, status: 'skipped' });
+      }
+      if (name === WORKFLOW_MESSAGE_TOOL_NAME) {
+        const { agentId, message } = input as { agentId?: unknown; message?: unknown };
+        if (typeof agentId !== 'number' || !Number.isInteger(agentId) || agentId < 0)
+          return text('agentId must be a nonnegative integer', true);
+        if (typeof message !== 'string' || message.trim().length === 0 || message.length > 16_000)
+          return text('message must contain text and be at most 16,000 characters', true);
+        if (outcome !== 'running') return text(`run ${runId} is not running`, true);
+        try {
+          const receipt = sendWorkflowAgentMessage(runId, agentId, message);
+          if (receipt === null)
+            return text(
+              `agent ${agentId} of run ${runId} cannot accept messages; inspect WorkflowResult.liveAgents and canMessage`,
+              true,
+            );
+          return text({ runId, agentId, message: receipt });
+        } catch (error) {
+          return text(error instanceof Error ? error.message : String(error), true);
+        }
       }
       if ((input as { wait?: unknown }).wait === true) await waitForRun(runId, extra);
       const current = outcomes.get(runId) ?? outcome;

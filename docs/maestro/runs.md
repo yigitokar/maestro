@@ -13,7 +13,7 @@ Every run gets an id such as `20261025-150301-a1b2c3` and a directory `.maestro/
 | `script.js` | The script as it ran. |
 | `args.json` | The arguments. |
 | `run.json` | The run's model and runner. |
-| `journal.jsonl` | One line per `agent()` call: its key, status, result, token usage and a trace. |
+| `journal.jsonl` | One line per `agent()` call: its key, status, result, token usage, trace and live message audit. |
 | `blobs/` | Results larger than 64 KB, one file each. |
 | `events.jsonl` | Every event with a wall-clock time. Used only for display. |
 | `outcome.json` | The final result or error, written when the run ends. |
@@ -37,6 +37,8 @@ This gives resume three uses:
 Without a script argument, `--resume <runId>` reuses the stored `script.js` and `args.json`.
 
 The key includes an agent's own `model` option, but not the run's model (`--model`) or the runner. If you resume with a different one of those, stored answers from the old one are still used, and the log says so.
+
+Successful results produced after live messages are also reused, with an explicit log that steering was involved. Messages and delivery receipts stay in the journal and event log. Edit the workflow prompt when changing a durable instruction; sending a live message does not rewrite the script.
 
 Answers are matched by content, so a script must be deterministic. See [Writing workflows](/maestro/workflows).
 
@@ -74,6 +76,8 @@ At most N agents run at once. N defaults to the number of CPUs minus two, at mos
 
 An agent holds its slot for as long as it is running, including while its tools execute. Waiting agents show as queued.
 
+The MCP `WorkflowResult.liveAgents` and library `handle.liveAgents()` show queued/running state, elapsed time, public activity, turns and tokens. `canMessage` reports whether the active runner accepts follow-up instructions. Message receipts distinguish `queued`, `delivered` and `failed`; see [MCP controls](/maestro/claude-code#workflowmessage).
+
 ## Looking at runs
 
 ```bash
@@ -86,7 +90,7 @@ Lists runs from newest to oldest with status, duration, agent counts and token u
 maestro show <runId>
 ```
 
-Lists a run's agents and its outcome. Add an agent's label to print that agent's trace: its tool calls, the start of its final text, its result and any error.
+Lists a run's agents, outcome and latest recorded live activity. Select a live agent by label or numeric id. This reads files, so activity may be stale after a process dies. For a completed agent, its label selects the trace, result, error and message audit.
 
 ```bash
 maestro show <runId> find:security

@@ -7,7 +7,7 @@ import path from 'node:path';
 import type Anthropic from '@anthropic-ai/sdk';
 import { loadCustomTools } from './custom-tools.js';
 import { parseScript } from './runtime.js';
-import type { ToolDef, WorkflowEvent } from './types.js';
+import type { AgentMessageReceipt, LiveAgentStatus, ToolDef } from './types.js';
 import { type RunHandle, type RunOptions, run, SAFE_ID } from './workflow.js';
 
 export const WORKFLOW_TOOL_NAME = 'Workflow';
@@ -49,18 +49,13 @@ export type WorkflowToolResult =
   | { runId: string; scriptPath: string; status: 'started' }
   | { is_error: true; content: string };
 
-/** A live agent of a tool-started run, as WorkflowSkip needs it (id from the agent_start event). */
-export interface LiveWorkflowAgent {
-  id: number;
-  label?: string;
-  phase?: string;
-  group?: string;
-}
+/** Live status of a tool-started agent; id is shared by the skip and message controls. */
+export type LiveWorkflowAgent = LiveAgentStatus;
 
 // runId → handle of every tool-started run that has not settled yet, so a harness (or the MCP
 // server) can produce the user rows of the spec Seviye 1 null/throw table: skip a live agent
 // (agent() → null, row 'skipped') and stop the run (the script rejects, the journal stays).
-const liveRuns = new Map<string, { handle: RunHandle; agents: Map<number, LiveWorkflowAgent> }>();
+const liveRuns = new Map<string, { handle: RunHandle }>();
 
 /** Stops a run started through handleWorkflowToolCall; false when the runId is unknown or settled. */
 export function stopWorkflowRun(runId: string, reason?: string): boolean {
@@ -75,10 +70,19 @@ export function skipWorkflowAgent(runId: string, agentId: number): boolean {
   return liveRuns.get(runId)?.handle.skip(agentId) ?? false;
 }
 
+/** Queues a message; null means the agent is not live or its runner cannot accept messages. */
+export function sendWorkflowAgentMessage(
+  runId: string,
+  agentId: number,
+  message: string,
+): AgentMessageReceipt | null {
+  return liveRuns.get(runId)?.handle.sendMessage(agentId, message) ?? null;
+}
+
 /** Live (started, not yet ended) agents of a tool-started run; null when the run is unknown or settled. */
 export function liveWorkflowAgents(runId: string): LiveWorkflowAgent[] | null {
   const entry = liveRuns.get(runId);
-  return entry ? [...entry.agents.values()] : null;
+  return entry ? entry.handle.liveAgents() : null;
 }
 
 const nullableString = (description: string) => ({ type: ['string', 'null'], description });
@@ -242,13 +246,7 @@ export async function handleWorkflowToolCall(
   } catch (err) {
     return fail(errorText(err));
   }
-  const agents = new Map<number, LiveWorkflowAgent>();
-  liveRuns.set(handle.runId, { handle, agents });
-  handle.events.on('event', (e: WorkflowEvent) => {
-    if (e.type === 'agent_start')
-      agents.set(e.id, { id: e.id, label: e.label, phase: e.phase, group: e.group });
-    else if (e.type === 'agent_end') agents.delete(e.id);
-  });
+  liveRuns.set(handle.runId, { handle });
   // Unregistered before onComplete, so a stop from inside onComplete sees a settled run.
   handle.promise.then(
     (result) => {

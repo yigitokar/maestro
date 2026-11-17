@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { promisify } from 'node:util';
+import { CodexAppServerUnavailable, executeCodexAppServer } from './codex-app-server.js';
 import { type CodexToolBridge, startCodexToolBridge } from './codex-tool-mcp.js';
 import { childGitEnv } from './git-env.js';
 import { toStructuredOutputSchema, validateValue, WRITER_COMMIT_INSTRUCTION } from './runner.js';
@@ -20,6 +21,7 @@ import {
   type Usage,
 } from './types.js';
 import { addUsage } from './usage.js';
+import { MAESTRO_VERSION } from './version.js';
 
 export interface CodexRunnerOptions {
   bin?: string;
@@ -30,6 +32,8 @@ export interface CodexRunnerOptions {
   extraArgs?: string[];
   /** Time after SIGTERM before forcing termination with SIGKILL (default 1 second). */
   killGraceMs?: number;
+  /** How long a live message may wait for Codex to acknowledge it before that message fails (default 30 seconds). */
+  steerTimeoutMs?: number;
   /** Expose non-builtin `ToolDef`s to `codex exec` via a temporary stdio MCP server (default true). */
   customToolsMcp?: boolean;
 }
@@ -108,6 +112,11 @@ class RunState {
 
   constructor(private readonly req: RunRequest) {}
 
+  addUsageDelta(usage: Usage): void {
+    addUsage(this.usage, usage);
+    this.req.onUsage(usage);
+  }
+
   line(line: string): void {
     let parsed: unknown;
     try {
@@ -117,18 +126,30 @@ class RunState {
     }
     const event = object(parsed);
     if (!event) return;
-    if (event.type === 'turn.completed') {
+    if (event.type === 'turn.started') {
+      this.req.onProgress?.({ activity: 'model', summary: 'Codex is working', turns: this.turns + 1 });
+    } else if (event.type === 'turn.completed') {
       this.completed = true;
       this.turnFailure = undefined;
-      const usage = usageOf(event.usage);
       this.turns++;
-      addUsage(this.usage, usage);
-      this.req.onUsage(usage); // Immediately, even if this callback aborts the run.
+      if (event.usage !== undefined) this.addUsageDelta(usageOf(event.usage));
+    } else if (event.type === 'item.started') {
+      const item = object(event.item);
+      if (item?.type === 'command_execution') {
+        this.req.onProgress?.({
+          activity: 'tool',
+          tool: 'shell',
+          summary: String(item.command ?? 'Running command').slice(0, TRACE_INPUT_CHARS),
+        });
+      } else if (item?.type === 'agent_message') {
+        this.req.onProgress?.({ activity: 'message', summary: 'Writing a response' });
+      }
     } else if (event.type === 'item.completed') {
       const item = object(event.item);
       if (item?.type === 'agent_message' && typeof item.text === 'string') {
         this.finalText = item.text;
         this.trace.finalText = item.text.slice(0, TRACE_TEXT_CHARS);
+        this.req.onProgress?.({ activity: 'message', summary: item.text.slice(0, TRACE_TEXT_CHARS) });
       } else if (item?.type === 'command_execution') {
         this.trace.toolCalls.push({
           tool: 'shell',
@@ -153,6 +174,9 @@ class RunState {
 }
 
 export class CodexRunner implements AgentRunner {
+  /** Set once the CLI proved to have no usable `app-server`; later agents go straight to `codex exec`. */
+  private appServerUnavailable = false;
+
   constructor(private readonly opts: CodexRunnerOptions = {}) {}
 
   async run(req: RunRequest): Promise<RunResult> {
@@ -184,24 +208,23 @@ export class CodexRunner implements AgentRunner {
 
       tempDir = await mkdtemp(path.join(os.tmpdir(), 'maestro-codex-'));
       const outputPath = path.join(tempDir, 'last.txt');
-      const args = [
-        'exec',
-        '--json',
-        '--ephemeral',
-        '--skip-git-repo-check',
-        '-C',
-        req.cwd,
-        '-s',
-        req.isolated ? 'workspace-write' : 'read-only',
-      ];
-      const env = childGitEnv();
-      if (this.opts.ignoreUserConfig) args.push('--ignore-user-config');
-      const model = this.opts.model ?? (req.model.startsWith('claude-') ? undefined : req.model);
-      if (model !== undefined) args.push('-m', model);
-      if (req.effort) {
-        const effort = req.effort === 'max' ? 'xhigh' : req.effort;
-        args.push('-c', `model_reasoning_effort="${effort}"`);
+      const wantsLive = !!req.registerMessageHandler;
+      let live = wantsLive && !this.opts.ignoreUserConfig && !this.opts.extraArgs?.length;
+      if (wantsLive && !live) {
+        req.onProgress?.({
+          activity: 'status',
+          summary: 'Live messages unavailable: legacy Codex exec options are configured.',
+        });
+      } else if (live && this.appServerUnavailable) {
+        live = false;
+        req.onProgress?.({
+          activity: 'status',
+          summary: 'Live messages unavailable: this Codex CLI has no usable app-server.',
+        });
       }
+      const env = childGitEnv();
+      const model = this.opts.model ?? (req.model.startsWith('claude-') ? undefined : req.model);
+      let bridgeArgs: string[] = [];
       if (customTools.length > 0 && bridgeEnabled) {
         bridge = await startCodexToolBridge({
           dir: path.join(tempDir, 'mcp'),
@@ -209,14 +232,12 @@ export class CodexRunner implements AgentRunner {
           ctx: { cwd: req.cwd, signal: req.signal },
           onToolCall: (call) => st.trace.toolCalls.push(call),
         });
-        args.push(...bridge.codexConfigArgs);
+        bridgeArgs = bridge.codexConfigArgs;
       }
+      let schema: ReturnType<typeof toStructuredOutputSchema> | undefined;
       if (req.schema) {
-        const schema = toStructuredOutputSchema(req.schema);
+        schema = toStructuredOutputSchema(req.schema);
         requireProperties(schema);
-        const schemaPath = path.join(tempDir, 'schema.json');
-        await writeFile(schemaPath, JSON.stringify(schema));
-        args.push('--output-schema', schemaPath);
       }
       // One instruction about committing, not two that disagree: the system prompt's "commit with
       // git_commit" is replaced, since here the runner commits.
@@ -226,21 +247,81 @@ export class CodexRunner implements AgentRunner {
       if (customTools.length > 0 && bridgeEnabled) {
         prompt += `\n\nCustom tools available via the maestro_tools MCP server: ${customTools.map((t) => t.name).join(', ')}.`;
       }
-      args.push('-o', outputPath, ...(this.opts.extraArgs ?? []), '-');
+      const viaExec = async () => {
+        const args = [
+          'exec',
+          '--json',
+          '--ephemeral',
+          '--skip-git-repo-check',
+          '-C',
+          req.cwd,
+          '-s',
+          req.isolated ? 'workspace-write' : 'read-only',
+        ];
+        if (this.opts.ignoreUserConfig) args.push('--ignore-user-config');
+        if (model !== undefined) args.push('-m', model);
+        if (req.effort) {
+          const effort = req.effort === 'max' ? 'xhigh' : req.effort;
+          args.push('-c', `model_reasoning_effort="${effort}"`);
+        }
+        args.push(...bridgeArgs);
+        if (schema) {
+          const schemaPath = path.join(tempDir as string, 'schema.json');
+          await writeFile(schemaPath, JSON.stringify(schema));
+          args.push('--output-schema', schemaPath);
+        }
+        args.push('-o', outputPath, ...(this.opts.extraArgs ?? []), '-');
+        return this.execute(args, prompt, req, st, env);
+      };
       req.signal.throwIfAborted();
-      const exit = await this.execute(args, prompt, req, st, env);
+      let exit: Awaited<ReturnType<CodexRunner['execute']>>;
+      if (live) {
+        try {
+          exit = await executeCodexAppServer({
+            bin: this.opts.bin ?? 'codex',
+            // stdio is the app-server's default transport; older CLIs have no --stdio flag.
+            args: ['app-server', ...bridgeArgs],
+            env,
+            req,
+            prompt,
+            model,
+            schema,
+            killGraceMs: this.opts.killGraceMs ?? 1_000,
+            clientVersion: MAESTRO_VERSION,
+            ...(this.opts.steerTimeoutMs !== undefined ? { steerTimeoutMs: this.opts.steerTimeoutMs } : {}),
+            onEvent: (event) => st.line(JSON.stringify(event)),
+            onUsage: (usage) => st.addUsageDelta(usage),
+          });
+        } catch (error) {
+          if (!(error instanceof CodexAppServerUnavailable) || req.signal.aborted) throw error;
+          // The prompt was never sent, so running the agent with `codex exec` repeats nothing.
+          live = false;
+          if (!this.appServerUnavailable) {
+            this.appServerUnavailable = true;
+            req.log(
+              `${error.message}. Codex agents run with codex exec from now on; live messages are unavailable.`,
+            );
+          }
+          req.onProgress?.({
+            activity: 'status',
+            summary: 'Live messages unavailable: Codex app-server did not start; using codex exec.',
+          });
+          exit = await viaExec();
+        }
+      } else exit = await viaExec();
       if (req.signal.aborted) return st.done(null, 'skipped', { error: 'aborted' });
 
       const fileText = await readFile(outputPath, 'utf8').catch(() => '');
       if (req.signal.aborted) return st.done(null, 'skipped', { error: 'aborted' });
       const text = fileText.trim() ? fileText : st.finalText;
+      const transport = live ? 'codex app-server' : 'codex exec';
       const processError =
         st.error ??
         st.turnFailure ??
         (exit.code !== 0
-          ? `codex exec failed (${exit.signal ?? exit.code}): ${exit.stderr.trim() || 'no error details'}`
+          ? `${transport} failed (${exit.signal ?? exit.code}): ${exit.stderr.trim() || 'no error details'}`
           : !st.completed
-            ? 'codex exec returned no turn.completed event'
+            ? `${transport} returned no ${live ? 'turn/completed' : 'turn.completed'} event`
             : undefined);
       if (processError !== undefined)
         return st.done(null, 'null', { error: processError, ...(text ? { raw: text } : {}) });
@@ -259,7 +340,7 @@ export class CodexRunner implements AgentRunner {
           });
         }
       } else if (!text.trim()) {
-        return st.done(null, 'null', { error: 'codex exec returned no final text' });
+        return st.done(null, 'null', { error: `${transport} returned no final text` });
       }
 
       req.signal.throwIfAborted();

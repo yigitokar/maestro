@@ -9,7 +9,7 @@ A runner is what executes one agent. Choose one with `--runner` or the `runner` 
 | Runner | Agents run on | Needs |
 |---|---|---|
 | `anthropic` (default) | The Claude API | `ANTHROPIC_API_KEY` |
-| `codex` | The Codex CLI, one `codex exec` process per agent | Codex CLI installed and signed in |
+| `codex` | The Codex CLI, one process per agent | Codex CLI installed and signed in |
 | `gateway` | Models through Vercel AI Gateway | `AI_GATEWAY_API_KEY` and a `provider/model` ID |
 | `auto` | Direct Claude or Codex, chosen per agent by its model | Whatever the models in the script need |
 
@@ -26,6 +26,8 @@ The run's model defaults to `claude-opus-5-5`. Set it with `--model`, or per age
 Limits for one agent: at most 40 model turns, and 16,000 output tokens per request. A reply cut off by the token limit is continued once.
 
 Prompt caching is on. The system prompt and tool definitions are cached across agents, and each agent's transcript is cached across its turns.
+
+Live follow-up instructions are added before the next safe model request. A tool already in progress is allowed to finish; its result stays in order and the tool is not repeated. Undelivered messages fail when the agent ends or is cancelled. Public activity reports model turns and tool execution without exposing internal reasoning.
 
 ### How a structured answer is obtained
 
@@ -45,7 +47,9 @@ When an agent has a `schema`, the runner has three ways to get the answer. Choos
 maestro run review.js --runner codex --concurrency 4
 ```
 
-Each agent is its own `codex exec` process, so memory use grows with `--concurrency`.
+Each agent is its own Codex process, so memory use grows with `--concurrency`. Normal workflow calls use `codex app-server`, which accepts live instructions through `turn/steer` and reports tool activity and token usage. The app-server is an experimental part of the Codex CLI. If the installed CLI does not have it, Maestro says so in the log and runs the agents with `codex exec`; they work as before but cannot receive live messages (`canMessage: false`). A delivered message means Codex accepted it for the active turn; a message racing with completion can fail.
+
+Direct `CodexRunner.run()` calls without the host message hook use legacy `codex exec`. The `ignoreUserConfig` and exec-only `extraArgs` options also retain that transport. These calls still report available activity but cannot accept messages (`canMessage: false`).
 
 How Codex agents differ from Claude agents:
 
@@ -55,10 +59,10 @@ How Codex agents differ from Claude agents:
 - **Your own tools.** Custom tools are served to Codex through a temporary MCP server named `maestro_tools`, and Codex calls them without asking for approval. The tool code runs in Maestro's process. Turn this off with `new CodexRunner({ customToolsMcp: false })`.
 - **Commits.** A Codex agent does not commit: its sandbox keeps `.git` read-only. After a successful isolated agent, the runner commits the changes itself with your git identity and a message that starts with `maestro(codex): `. A failed agent is not committed, and its worktree is kept.
 - **Structured answers.** There is one attempt, with no second try.
-- **Limits.** The per-turn and per-request limits of the Claude runner do not apply. Usage is reported to the budget when Codex reports it, which can be once for several model calls.
+- **Limits.** The per-turn and per-request limits of the Claude runner do not apply. App-server cumulative token updates are reported as deltas; legacy exec reports usage on turn completion, which can cover several model calls.
 - **Configuration.** Your Codex configuration file is read. Pass `ignoreUserConfig: true` to the runner to skip it.
 
-An agent's result counts only if Codex reported a completed turn, reported no error and exited with status 0. Stopping a run also stops the processes Codex started.
+An agent's result requires a completed turn and valid final output. App-server is closed deliberately after completion; legacy exec additionally requires a successful process exit and no subsequent failure. Public progress is not a final answer. Stopping a run also stops the processes Codex started.
 
 ## Vercel AI Gateway
 

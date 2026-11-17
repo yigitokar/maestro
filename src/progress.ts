@@ -2,7 +2,7 @@
 // that redraws it in place on a TTY or prints one line per agent_end / phase / log otherwise.
 
 import type { EventEmitter } from 'node:events';
-import type { EntryStatus, Usage, WorkflowEvent } from './types.js';
+import type { EntryStatus, LiveAgentStatus, Usage, WorkflowEvent } from './types.js';
 import { cacheReadRatio } from './usage.js';
 
 type AgentState = 'running' | EntryStatus | 'cached';
@@ -22,6 +22,7 @@ interface AgentRow {
   outputTokens: number;
   /** Share of input read from the prompt cache, when the runner reported cache figures. */
   cacheRatio: number | null;
+  live?: LiveAgentStatus;
 }
 
 interface PhaseBox {
@@ -101,6 +102,12 @@ export class ProgressTree {
         row.state = ev.cached ? 'cached' : ev.status;
         row.outputTokens = ev.usage.output_tokens;
         row.cacheRatio = ev.cached ? null : cacheReadRatio(ev.usage);
+        row.live = undefined;
+        break;
+      }
+      case 'agent_status': {
+        const row = this.agents.get(ev.agent.id);
+        if (row?.state === 'running') row.live = ev.agent;
         break;
       }
     }
@@ -144,6 +151,10 @@ export class ProgressTree {
     const c = box.agents.filter((a) => a.state !== 'running').length;
     lines.push(`${indent}${box.title}${box.agents.length ? ` [${c}/${box.agents.length}]` : ''}`);
     for (const a of box.agents) {
+      if (a.live) {
+        lines.push(`${indent}  … ${formatLiveAgent(a.live)}`);
+        continue;
+      }
       const tok = a.state === 'running' ? '' : `  ${fmt(a.outputTokens)} tok${cachedSuffix(a.cacheRatio)}`;
       lines.push(`${indent}  ${GLYPHS[a.state]} ${a.name}${tok}`);
     }
@@ -169,6 +180,18 @@ export class ProgressTree {
     }
     return box;
   }
+}
+
+/** Bounded public activity shared by the terminal tree and the on-disk run inspector. */
+export function formatLiveAgent(agent: LiveAgentStatus): string {
+  const queued = agent.messages.filter((message) => message.status === 'queued').length;
+  const delivered = agent.messages.filter((message) => message.status === 'delivered').length;
+  const failed = agent.messages.filter((message) => message.status === 'failed').length;
+  const activity = agent.progress?.summary ? ` · ${agent.progress.summary.slice(0, 300)}` : '';
+  const messages = agent.messages.length
+    ? ` · messages ${queued} queued/${delivered} delivered/${failed} failed`
+    : '';
+  return `#${agent.id} ${agent.label ?? 'agent'} [${agent.state}] ${Math.floor(agent.elapsedMs / 1000)}s · ${agent.turns} turns · ${fmt(agent.usage.output_tokens)} out${activity}${messages}`;
 }
 
 /** ", cached 73%" after the token count; empty without cache figures. */

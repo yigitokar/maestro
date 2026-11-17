@@ -16,12 +16,12 @@ import { GatewayRunner } from './gateway-runner.js';
 import { gc } from './isolation.js';
 import { readEntries, readResultBlob, readTrace } from './journal.js';
 import { serveMcp } from './mcp.js';
-import { attachTerminalProgress, type ProgressStream } from './progress.js';
+import { attachTerminalProgress, formatLiveAgent, type ProgressStream } from './progress.js';
 import { RoutingRunner } from './routing-runner.js';
 import { AnthropicRunner, type StructuredMode } from './runner.js';
 import { parseScript } from './runtime.js';
 import { FakeRunner } from './testing/fake-runner.js';
-import type { AgentRunner, Entry, Usage } from './types.js';
+import type { AgentRunner, Entry, LiveAgentStatus, Usage } from './types.js';
 import { addUsage, cacheReadRatio, totalInput } from './usage.js';
 import { exportVizHtml, exportVizWidget, readEventLines, serveViz } from './viz.js';
 import { readOutcome, run, SAFE_ID } from './workflow.js';
@@ -35,8 +35,8 @@ export const USAGE = `usage:
   maestro runs [--cwd <dir>] [--state-dir <dir>] [--limit <n>]
                                              list runs newest-first with status, agents and token usage (alias: ls)
   maestro gc [--delete] [--force] [--cwd <dir>]
-  maestro show <runId> [label] [--cwd <dir>] [--state-dir <dir>]
-                                             list a run's agents; with a label (or key prefix), print
+  maestro show <runId> [label-or-live-id] [--cwd <dir>] [--state-dir <dir>]
+                                             list completed agents and latest recorded live activity; with a label (or key prefix), print
                                              that agent's trace: tool calls, final text, result, error
   maestro viz <runId> [--cwd <dir>] [--state-dir <dir>] [--port <n>] [--no-open] [--out <file.html>] [--widget]
                                              open a run's timeline in the browser; it follows a live run
@@ -587,6 +587,20 @@ async function showCommand(p: Parsed, io: CliIO): Promise<number> {
     io.stderr.write(`maestro: no journal for run ${runId} in ${runDir} (${errorText(e)})\n`);
     return 1;
   }
+  const live = new Map<number, LiveAgentStatus>();
+  const { lines: recorded } = await readEventLines(runDir);
+  for (const event of recorded) {
+    if (event.type === 'run_start' || event.type === 'run_end') live.clear();
+    else if (event.type === 'agent_status') live.set(event.agent.id, event.agent);
+    else if (event.type === 'agent_end') live.delete(event.id);
+  }
+  const livePicked = [...live.values()].filter(
+    (agent) => label === undefined || agent.label === label || String(agent.id) === label,
+  );
+  if (livePicked.length) {
+    io.stdout.write('latest recorded activity (may be stale if the runner exited unexpectedly):\n');
+    for (const agent of livePicked) io.stdout.write(`${formatLiveAgent(agent)}\n`);
+  }
   if (label === undefined) {
     for (const row of rows) io.stdout.write(`${rowLine(row)}\n`);
     const outcome = await readOutcome(runDir);
@@ -604,6 +618,7 @@ async function showCommand(p: Parsed, io: CliIO): Promise<number> {
   let picked = rows.filter((r) => r.label === label);
   if (picked.length === 0) picked = rows.filter((r) => r.key.startsWith(label));
   if (picked.length === 0) {
+    if (livePicked.length) return 0;
     io.stderr.write(`maestro: no agent labelled "${label}" in run ${runId}\n`);
     return 1;
   }
@@ -690,6 +705,13 @@ function rowLine(row: Entry): string {
 
 async function showRow(runDir: string, row: Entry): Promise<string> {
   const lines = [rowLine(row), `key: ${row.key}${row.phase ? `  phase: ${row.phase}` : ''}`];
+  if (row.messages?.length) {
+    lines.push('live messages (reused along with a cached result on resume):');
+    for (const message of row.messages)
+      lines.push(
+        `  #${message.id} [${message.status}] ${message.text}${message.error ? ` (${message.error})` : ''}`,
+      );
+  }
   const trace = await readTrace(runDir, row);
   if (!trace) lines.push('trace: none (cache hit replayed, a runner without traces, or a pre-v1.1 row)');
   else {
