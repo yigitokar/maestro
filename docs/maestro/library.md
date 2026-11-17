@@ -85,17 +85,28 @@ handle.events.on('agent_end', (e) => console.error(e.label, e.status, e.usage.ou
 ## Runners
 
 ```ts
-import { AnthropicRunner, CodexRunner, FakeRunner, RoutingRunner, run } from 'maestro-workflows';
+import { AnthropicRunner, CodexRunner, GatewayRunner, FakeRunner, RoutingRunner, run } from 'maestro-workflows';
 
 await run({ scriptPath: 'review.js', runner: new CodexRunner() }).promise;
 ```
 
 - `AnthropicRunner({ client?, maxTurns?, maxTokens?, structuredMode? })`
 - `CodexRunner({ model?, ignoreUserConfig?, customToolsMcp? })`
+- `GatewayRunner({ apiKey?, maxTurns?, maxTokens?, structuredMode? })`: uses `AI_GATEWAY_API_KEY` unless `apiKey` is supplied; defaults to `submit-tool` for schema answers.
 - `RoutingRunner({ anthropic?, codex?, route? })`
 - `FakeRunner`, for tests and dry runs: it answers from the schema and never touches the network.
 
-See [Runners](/maestro/runners).
+Gateway models use exact `provider/model` IDs. Set a workflow default; individual agents can override it with `opts.model`:
+
+```ts
+await run({
+  scriptPath: 'review.js',
+  runner: new GatewayRunner(),
+  model: 'openai/gpt-5.4',
+}).promise;
+```
+
+See [Runners](/maestro/runners) for model capabilities and CLI/MCP setup.
 
 ## Giving the Workflow tool to your own agent
 

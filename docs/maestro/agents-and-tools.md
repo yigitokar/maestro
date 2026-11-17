@@ -50,7 +50,7 @@ The write set is available only with `isolation: 'worktree'`.
 
 Asking for a write tool without isolation makes `agent()` throw.
 
-Commands an agent runs through `bash` or `shell` do not see `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`.
+Commands an agent runs through `bash` or `shell` do not see `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or `AI_GATEWAY_API_KEY`.
 
 ## Agents that write code
 

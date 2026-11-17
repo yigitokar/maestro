@@ -9,6 +9,8 @@ export type { ToolRegistry } from './custom-tools.js';
 export { checkToolDef, loadCustomTools, loadToolsDir, makeToolRegistry } from './custom-tools.js';
 export type { EventLogExtra, EventLogLine } from './event-log.js';
 export { EVENT_LOG_FILE } from './event-log.js';
+export type { GatewayRunnerOptions } from './gateway-runner.js';
+export { GatewayRunner } from './gateway-runner.js';
 export type {
   CloseResult,
   GcOptions,

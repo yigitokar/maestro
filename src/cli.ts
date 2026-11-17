@@ -12,6 +12,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { parseBudgetDirective } from './budget.js';
 import { CodexRunner } from './codex-runner.js';
 import { EVENT_LOG_FILE } from './event-log.js';
+import { GatewayRunner } from './gateway-runner.js';
 import { gc } from './isolation.js';
 import { readEntries, readResultBlob, readTrace } from './journal.js';
 import { serveMcp } from './mcp.js';
@@ -28,7 +29,7 @@ import { readOutcome, run, SAFE_ID } from './workflow.js';
 export const USAGE = `usage:
   maestro run <script.js> [--args <json>] [--args-file <file>] [--resume <runId>] [--budget <500k>]
                           [--dry-run] [--cwd <dir>] [--state-dir <dir>] [--tools-dir <dir>] [--concurrency <n>]
-                          [--model <model>] [--runner <anthropic|codex|auto>]
+                          [--model <model>] [--runner <anthropic|codex|auto|gateway>]
                           [--structured-mode <two-stage|submit-tool|single-stage>]
   maestro run --resume <runId> [options]     resume with the stored script.js and args.json
   maestro runs [--cwd <dir>] [--state-dir <dir>] [--limit <n>]
@@ -42,14 +43,16 @@ export const USAGE = `usage:
                                              (--out writes the page as one self-contained HTML file instead;
                                              --widget prints a snapshot fragment for a chat's inline widget tool)
   maestro mcp [--cwd <dir>] [--state-dir <dir>] [--tools-dir <dir>] [--budget <500k>] [--concurrency <n>]
-              [--model <model>] [--runner <anthropic|codex|auto>]
+              [--model <model>] [--runner <anthropic|codex|auto|gateway>]
               [--structured-mode <two-stage|submit-tool|single-stage>] [--dry-run]
                                              serve the Workflow tool over stdio as an MCP server
                                              (--budget is one pool for the whole session; exits 0 when stdin ends)
 
   --dry-run          run every agent with an in-memory fake runner (schema stubs, no network)
-  --runner           agent runner: anthropic (default), codex, or auto (routes by model); --dry-run takes precedence
-  --structured-mode  Anthropic schema output mode: two-stage (default), submit-tool, or single-stage
+  --runner           agent runner: anthropic (default), codex, auto (routes by model), or gateway; --dry-run takes precedence
+  --structured-mode  schema output mode: two-stage, submit-tool, or single-stage
+                     defaults: anthropic/auto two-stage; gateway submit-tool
+  gateway            requires AI_GATEWAY_API_KEY and provider/model IDs via --model or agent opts.model
   --tools-dir        custom tools agents may name in opts.tools: *.js files that default-export a tool
                      (default <state-dir>/tools)
   gc                 lists dirty worktrees and merged / unmerged wf/* branches; deletes only with --delete
@@ -127,16 +130,17 @@ function str(p: Parsed, name: string): string | undefined {
   return typeof v === 'string' ? v : undefined;
 }
 
-function runnerName(p: Parsed): 'anthropic' | 'codex' | 'auto' {
+function runnerName(p: Parsed): 'anthropic' | 'codex' | 'auto' | 'gateway' {
   const name = str(p, 'runner') ?? 'anthropic';
-  if (name !== 'anthropic' && name !== 'codex' && name !== 'auto') {
-    throw new UsageError(`invalid --runner "${name}" (expected anthropic, codex or auto)`);
+  if (name !== 'anthropic' && name !== 'codex' && name !== 'auto' && name !== 'gateway') {
+    throw new UsageError(`invalid --runner "${name}" (expected anthropic, codex, auto or gateway)`);
   }
   return name;
 }
 
-function structuredModeFlag(p: Parsed): StructuredMode {
-  const mode = str(p, 'structured-mode') ?? 'two-stage';
+function structuredModeFlag(p: Parsed): StructuredMode | undefined {
+  const mode = str(p, 'structured-mode');
+  if (mode === undefined) return undefined;
   if (mode !== 'two-stage' && mode !== 'submit-tool' && mode !== 'single-stage') {
     throw new UsageError(
       `invalid --structured-mode "${mode}" (expected two-stage, submit-tool or single-stage)`,
@@ -227,7 +231,15 @@ async function runCommand(p: Parsed, io: CliIO): Promise<number> {
   if (dryRun) runner = new FakeRunner();
   else if (selectedRunner === 'codex') runner = new CodexRunner();
   else if (selectedRunner === 'auto') runner = new RoutingRunner({ anthropic: { structuredMode } });
-  else {
+  else if (selectedRunner === 'gateway') {
+    if (!io.env.AI_GATEWAY_API_KEY?.trim()) {
+      io.stderr.write(
+        'maestro: AI_GATEWAY_API_KEY is missing or blank. Export the key first, or use --dry-run for offline runs.\n',
+      );
+      return 1;
+    }
+    runner = new GatewayRunner({ apiKey: io.env.AI_GATEWAY_API_KEY, structuredMode });
+  } else {
     if (!io.env.ANTHROPIC_API_KEY) {
       io.stderr.write(
         'maestro: ANTHROPIC_API_KEY is not set. Agents call the Anthropic API; export the key first, ' +
@@ -314,6 +326,11 @@ async function mcpCommand(p: Parsed, io: CliIO): Promise<number> {
   if (!dryRun && selectedRunner === 'anthropic' && !io.env.ANTHROPIC_API_KEY) {
     io.stderr.write('maestro mcp: ANTHROPIC_API_KEY is not set; Workflow runs will fail until it is.\n');
   }
+  if (!dryRun && selectedRunner === 'gateway' && !io.env.AI_GATEWAY_API_KEY?.trim()) {
+    io.stderr.write(
+      'maestro mcp: AI_GATEWAY_API_KEY is missing or blank; Workflow runs will fail until it is set.\n',
+    );
+  }
   const cwd = path.resolve(io.cwd, str(p, 'cwd') ?? '.');
   const stateDir = str(p, 'state-dir');
   const toolsDir = str(p, 'tools-dir');
@@ -326,7 +343,9 @@ async function mcpCommand(p: Parsed, io: CliIO): Promise<number> {
           ? new CodexRunner()
           : selectedRunner === 'auto'
             ? new RoutingRunner({ anthropic: { structuredMode } })
-            : new AnthropicRunner({ structuredMode }),
+            : selectedRunner === 'gateway'
+              ? new GatewayRunner({ apiKey: io.env.AI_GATEWAY_API_KEY ?? '', structuredMode })
+              : new AnthropicRunner({ structuredMode }),
       cwd,
       budget,
       ...(stateDir !== undefined ? { stateDir: path.resolve(io.cwd, stateDir) } : {}),
