@@ -652,7 +652,7 @@ async function runsCommand(p: Parsed, io: CliIO): Promise<number> {
       let nullCount = 0;
       let skippedCount = 0;
       for (const r of rows) {
-        addUsage(usage, r.usage);
+        if (r.cachedFrom === undefined) addUsage(usage, r.usage);
         if (r.status === 'ok') okCount++;
         else if (r.status === 'null') nullCount++;
         else if (r.status === 'skipped') skippedCount++;

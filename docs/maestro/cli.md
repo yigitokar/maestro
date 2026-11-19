@@ -40,7 +40,7 @@ The terminal progress tree updates live agent activity and token usage when atta
 maestro replay <runId> [--from <node>] [script.js] [options]
 ```
 
-Time-travel replay: forks upstream `ok` cached agents from `<runId>` into a brand-new `runId` and re-executes live from `<node>` onward, leaving the original run directory untouched for comparison and audit. `<node>` accepts an agent label, `#index`, key prefix, or `phase:<title>`. Pass an edited `script.js` to iterate on prompts or graph logic without re-running expensive upstream LLM calls. Accepts the same runner, model, budget, args and directory flags as `maestro run`.
+Time-travel replay: forks upstream `ok` cached agents from `<runId>` into a brand-new `runId` and re-executes live from `<node>` onward, leaving the original run directory untouched for comparison and audit. Select a node by unique label or unique key prefix, by index (`#index` or `index`), or by `phase:<title>` for the first node in that phase. Pass an edited `script.js` to iterate on prompts or graph logic without re-running expensive upstream LLM calls. Accepts the same runner, model, budget, args and directory flags as `maestro run`.
 
 ## `maestro runs`
 
@@ -50,7 +50,7 @@ Lists the runs stored in a directory, newest first. `maestro ls` is the same com
 maestro runs [--limit <n>] [--cwd <dir>] [--state-dir <dir>]
 ```
 
-Each line shows the run id, its status (`done`, `failed` or `running`), the workflow name, the duration, agent counts and token usage.
+Each line shows the run id, its status (`done`, `failed` or `running`), the workflow name, the duration, agent counts and token usage. A replay counts seeded agents, but their tokens are charged only to the run that originally executed them.
 
 ## `maestro show`
 

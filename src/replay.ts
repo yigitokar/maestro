@@ -109,7 +109,15 @@ export function resolveReplayTarget(timeline: TimelineNode[], selector: string):
     return timeline.find((n) => n.phase?.toLowerCase() === lower);
   }
 
-  const byLabel = timeline.find((n) => n.label === trimmed);
+  function uniqueMatch(matches: TimelineNode[]): TimelineNode | undefined {
+    if (matches.length > 1) {
+      const indices = matches.map((node) => `#${node.id}`).join(', ');
+      throw new Error(`replay: node "${trimmed}" is ambiguous. Pass one of ${indices} with --from.`);
+    }
+    return matches[0];
+  }
+
+  const byLabel = uniqueMatch(timeline.filter((n) => n.label === trimmed));
   if (byLabel) return byLabel;
 
   if (/^#?\d+$/.test(trimmed)) {
@@ -118,7 +126,7 @@ export function resolveReplayTarget(timeline: TimelineNode[], selector: string):
     if (byId) return byId;
   }
 
-  return timeline.find((n) => n.key.startsWith(trimmed));
+  return uniqueMatch(timeline.filter((n) => n.key.startsWith(trimmed)));
 }
 
 function describeAvailableNodes(timeline: TimelineNode[]): string {
@@ -213,10 +221,12 @@ export async function writeReplaySeed(targetRunDir: string, seed: ReplaySeed): P
   }
 
   if (seed.seededRows.length === 0) return;
-  const content = `${seed.seededRows.map((row) => JSON.stringify(row)).join('\n')}\n`;
+  const lines = seed.seededRows.map((row) =>
+    JSON.stringify({ ...row, cachedFrom: row.cachedFrom ?? seed.sourceRunId }),
+  );
   const fh = await open(path.join(targetRunDir, 'journal.jsonl'), 'w');
   try {
-    await fh.writeFile(content, 'utf8');
+    await fh.writeFile(`${lines.join('\n')}\n`, 'utf8');
     await fh.sync();
   } finally {
     await fh.close();

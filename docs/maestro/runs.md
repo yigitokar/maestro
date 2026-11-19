@@ -48,7 +48,7 @@ Answers are matched by content, so a script must be deterministic. See [Writing 
 maestro replay <runId> --from <node> [edited.js]
 ```
 
-Unlike `--resume` (which mutates `<runId>` in place and reuses any unchanged `ok` call), `replay` creates a **new** `runId` seeded only with the upstream `ok` cache entries that ran before `<node>` (selected by label, `#index`, key prefix, or `phase:<title>`). `<node>` and everything after it execute live even when their prompts have not changed, and the original run stays untouched so both runs can be inspected or diffed side by side.
+Unlike `--resume` (which mutates `<runId>` in place and reuses any unchanged `ok` call), `replay` creates a **new** `runId` seeded only with the upstream `ok` cache entries that ran before `<node>` (selected by unique label, unique key prefix, `#index` or `index`, or `phase:<title>` for the first node in that phase). `<node>` and everything after it execute live even when their prompts have not changed, and the original run stays untouched so both runs can be inspected or diffed side by side.
 
 ## Agent statuses
 
@@ -92,7 +92,7 @@ The MCP `WorkflowResult.liveAgents` and library `handle.liveAgents()` show queue
 maestro runs --limit 10
 ```
 
-Lists runs from newest to oldest with status, duration, agent counts and token usage.
+Lists runs from newest to oldest with status, duration, agent counts and token usage. A replay counts seeded agents, but their tokens are charged only to the run that originally executed them.
 
 ```bash
 maestro show <runId>

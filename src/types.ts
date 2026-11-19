@@ -75,6 +75,8 @@ export interface Entry {
   hash: string;
   n: number;
   key: string;
+  /** For a seeded row, the run that incurred its token usage. */
+  cachedFrom?: string;
   label?: string;
   phase?: string;
   /** Inline result, or `{ blob: key }` when `blob` is true (result > 64 KB lives in blobs/<key>.json). */

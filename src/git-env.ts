@@ -12,7 +12,13 @@ export function childGitEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 }
 
 /** Credentials of the runner itself: an agent's commands have no use for them and could print them. */
-const CREDENTIAL_VARS = ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'AI_GATEWAY_API_KEY'];
+const CREDENTIAL_VARS = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'AI_GATEWAY_API_KEY',
+  'GEMINI_API_KEY',
+  'GOOGLE_API_KEY',
+];
 
 /** childGitEnv() for the commands an agent runs through the bash and shell tools: no runner credentials. */
 export function agentCommandEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
