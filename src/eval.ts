@@ -418,9 +418,10 @@ function usageCost(usage: Usage, model: string, prices: Record<string, ModelPric
 }
 
 /**
- * A guess at the model a call ran on, from the requested model and the run's runner class. Only for a
- * call whose `agent_end` has no model field: an event log written before runners reported theirs, or a
- * runner that reports nothing. It cannot see a runner-level override or a custom route.
+ * A guess at the model a call ran on, from the requested model and the run's runner class. It cannot
+ * see a runner-level override or a custom route, so pricing takes it only for a call whose `agent_end`
+ * has no model field: an event log written before runners reported theirs, or a runner that reports
+ * nothing. The eval record's `model` label is this guess for the run's default model.
  */
 function effectiveModel(runner: string | undefined, model: string | undefined): string | undefined {
   const route = runner === 'RoutingRunner' && model ? defaultModelRoute(model) : undefined;

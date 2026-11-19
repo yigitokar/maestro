@@ -183,6 +183,48 @@ return await agent('go', { model: 'gemini-4-hydrogen' });`,
     expect((await diffEvalRuns(stateDir, runId, runId)).costUsd.costA).toBe(0.5);
   });
 
+  it('holds together with six-decimal rounding and with the journal fallback for a log without run_start', async () => {
+    const cwd = await tmp();
+    const client: GeminiInteractionsClient = {
+      interactions: {
+        create: async () => ({
+          status: 'completed',
+          output_text: 'ok',
+          usage: { total_input_tokens: 5, total_cached_tokens: 1, total_output_tokens: 0 },
+        }),
+      },
+    };
+    const record = await runEval({
+      cwd,
+      runner: new GeminiRunner({ client, model: 'gemini-4-carbon' }),
+      script: `export const meta = { name: 'tiny', description: 'd' };
+return await agent('go ' + args, { model: 'gemini-4-hydrogen' });`,
+      cases: [
+        { id: 'a', args: 1 },
+        { id: 'b', args: 2 },
+        { id: 'c', args: 3 },
+      ],
+    });
+    // Per case, 4 input and 1 cached token on the recorded gemini-4-carbon: $0.00001025. The requested
+    // gemini-4-hydrogen would be $0.00000205, so [0.000002 x3] and 0.000006.
+    expect(record.cases.map((c) => c.estimatedCostUsd)).toEqual([0.00001, 0.00001, 0.00001]);
+    expect(record.summary.estimatedCostUsd).toBe(0.000031);
+
+    // Without run_start the events are not read for cost, whatever model they carry.
+    const stateDir = path.join(cwd, '.maestro');
+    const [runA, runB] = record.cases.map((c) => c.runId) as [string, string, string];
+    const eventsFile = path.join(stateDir, 'runs', runA, 'events.jsonl');
+    const lines = (await readFile(eventsFile, 'utf8')).trim().split('\n');
+    expect(lines.some((line) => JSON.parse(line).model === 'gemini-4-carbon')).toBe(true);
+    await writeFile(
+      eventsFile,
+      `${lines.filter((line) => JSON.parse(line).type !== 'run_start').join('\n')}\n`,
+    );
+    const diff = await diffEvalRuns(stateDir, runA, runB);
+    expect(diff.tokens).toMatchObject({ totalA: 5, totalB: 5 });
+    expect(diff.costUsd).toEqual({ costA: null, costB: 0.00001, delta: null });
+  });
+
   it('prices a routed call at what its runner reported, not at the requested model', async () => {
     const record = await runEval({
       cwd: await tmp(),
