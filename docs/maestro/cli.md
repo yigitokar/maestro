@@ -70,6 +70,20 @@ Produces a diagnostic summary designed for coding agents diagnosing failures wit
 
 Live instructions are sent through `WorkflowMessage` on the owning MCP connection or the library's `sendMessage` handle, not through a separate CLI process.
 
+## `maestro eval`
+
+```text
+maestro eval <script.js> --cases <file.json|jsonl> [--grader <file.js>] [--name <evalId>]
+             [--from-eval <evalId>] [--from <node>] [--only <id,...>] [--limit <n>]
+             [--case-concurrency <n>] [--json] [run options]
+maestro eval diff <run-a> <run-b> [--json] [--fail-on-regression] [--cwd <dir>] [--state-dir <dir>]
+maestro eval ls [--limit <n>] [--json] [--cwd <dir>] [--state-dir <dir>]
+```
+
+Runs a workflow across a JSON or JSONL case dataset, grades each case via declarative `expect` rules (`equals`, `match`, `contains`, `notContains`, `regex`) or a custom ESM `--grader` module, and saves the eval record under `<state-dir>/evals/<evalId>/eval.json`.
+
+Pass `--from-eval <prevEvalId>` (optionally paired with `--from <node>`) to time-travel replay every matching case from an earlier eval run so unchanged upstream agents are served from cache. Compare any two eval runs—or two individual workflow `runId`s—with `maestro eval diff <run-a> <run-b>` to see score delta, fixed vs. regressed cases, token/cost delta, and `[CACHE HIT]` ratio.
+
 ## `maestro viz`
 
 ```text

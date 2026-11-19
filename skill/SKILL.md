@@ -150,6 +150,8 @@ Every run keeps `script.js`, `args.json`, `journal.jsonl` and `blobs/` under `.m
 
 Before you diagnose an unexpected or empty result, call `WorkflowInspect({ runId })` (or run `npx -y maestro-workflows inspect <runId> --compact --cwd <cwd>`). It returns only failed nodes, their exact inputs/errors/tool failures, and relevant upstream outputs without bloating your context window. To iterate from a failing node without re-running expensive upstream calls or mutating the original run, call `WorkflowReplay({ fromRunId, from: '<label>', script })` (or run `npx -y maestro-workflows replay <runId> --from <label> [script.js]`). You can also inspect raw rows with `npx -y maestro-workflows show <runId> --cwd <cwd>`. Do not assume a cached result is non-empty.
 
+To iterate over a multi-case eval suite, run `npx -y maestro-workflows eval <script.js> --cases <cases.jsonl> --name v1`, inspect any failing case with `WorkflowInspect` / `maestro inspect <runId> --compact`, re-run with `--name v2 --from-eval v1` to reuse cached upstream nodes, and compare with `npx -y maestro-workflows eval diff v1 v2`.
+
 If the user wants to watch the run, give them this command:
 
 ```bash
