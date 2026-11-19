@@ -12,6 +12,18 @@ export { EVENT_LOG_FILE } from './event-log.js';
 export type { GatewayRunnerOptions } from './gateway-runner.js';
 export { GatewayRunner } from './gateway-runner.js';
 export type {
+  GeminiInteractionResponse,
+  GeminiInteractionsClient,
+  GeminiRunnerOptions,
+} from './gemini-runner.js';
+export {
+  DEFAULT_GEMINI_MODEL,
+  GeminiRunner,
+  geminiUsageOf,
+  resolveGeminiModel,
+  toGeminiThinkingLevel,
+} from './gemini-runner.js';
+export type {
   CloseResult,
   GcOptions,
   GcResult,

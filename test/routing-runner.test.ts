@@ -2,6 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { GeminiRunner } from '../src/gemini-runner.js';
 import { defaultModelRoute, RoutingRunner } from '../src/routing-runner.js';
 import { AnthropicRunner } from '../src/runner.js';
 import { FakeRunner } from '../src/testing/fake-runner.js';
@@ -13,42 +14,62 @@ afterEach(async () => {
 });
 
 describe('RoutingRunner & defaultModelRoute', () => {
-  it('defaultModelRoute maps Claude/Anthropic ids to anthropic and everything else to codex', () => {
+  it('defaultModelRoute maps Claude to anthropic, Gemini/Gemma to gemini, and everything else to codex', () => {
     expect(defaultModelRoute('claude-opus-4-7')).toBe('anthropic');
     expect(defaultModelRoute('claude-sonnet-4-6')).toBe('anthropic');
     expect(defaultModelRoute('anthropic/claude-haiku-4-5')).toBe('anthropic');
+    expect(defaultModelRoute('gemini-4-hydrogen')).toBe('gemini');
+    expect(defaultModelRoute('gemini-4-carbon')).toBe('gemini');
+    expect(defaultModelRoute('google/gemini-3.5-flash-lite')).toBe('gemini');
+    expect(defaultModelRoute('gemma-4-31b-it')).toBe('gemini');
     expect(defaultModelRoute('gpt-5.4')).toBe('codex');
     expect(defaultModelRoute('o3')).toBe('codex');
     expect(defaultModelRoute('codex-mini-latest')).toBe('codex');
   });
 
-  it('routes heterogeneous models within one workflow run across shared journal and budget', async () => {
+  it('routes heterogeneous models (Gemini + Codex + Anthropic) within one workflow run across shared journal and budget', async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), 'maestro-routing-'));
     dirs.push(dir);
     const anthropicFake = new FakeRunner((req) => ({ result: `claude:${req.model}:${req.prompt}` }));
     const codexFake = new FakeRunner((req) => ({ result: `codex:${req.model}:${req.prompt}` }));
-    const router = new RoutingRunner({ anthropic: anthropicFake, codex: codexFake });
+    const geminiFake = new FakeRunner((req) => ({ result: `gemini:${req.model}:${req.prompt}` }));
+    const router = new RoutingRunner({ anthropic: anthropicFake, codex: codexFake, gemini: geminiFake });
 
     const handle = run({
       cwd: dir,
       runner: router,
       runId: 'route-1',
       script: `export const meta = { name: 'hybrid', description: 'mixed models' };
+const context = await agent('ingest-repo', { model: 'gemini-4-hydrogen', label: 'ingest' });
 const findings = await parallel([
-  () => agent('scan-a', { model: 'gpt-5.4', label: 'finder-gpt' }),
-  () => agent('scan-b', { model: 'o3', label: 'finder-o3' }),
+  () => agent('scan-a:' + context, { model: 'gpt-5.4', label: 'finder-gpt' }),
+  () => agent('scan-b:' + context, { model: 'o3', label: 'finder-o3' }),
 ]);
 const verdict = await agent('judge ' + JSON.stringify(findings), { model: 'claude-opus-4-7', label: 'judge' });
-return { findings, verdict };`,
+return { context, findings, verdict };`,
     });
 
     const out = await handle.promise;
     expect(out).toEqual({
-      findings: ['codex:gpt-5.4:scan-a', 'codex:o3:scan-b'],
-      verdict: 'claude:claude-opus-4-7:judge ["codex:gpt-5.4:scan-a","codex:o3:scan-b"]',
+      context: 'gemini:gemini-4-hydrogen:ingest-repo',
+      findings: [
+        'codex:gpt-5.4:scan-a:gemini:gemini-4-hydrogen:ingest-repo',
+        'codex:o3:scan-b:gemini:gemini-4-hydrogen:ingest-repo',
+      ],
+      verdict:
+        'claude:claude-opus-4-7:judge ["codex:gpt-5.4:scan-a:gemini:gemini-4-hydrogen:ingest-repo","codex:o3:scan-b:gemini:gemini-4-hydrogen:ingest-repo"]',
     });
+    expect(geminiFake.liveCalls).toBe(1);
     expect(codexFake.liveCalls).toBe(2);
     expect(anthropicFake.liveCalls).toBe(1);
+  });
+
+  it('forwards maxRequestTokens from gemini options too', () => {
+    const router = new RoutingRunner({
+      anthropic: { maxTokens: 8_000 },
+      gemini: { maxTokens: 12_000 },
+    });
+    expect(router.maxRequestTokens).toBe(new GeminiRunner({ maxTokens: 12_000 }).maxRequestTokens);
   });
 
   it('supports a custom route function returning a third AgentRunner directly and forwards maxRequestTokens', async () => {

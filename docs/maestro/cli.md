@@ -31,8 +31,8 @@ The terminal progress tree updates live agent activity and token usage when atta
 | `--tools-dir <dir>` | Where custom tools are loaded from. Default: `<state-dir>/tools`. |
 | `--concurrency <n>` | How many agents may run at once. |
 | `--model <model>` | The run's model, overridden by `agent(..., { model })`. Default: `claude-opus-5-5`; Gateway requires an explicit `provider/model` here or on each agent. |
-| `--runner <name>` | `anthropic` (default), `codex`, `gateway` or `auto`. See [Runners](/maestro/runners). |
-| `--structured-mode <mode>` | `two-stage`, `submit-tool` or `single-stage`. Defaults to `two-stage` for Anthropic and `submit-tool` for Gateway. See [Runners](/maestro/runners). |
+| `--runner <name>` | `anthropic` (default), `codex`, `gemini`, `gateway` or `auto`. See [Runners](/maestro/runners). |
+| `--structured-mode <mode>` | `two-stage`, `submit-tool` or `single-stage`. Defaults to `two-stage` for Anthropic/Gemini and `submit-tool` for Gateway. See [Runners](/maestro/runners). |
 
 ## `maestro runs`
 
@@ -88,6 +88,7 @@ The server exits when its client disconnects or is gone. Runs in progress are st
 | Variable | Used for |
 |---|---|
 | `ANTHROPIC_API_KEY` | The Claude runner. |
+| `GEMINI_API_KEY` / `GOOGLE_API_KEY` | The Gemini runner (`--runner gemini` and Gemini models in `--runner auto`). |
 | `AI_GATEWAY_API_KEY` | The Vercel AI Gateway runner (`--runner gateway`). |
 
 ## Exit status

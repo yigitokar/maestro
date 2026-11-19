@@ -13,6 +13,7 @@ import { parseBudgetDirective } from './budget.js';
 import { CodexRunner } from './codex-runner.js';
 import { EVENT_LOG_FILE } from './event-log.js';
 import { GatewayRunner } from './gateway-runner.js';
+import { GeminiRunner } from './gemini-runner.js';
 import { gc } from './isolation.js';
 import { readEntries, readResultBlob, readTrace } from './journal.js';
 import { serveMcp } from './mcp.js';
@@ -29,7 +30,7 @@ import { readOutcome, run, SAFE_ID } from './workflow.js';
 export const USAGE = `usage:
   maestro run <script.js> [--args <json>] [--args-file <file>] [--resume <runId>] [--budget <500k>]
                           [--dry-run] [--cwd <dir>] [--state-dir <dir>] [--tools-dir <dir>] [--concurrency <n>]
-                          [--model <model>] [--runner <anthropic|codex|auto|gateway>]
+                          [--model <model>] [--runner <anthropic|codex|gemini|auto|gateway>]
                           [--structured-mode <two-stage|submit-tool|single-stage>]
   maestro run --resume <runId> [options]     resume with the stored script.js and args.json
   maestro runs [--cwd <dir>] [--state-dir <dir>] [--limit <n>]
@@ -43,15 +44,16 @@ export const USAGE = `usage:
                                              (--out writes the page as one self-contained HTML file instead;
                                              --widget prints a snapshot fragment for a chat's inline widget tool)
   maestro mcp [--cwd <dir>] [--state-dir <dir>] [--tools-dir <dir>] [--budget <500k>] [--concurrency <n>]
-              [--model <model>] [--runner <anthropic|codex|auto|gateway>]
+              [--model <model>] [--runner <anthropic|codex|gemini|auto|gateway>]
               [--structured-mode <two-stage|submit-tool|single-stage>] [--dry-run]
                                              serve the Workflow tool over stdio as an MCP server
                                              (--budget is one pool for the whole session; exits 0 when stdin ends)
 
   --dry-run          run every agent with an in-memory fake runner (schema stubs, no network)
-  --runner           agent runner: anthropic (default), codex, auto (routes by model), or gateway; --dry-run takes precedence
+  --runner           agent runner: anthropic (default), codex, gemini, auto (routes by model), or gateway; --dry-run takes precedence
   --structured-mode  schema output mode: two-stage, submit-tool, or single-stage
-                     defaults: anthropic/auto two-stage; gateway submit-tool
+                     defaults: anthropic/gemini/auto two-stage; gateway submit-tool
+  gemini             requires GEMINI_API_KEY (or GOOGLE_API_KEY); defaults to gemini-4-hydrogen
   gateway            requires AI_GATEWAY_API_KEY and provider/model IDs via --model or agent opts.model
   --tools-dir        custom tools agents may name in opts.tools: *.js files that default-export a tool
                      (default <state-dir>/tools)
@@ -130,12 +132,22 @@ function str(p: Parsed, name: string): string | undefined {
   return typeof v === 'string' ? v : undefined;
 }
 
-function runnerName(p: Parsed): 'anthropic' | 'codex' | 'auto' | 'gateway' {
+function runnerName(p: Parsed): 'anthropic' | 'codex' | 'gemini' | 'auto' | 'gateway' {
   const name = str(p, 'runner') ?? 'anthropic';
-  if (name !== 'anthropic' && name !== 'codex' && name !== 'auto' && name !== 'gateway') {
-    throw new UsageError(`invalid --runner "${name}" (expected anthropic, codex, auto or gateway)`);
+  if (
+    name !== 'anthropic' &&
+    name !== 'codex' &&
+    name !== 'gemini' &&
+    name !== 'auto' &&
+    name !== 'gateway'
+  ) {
+    throw new UsageError(`invalid --runner "${name}" (expected anthropic, codex, gemini, auto or gateway)`);
   }
   return name;
+}
+
+function geminiKeyFromEnv(env: Record<string, string | undefined>): string | undefined {
+  return env.GEMINI_API_KEY?.trim() || env.GOOGLE_API_KEY?.trim() || undefined;
 }
 
 function structuredModeFlag(p: Parsed): StructuredMode | undefined {
@@ -227,11 +239,24 @@ async function runCommand(p: Parsed, io: CliIO): Promise<number> {
   const dryRun = p.flags.has('dry-run');
   const selectedRunner = runnerName(p);
   const structuredMode = structuredModeFlag(p);
+  const geminiApiKey = geminiKeyFromEnv(io.env);
   let runner: AgentRunner;
   if (dryRun) runner = new FakeRunner();
   else if (selectedRunner === 'codex') runner = new CodexRunner();
-  else if (selectedRunner === 'auto') runner = new RoutingRunner({ anthropic: { structuredMode } });
-  else if (selectedRunner === 'gateway') {
+  else if (selectedRunner === 'gemini') {
+    if (!geminiApiKey) {
+      io.stderr.write(
+        'maestro: GEMINI_API_KEY (or GOOGLE_API_KEY) is missing or blank. Export the key first, or use --dry-run for offline runs.\n',
+      );
+      return 1;
+    }
+    runner = new GeminiRunner({ apiKey: geminiApiKey, structuredMode });
+  } else if (selectedRunner === 'auto') {
+    runner = new RoutingRunner({
+      anthropic: { structuredMode },
+      gemini: { apiKey: geminiApiKey ?? '', structuredMode },
+    });
+  } else if (selectedRunner === 'gateway') {
     if (!io.env.AI_GATEWAY_API_KEY?.trim()) {
       io.stderr.write(
         'maestro: AI_GATEWAY_API_KEY is missing or blank. Export the key first, or use --dry-run for offline runs.\n',
@@ -322,9 +347,15 @@ async function mcpCommand(p: Parsed, io: CliIO): Promise<number> {
   const dryRun = p.flags.has('dry-run');
   const selectedRunner = runnerName(p);
   const structuredMode = structuredModeFlag(p);
+  const geminiApiKey = geminiKeyFromEnv(io.env);
   // stdout is the MCP channel: diagnostics go to stderr only.
   if (!dryRun && selectedRunner === 'anthropic' && !io.env.ANTHROPIC_API_KEY) {
     io.stderr.write('maestro mcp: ANTHROPIC_API_KEY is not set; Workflow runs will fail until it is.\n');
+  }
+  if (!dryRun && selectedRunner === 'gemini' && !geminiApiKey) {
+    io.stderr.write(
+      'maestro mcp: GEMINI_API_KEY (or GOOGLE_API_KEY) is missing or blank; Workflow runs will fail until it is set.\n',
+    );
   }
   if (!dryRun && selectedRunner === 'gateway' && !io.env.AI_GATEWAY_API_KEY?.trim()) {
     io.stderr.write(
@@ -341,11 +372,16 @@ async function mcpCommand(p: Parsed, io: CliIO): Promise<number> {
         ? new FakeRunner()
         : selectedRunner === 'codex'
           ? new CodexRunner()
-          : selectedRunner === 'auto'
-            ? new RoutingRunner({ anthropic: { structuredMode } })
-            : selectedRunner === 'gateway'
-              ? new GatewayRunner({ apiKey: io.env.AI_GATEWAY_API_KEY ?? '', structuredMode })
-              : new AnthropicRunner({ structuredMode }),
+          : selectedRunner === 'gemini'
+            ? new GeminiRunner({ apiKey: geminiApiKey ?? '', structuredMode })
+            : selectedRunner === 'auto'
+              ? new RoutingRunner({
+                  anthropic: { structuredMode },
+                  gemini: { apiKey: geminiApiKey ?? '', structuredMode },
+                })
+              : selectedRunner === 'gateway'
+                ? new GatewayRunner({ apiKey: io.env.AI_GATEWAY_API_KEY ?? '', structuredMode })
+                : new AnthropicRunner({ structuredMode }),
       cwd,
       budget,
       ...(stateDir !== undefined ? { stateDir: path.resolve(io.cwd, stateDir) } : {}),
