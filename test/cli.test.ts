@@ -221,6 +221,7 @@ describe('maestro mcp', () => {
       [
         'Workflow',
         'WorkflowGuide',
+        'WorkflowInspect',
         'WorkflowMessage',
         'WorkflowResult',
         'WorkflowSkip',

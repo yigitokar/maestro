@@ -14,6 +14,7 @@ import { readEntries } from '../src/journal.js';
 import {
   serveMcp,
   WORKFLOW_GUIDE_TOOL_NAME,
+  WORKFLOW_INSPECT_TOOL_NAME,
   WORKFLOW_MESSAGE_TOOL_NAME,
   WORKFLOW_RESULT_TOOL_NAME,
   WORKFLOW_SKIP_TOOL_NAME,
@@ -340,6 +341,7 @@ describe('maestro mcp', () => {
       [
         'Workflow',
         WORKFLOW_GUIDE_TOOL_NAME,
+        WORKFLOW_INSPECT_TOOL_NAME,
         WORKFLOW_RESULT_TOOL_NAME,
         WORKFLOW_STOP_TOOL_NAME,
         WORKFLOW_SKIP_TOOL_NAME,
@@ -611,5 +613,44 @@ return { before, after: budget.spent(), total: budget.total };`;
     expect(res.isError).toBe(true);
     const unknown = await client.callTool({ name: WORKFLOW_RESULT_TOOL_NAME, arguments: { runId: 'nope' } });
     expect(unknown.isError).toBe(true);
+  });
+
+  it('WorkflowInspect returns compact failure Markdown and structured JSON over MCP', async () => {
+    const { client } = await connect({
+      handler: (req) =>
+        req.prompt.includes('fail-me')
+          ? { status: 'null', result: null, error: 'bad schema output', raw: 'not-json' }
+          : { result: 'upstream-context-payload' },
+    });
+    const script = `export const meta = { name: 'mcp-inspect', description: 'd' };
+const ctx = await agent('seed', { label: 'seed' });
+const res = await agent('fail-me with ' + ctx, { label: 'broken' });
+return { ctx, res };`;
+    const runId = await startWorkflow(client, script);
+    await poll(client, runId);
+
+    const mdRes = await client.callTool({ name: WORKFLOW_INSPECT_TOOL_NAME, arguments: { runId } });
+    expect(mdRes.isError).toBeFalsy();
+    const md = textOf(mdRes);
+    expect(md).toContain('`broken`');
+    expect(md).toContain('bad schema output');
+    expect(md).toContain('`seed`');
+    expect(md).toContain('referenced in failing prompt');
+
+    const jsonRes = await client.callTool({
+      name: WORKFLOW_INSPECT_TOOL_NAME,
+      arguments: { runId, format: 'json', compact: true },
+    });
+    expect(jsonRes.isError).toBeFalsy();
+    const report = JSON.parse(textOf(jsonRes));
+    expect(report.degraded).toBe(true);
+    expect(report.nodes[0].label).toBe('broken');
+    expect(report.upstream[0].label).toBe('seed');
+
+    const missing = await client.callTool({
+      name: WORKFLOW_INSPECT_TOOL_NAME,
+      arguments: { runId: 'does-not-exist' },
+    });
+    expect(missing.isError).toBe(true);
   });
 });

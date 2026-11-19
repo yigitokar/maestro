@@ -148,7 +148,7 @@ The full versions, with the `FINDINGS`, `VERDICT` and `BUGS` schemas, are in the
 
 Every run keeps `script.js`, `args.json`, `journal.jsonl` and `blobs/` under `.maestro/runs/<runId>/`. When you edit the script and run it again with `resumeFromRunId`, every call that did not change comes from the cache. A hit is decided per call: if one prompt in the middle changes, only that call and the calls that take its result into their prompt run live, and independent siblings come from the cache. The same script with the same args means zero live calls. Only `ok` records are cache hits: null records (an API error) and skipped records (budget or a skip) run again on resume. This is how raising the budget and resuming revives the agents that were cut off.
 
-Before you diagnose an unexpected or empty result, read `journal.jsonl` (or run `npx -y maestro-workflows runs --cwd <cwd>` and `npx -y maestro-workflows show <runId> --cwd <cwd>`). Each line holds the real return value and status of one call. Do not assume a cached result is non-empty.
+Before you diagnose an unexpected or empty result, call `WorkflowInspect({ runId })` (or run `npx -y maestro-workflows inspect <runId> --compact --cwd <cwd>`). It returns only failed nodes, their exact inputs/errors/tool failures, and relevant upstream outputs without bloating your context window. You can also inspect raw rows with `npx -y maestro-workflows show <runId> --cwd <cwd>`. Do not assume a cached result is non-empty.
 
 If the user wants to watch the run, give them this command:
 

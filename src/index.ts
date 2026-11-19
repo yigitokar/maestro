@@ -24,6 +24,15 @@ export {
   toGeminiThinkingLevel,
 } from './gemini-runner.js';
 export type {
+  InspectedNode,
+  InspectedNodeInput,
+  InspectOptions,
+  InspectReport,
+  RunOverviewItem,
+  UpstreamSummary,
+} from './inspect.js';
+export { formatInspectMarkdown, inspectRun, selectRows } from './inspect.js';
+export type {
   CloseResult,
   GcOptions,
   GcResult,
@@ -49,6 +58,8 @@ export {
   createMcpServer,
   serveMcp,
   WAIT_PROGRESS_INTERVAL_MS,
+  WORKFLOW_GUIDE_TOOL_NAME,
+  WORKFLOW_INSPECT_TOOL_NAME,
   WORKFLOW_MESSAGE_TOOL_NAME,
   WORKFLOW_RESULT_TOOL_NAME,
   WORKFLOW_SKIP_TOOL_NAME,
