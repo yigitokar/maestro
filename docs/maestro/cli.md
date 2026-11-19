@@ -55,7 +55,7 @@ Each line shows the run id, its status (`done`, `failed` or `running`), the work
 ## `maestro show`
 
 ```text
-maestro show <runId> [label-or-live-id] [--compact] [--json] [--cwd <dir>] [--state-dir <dir>]
+maestro show <runId> [label-or-live-id] [--compact] [--full] [--json] [--cwd <dir>] [--state-dir <dir>]
 ```
 
 Without a label, lists the run's agents, outcome and latest recorded live activity. A live agent can be selected by label or numeric id. Recorded activity can be stale if its process died. For completed agents, a label or key prefix prints the trace, result, error and message audit. Passing `--compact` or `--json` delegates to `maestro inspect`.
@@ -63,10 +63,10 @@ Without a label, lists the run's agents, outcome and latest recorded live activi
 ## `maestro inspect`
 
 ```text
-maestro inspect <runId> [label-or-key] [--compact] [--json] [--cwd <dir>] [--state-dir <dir>]
+maestro inspect <runId> [label-or-key] [--compact] [--full] [--json] [--cwd <dir>] [--state-dir <dir>]
 ```
 
-Produces a diagnostic summary designed for coding agents diagnosing failures without bloating their context window. With `--compact`, includes only failed (`null` / `skipped`) nodes with their exact input prompt, error, failed tool calls, raw/final text, and the most relevant upstream completed nodes (prioritizing upstream results referenced inside failing prompts). Pass `--json` for machine-readable structured JSON, or pass a label, `#index`, or key prefix to inspect one specific node.
+Produces a diagnostic summary designed for coding agents diagnosing failures without bloating their context window. With `--compact`, includes only failed (`null` / `skipped`) nodes with their prompt and schema previews, error, failed tool calls, raw/final text, and the most relevant upstream completed nodes (prioritizing upstream results referenced inside failing prompts). Pass `--full` for complete recorded prompts, schemas and outputs. Older failures may have only an event preview. Agent counts and upstream state reflect the latest attempt, including cache hits. A label, `#index`, or key prefix selects from that attempt first, then from earlier rows if needed. Pass `--json` for structured output.
 
 Live instructions are sent through `WorkflowMessage` on the owning MCP connection or the library's `sendMessage` handle, not through a separate CLI process.
 

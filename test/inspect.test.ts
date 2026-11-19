@@ -4,8 +4,9 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { main } from '../src/cli.js';
 import { formatInspectMarkdown, inspectRun } from '../src/inspect.js';
+import { readEntries, readFailureInput, resolveBlobFile } from '../src/journal.js';
 import { FakeRunner } from '../src/testing/fake-runner.js';
-import { run } from '../src/workflow.js';
+import { replay, run } from '../src/workflow.js';
 
 const dirs: string[] = [];
 afterEach(async () => {
@@ -19,7 +20,7 @@ async function tmp(): Promise<string> {
 }
 
 describe('inspectRun & formatInspectMarkdown', () => {
-  it('distills failed nodes with exact inputs, outputs, failed tools, and referenced upstream state in compact mode', async () => {
+  it('distills failed nodes with recorded inputs, outputs, failed tools, and referenced upstream state in compact mode', async () => {
     const cwd = await tmp();
     const runner = new FakeRunner((req) => {
       if (req.prompt.includes('ingest-alpha')) {
@@ -163,10 +164,107 @@ return { a, b };`;
     expect(r2.stats.liveCalls).toBe(1);
   });
 
+  it('counts only invoked keys after an edit and prefers their rows for selectors', async () => {
+    const cwd = await tmp();
+    const script = `export const meta = { name: 'edit', description: 'd' };
+await agent('retired', { label: 'retired' });
+await agent('cached', { label: 'cached' });
+return agent('v1', { label: 'classify' });`;
+    const runner = new FakeRunner((req) => ({ result: req.prompt === 'v1' ? null : 'ok' }));
+    const first = run({ cwd, runner, script });
+    await first.promise;
+    const old = (await readEntries(first.runDir))[2]!;
+    const edited = script.replace("await agent('retired', { label: 'retired' });", '').replace('v1', 'v2');
+    await run({ cwd, runner, resumeFromRunId: first.runId, script: edited }).promise;
+    const inspect = (selector?: string) => inspectRun(first.runDir, first.runId, { compact: true, selector });
+    const report = await inspect();
+    expect(report.degraded).toBe(false);
+    expect(report.nodes).toHaveLength(0);
+    expect(report.stats).toMatchObject({ totalAgents: 2, ok: 2, null: 0, journalCacheHits: 1 });
+    expect(report.overview?.map((r) => r.label)).toEqual(['cached', 'classify']);
+    const classify = await inspect('classify');
+    expect(classify.nodes.map((r) => r.status)).toEqual(['ok']);
+    expect(classify.upstream.map((r) => r.label)).toEqual(['cached']);
+    expect((await inspect('#0')).nodes[0]?.label).toBe('cached');
+    expect((await inspect(old.key)).nodes[0]?.status).toBe('null');
+    await rm(path.join(first.runDir, 'events.jsonl'));
+    expect((await inspect()).stats.totalAgents).toBe(4);
+  });
+
+  it('persists long failure inputs and bounds prompt, schema, result and raw text until full is requested', async () => {
+    const cwd = await tmp();
+    const payload = `head${'x'.repeat(70000)}tail`;
+    const schema = { type: 'object', properties: {}, description: payload };
+    const script = `export const meta = { name: 'long', description: 'd' };
+await agent('seed', { label: 'seed' });
+return agent(args.payload, { label: 'broken', schema: args.schema });`;
+    const runner = new FakeRunner((req) =>
+      req.prompt === 'seed' ? { result: payload } : { result: null, raw: payload },
+    );
+    const h = run({ cwd, runner, script, args: { payload, schema }, model: 'test-model' });
+    await h.promise;
+    const [ok, failed] = await readEntries(h.runDir);
+    expect(ok).not.toHaveProperty('failureInput');
+    expect(failed).toHaveProperty('failureInputBlob', true);
+    expect(await readFailureInput(h.runDir, failed!)).toEqual({
+      prompt: payload,
+      options: { label: 'broken', schema },
+      model: 'test-model',
+      tools: runner.calls[1]!.tools.map((t) => t.name),
+    });
+    const inspect = (full: boolean) => inspectRun(h.runDir, h.runId, { full, compact: true });
+    const report = await inspect(false);
+    const node = report.nodes[0]!;
+    expect(node.input?.promptLength).toBe(payload.length);
+    for (const field of [
+      node.input?.prompt,
+      node.raw,
+      node.input?.schema,
+      report.upstream[0]?.resultPreview,
+    ]) {
+      expect(field).toContain('head');
+      expect(field).toContain('tail');
+      expect(field).toContain('--full');
+    }
+    expect(node.input?.prompt).toContain(String(payload.length - 1200));
+    const full = await inspect(true);
+    expect(full.nodes[0]?.input).toMatchObject({
+      prompt: payload,
+      schema: JSON.stringify(schema),
+      model: 'test-model',
+    });
+    expect(full.nodes[0]?.raw).toBe(payload);
+    expect(full.upstream[0]?.resultPreview).toBe(JSON.stringify(payload));
+    await rm(resolveBlobFile(path.join(h.runDir, 'blobs'), failed!.key, '.input.json'));
+    const fallback = await inspect(true);
+    expect(fallback.nodes[0]?.input).toMatchObject({
+      source: 'event-preview',
+      promptTruncated: true,
+      prompt: payload.slice(0, 4000),
+    });
+    expect(formatInspectMarkdown(fallback)).toContain('total length unknown, event preview');
+  });
+
+  it('charges a replay only for its live calls', async () => {
+    const cwd = await tmp();
+    const script = `export const meta = { name: 'tokens', description: 'd' };
+await agent('seed', { label: 'seed' });
+return agent('target', { label: 'target' });`;
+    const runner = new FakeRunner((req) => ({ cacheReadTokensPerTurn: req.prompt === 'seed' ? 500 : 50 }));
+    const source = run({ cwd, runner, script });
+    await source.promise;
+    const fork = replay({ cwd, runner, fromRunId: source.runId, from: 'target' });
+    await fork.promise;
+    const report = await inspectRun(fork.runDir, fork.runId);
+    expect(report.stats).toMatchObject({ inputTokens: 100, outputTokens: 100, promptCacheRatio: 0.5 });
+  });
+
   it('supports CLI `maestro inspect --compact`, `--json`, label selector, and `maestro show --compact`', async () => {
     const cwd = await tmp();
     const runner = new FakeRunner((req) =>
-      req.prompt === 'bad' ? { status: 'null', result: null, error: 'boom' } : { result: 'good' },
+      req.prompt === 'bad'
+        ? { status: 'null', result: null, error: 'boom', raw: 'z'.repeat(5000) }
+        : { result: 'good' },
     );
     const script = `export const meta = { name: 'cli-insp', description: 'd' };
 await agent('good', { label: 'step:good' });
@@ -205,5 +303,10 @@ return 'done';`;
     const viaShow = await runCli(['show', 'cli-run', '--compact']);
     expect(viaShow.code, viaShow.stderr).toBe(0);
     expect(viaShow.stdout).toBe(mdRes.stdout);
+    for (const command of ['show', 'inspect']) {
+      const full = await runCli([command, 'cli-run', '--compact', '--full']);
+      expect(full.code, full.stderr).toBe(0);
+      expect(full.stdout).toContain('z'.repeat(5000));
+    }
   });
 });

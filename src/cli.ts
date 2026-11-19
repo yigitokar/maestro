@@ -41,11 +41,11 @@ export const USAGE = `usage:
   maestro runs [--cwd <dir>] [--state-dir <dir>] [--limit <n>]
                                              list runs newest-first with status, agents and token usage (alias: ls)
   maestro gc [--delete] [--force] [--cwd <dir>]
-  maestro show <runId> [label-or-live-id] [--compact] [--json] [--cwd <dir>] [--state-dir <dir>]
+  maestro show <runId> [label-or-live-id] [--compact] [--full] [--json] [--cwd <dir>] [--state-dir <dir>]
                                              list completed agents and latest recorded live activity; with a label (or key prefix), print
                                              that agent's trace: tool calls, final text, result, error
-  maestro inspect <runId> [label-or-key] [--compact] [--json] [--cwd <dir>] [--state-dir <dir>]
-                                             agent-friendly diagnostic summary: failed nodes, exact inputs/outputs, and relevant upstream state
+  maestro inspect <runId> [label-or-key] [--compact] [--full] [--json] [--cwd <dir>] [--state-dir <dir>]
+                                             agent-friendly diagnostic summary: failed nodes, input/output previews (--full for complete recorded fields), and relevant upstream state
   maestro eval <script.js> --cases <file> [--grader <file.js>] [--name <evalId>] [--from-eval <evalId>] [--from <node>]
                            [--only <ids>] [--limit <n>] [--case-concurrency <n>] [--json] [run options]
                                              run a workflow across an eval dataset (JSON/JSONL) and save results under <state-dir>/evals/
@@ -125,6 +125,7 @@ const BOOL_FLAGS = new Set([
   'no-open',
   'widget',
   'compact',
+  'full',
   'json',
   'fail-on-regression',
 ]);
@@ -780,6 +781,7 @@ async function inspectCommand(p: Parsed, io: CliIO): Promise<number> {
   const runDir = path.join(stateDir, 'runs', runId);
   const report = await inspectRun(runDir, runId, {
     compact: p.flags.has('compact'),
+    full: p.flags.has('full'),
     ...(selector !== undefined ? { selector } : {}),
   });
   if (p.flags.has('json')) {

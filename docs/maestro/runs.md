@@ -13,8 +13,8 @@ Every run gets an id such as `20261025-150301-a1b2c3` and a directory `.maestro/
 | `script.js` | The script as it ran. |
 | `args.json` | The arguments. |
 | `run.json` | The run's model and runner. |
-| `journal.jsonl` | One line per `agent()` call: its key, status, result, token usage, trace and live message audit. |
-| `blobs/` | Results larger than 64 KB, one file each. |
+| `journal.jsonl` | One line per `agent()` call: its key, status, result, token usage, trace and live message audit. Failed and skipped calls also store `failureInput` with the full prompt, options, resolved model and tool names. |
+| `blobs/` | Results, traces and failure inputs larger than 64 KB, one file each. A row with `failureInputBlob: true` stores its input in `blobs/<key>.input.json`. |
 | `events.jsonl` | Every event with a wall-clock time. Used only for display. |
 | `outcome.json` | The final result or error, written when the run ends. |
 

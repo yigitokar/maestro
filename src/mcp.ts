@@ -275,11 +275,12 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
         {
           name: WORKFLOW_INSPECT_TOOL_NAME,
           description:
-            'Compact, agent-friendly diagnostic summary of a Workflow run on disk. Returns only failed nodes (with exact input prompt, error, failed tool calls, raw/final text) plus relevant upstream state by default (`compact: true`), avoiding full journal bloat. Pass `label` (or `#index` / key prefix) to inspect a specific agent, or `format: "json"` for structured JSON.',
+            'Compact, agent-friendly diagnostic summary of a Workflow run on disk. Returns only failed nodes (with prompt and schema previews, error, failed tool calls, raw/final text) plus relevant upstream state by default (`compact: true`), with long fields bounded. Pass `full: true` for complete recorded fields. Pass `label` (or `#index` / key prefix) to inspect a specific agent, or `format: "json"` for structured JSON.',
           inputSchema: {
             type: 'object',
             properties: {
               ...RUN_ID_PROPERTY,
+              full: { type: 'boolean', description: 'Show complete recorded prompts, schemas and outputs.' },
               compact: {
                 type: 'boolean',
                 description: 'Minimal failure-focused summary for agent context windows (default true).',
@@ -441,6 +442,7 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
       const inp = (input ?? {}) as {
         runId?: unknown;
         compact?: unknown;
+        full?: unknown;
         label?: unknown;
         format?: unknown;
         cwd?: unknown;
@@ -464,6 +466,7 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
       const runDir = path.join(stateDir, 'runs', inp.runId);
       try {
         const report = await inspectRun(runDir, inp.runId, {
+          full: inp.full === true,
           compact: typeof inp.compact === 'boolean' ? inp.compact : true,
           ...(typeof inp.label === 'string' && inp.label.trim() !== '' ? { selector: inp.label } : {}),
         });

@@ -280,6 +280,11 @@ export class Journal {
         await writeDurable(traceBlobPath(this.blobDir, entry.key), traceJson);
         row = { ...row, trace: { blob: entry.key }, traceBlob: true };
       }
+      const inputJson = row.failureInput === undefined ? undefined : JSON.stringify(row.failureInput);
+      if (inputJson !== undefined && Buffer.byteLength(inputJson) > LIMITS.blobThresholdBytes) {
+        await writeDurable(join(this.blobDir, blobFileName(entry.key, '.input.json')), inputJson);
+        row = { ...row, failureInput: undefined, failureInputBlob: true };
+      }
       const line = JSON.stringify(row);
       buf = Buffer.from(`${line}\n`);
       // Keep what went to disk, not the caller's object: a resume reads back exactly this.
@@ -321,6 +326,16 @@ export async function readEntries(runDir: string): Promise<Entry[]> {
 /** Reads a >64 KB result blob for `key` (resolving POSIX/Windows filename conventions). */
 export async function readResultBlob(runDir: string, key: string): Promise<unknown> {
   return JSON.parse(await readFile(resolveBlobFile(join(runDir, 'blobs'), key, '.json'), 'utf8'));
+}
+
+export async function readFailureInput(runDir: string, row: Entry): Promise<Entry['failureInput']> {
+  if (!row.failureInputBlob) return row.failureInput;
+  if (!/^[a-f0-9]{64}:\d+$/.test(row.key)) return undefined;
+  try {
+    return JSON.parse(await readFile(resolveBlobFile(join(runDir, 'blobs'), row.key, '.input.json'), 'utf8'));
+  } catch {
+    return undefined;
+  }
 }
 
 /** The row's trace with its blob resolved; undefined when the row has none or the blob is unreadable. */

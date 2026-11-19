@@ -626,7 +626,7 @@ return { before, after: budget.spent(), total: budget.total };`;
     });
     const script = `export const meta = { name: 'mcp-inspect', description: 'd' };
 const ctx = await agent('seed', { label: 'seed' });
-const res = await agent('fail-me with ' + ctx, { label: 'broken' });
+const res = await agent('fail-me with ' + 'x'.repeat(5000) + ctx, { label: 'broken' });
 return { ctx, res };`;
     const runId = await startWorkflow(client, script);
     await poll(client, runId);
@@ -636,17 +636,19 @@ return { ctx, res };`;
     const md = textOf(mdRes);
     expect(md).toContain('`broken`');
     expect(md).toContain('bad schema output');
+    expect(md).toContain('--full');
     expect(md).toContain('`seed`');
     expect(md).toContain('referenced in failing prompt');
 
     const jsonRes = await client.callTool({
       name: WORKFLOW_INSPECT_TOOL_NAME,
-      arguments: { runId, format: 'json', compact: true },
+      arguments: { runId, format: 'json', compact: true, full: true },
     });
     expect(jsonRes.isError).toBeFalsy();
     const report = JSON.parse(textOf(jsonRes));
     expect(report.degraded).toBe(true);
     expect(report.nodes[0].label).toBe('broken');
+    expect(report.nodes[0].input.prompt).toBe(`fail-me with ${'x'.repeat(5000)}upstream-context-payload`);
     expect(report.upstream[0].label).toBe('seed');
 
     const missing = await client.callTool({

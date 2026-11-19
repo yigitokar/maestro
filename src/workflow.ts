@@ -403,6 +403,15 @@ export function run(opts: RunOptions): RunHandle {
       status,
       raw,
       error,
+      failureInput:
+        status === 'ok'
+          ? undefined
+          : {
+              prompt: a.prompt,
+              options: o,
+              model: o.model ?? model,
+              tools: a.tools.map((t) => t.name),
+            },
       worktree,
       trace: res?.trace,
       messages: control.messages(),
