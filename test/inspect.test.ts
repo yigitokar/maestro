@@ -1,4 +1,4 @@
-import { appendFile, mkdtemp, rm } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -196,7 +196,7 @@ return agent('v1', { label: 'classify' });`;
   it('persists long failure inputs and bounds prompt, schema, result and raw text until full is requested', async () => {
     const cwd = await tmp();
     const payload = `head${'x'.repeat(70000)}tail`;
-    const schema = { type: 'object', properties: {}, description: payload };
+    const schema = { type: 'object', properties: {}, description: `${payload}${'`'.repeat(5)}` };
     const script = `export const meta = { name: 'long', description: 'd' };
 await agent('seed', { label: 'seed' });
 return agent(args.payload, { label: 'broken', schema: args.schema });`;
@@ -235,6 +235,10 @@ return agent(args.payload, { label: 'broken', schema: args.schema });`;
       schema: JSON.stringify(schema),
       model: 'test-model',
     });
+    expect(formatInspectMarkdown(full)).toContain(
+      ['``````json', JSON.stringify(schema), '``````'].join('\n'),
+    );
+    expect(formatInspectMarkdown(full)).not.toContain('schema=`');
     expect(full.nodes[0]?.raw).toBe(payload);
     expect(full.upstream[0]?.resultPreview).toBe(JSON.stringify(payload));
     await rm(resolveBlobFile(path.join(h.runDir, 'blobs'), failed!.key, '.input.json'));
@@ -244,6 +248,7 @@ return agent(args.payload, { label: 'broken', schema: args.schema });`;
       promptTruncated: true,
       prompt: payload.slice(0, 4000),
     });
+    expect(formatInspectMarkdown(fallback)).toContain('schema present (definition unavailable)');
     expect(formatInspectMarkdown(fallback)).toContain('total length unknown, event preview');
   });
 
@@ -303,6 +308,28 @@ return agent('second', { label: '#0' });`;
     expect(JSON.stringify(report)).not.toContain('x'.repeat(1500));
     expect(report.outcome).toMatchObject({ ok: true, resultTruncated: true });
     expect((await inspectRun(h.runDir, h.runId, { full: true })).outcome).toEqual({ ok: true, result: args });
+  });
+
+  it('previews both ends of workflow args and includes all args with full', async () => {
+    const h = run({
+      cwd: await tmp(),
+      runner: new FakeRunner(),
+      args: { value: `${'x'.repeat(5000)}tail` },
+      script: "export const meta = { name: 'args', description: 'd' }; return 1;",
+    });
+    await h.promise;
+    const raw = (await readFile(path.join(h.runDir, 'args.json'), 'utf8')).trim();
+    for (const compact of [true, false]) {
+      const report = await inspectRun(h.runDir, h.runId, { compact });
+      const limit = compact ? 500 : 1500;
+      expect(report.argsPreview).toBe(
+        `${raw.slice(0, limit / 2)}… [${raw.length - limit} characters omitted; --full shows them] …${raw.slice(-limit / 2)}`,
+      );
+      expect(report.argsTruncated).toBe(true);
+      const full = await inspectRun(h.runDir, h.runId, { compact, full: true });
+      expect(full.argsPreview).toBe(raw);
+      expect(full.argsTruncated).toBeFalsy();
+    }
   });
 
   it('keeps both ends of prompt previews well formed', async () => {

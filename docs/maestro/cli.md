@@ -66,7 +66,7 @@ Without a label, lists the run's agents, outcome and latest recorded live activi
 maestro inspect <runId> [label-or-key] [--compact] [--full] [--json] [--cwd <dir>] [--state-dir <dir>]
 ```
 
-Produces a diagnostic summary designed for coding agents diagnosing failures without bloating their context window. With `--compact`, includes only failed (`null` / `skipped`) nodes with their prompt and schema previews, error, failed tool calls, raw/final text, and the most relevant upstream completed nodes (prioritizing upstream results referenced inside failing prompts). Pass `--full` for complete recorded prompts, schemas and outputs. Older failures may have only an event preview. Agent counts and upstream state reflect the latest attempt, including cache hits. A label, `#index`, or key prefix selects from that attempt first, then from earlier rows if needed. Pass `--json` for structured output.
+Produces a diagnostic summary designed for coding agents diagnosing failures without bloating their context window. With `--compact`, includes only failed (`null` / `skipped`) nodes with their prompt and schema previews, error, failed tool calls, raw/final text, and the most relevant upstream completed nodes (prioritizing upstream results referenced inside failing prompts). Pass `--full` for complete workflow arguments, recorded prompts, schemas and outputs. Markdown reports display recorded schemas in fenced JSON blocks. Older failures may have only an event preview. Agent counts and upstream state reflect the latest attempt, including cache hits. A label, `#index`, or key prefix selects from that attempt first, then from earlier rows if needed. Pass `--json` for structured output.
 
 Live instructions are sent through `WorkflowMessage` on the owning MCP connection or the library's `sendMessage` handle, not through a separate CLI process.
 
@@ -84,9 +84,9 @@ Runs a workflow across a JSON or JSONL case dataset, grades each case via declar
 
 Pass `--from-eval <prevEvalId>` (optionally paired with `--from <node>`) to time-travel replay every matching case from an earlier eval run so unchanged upstream agents are served from cache. Compare any two eval runs—or two individual workflow `runId`s—with `maestro eval diff <run-a> <run-b>` to see score delta, fixed vs. regressed cases, token/cost delta, and `[CACHE HIT]` ratio.
 
-Eval prices each live call at the requested model recorded in the event log, resolved through default routing, because runner-level model overrides and custom routes are unrecorded. Journal cache hits cost zero. If any live tokens have an unknown or unpriced model, the case and suite estimates are `null`. The built-in `MODEL_PRICES` table is a reference snapshot in USD per million tokens. The programmatic `prices` option overrides entries by model ID.
+Eval prices each live call at the requested model recorded in the event log, resolved through default routing, because runner-level model overrides and custom routes are unrecorded. Journal cache hits cost zero. If any live tokens have an unknown or unpriced model, the case and suite estimates are `null`. Without a `run_start` event, eval uses live journal rows for token usage and reports `null` cost for nonzero usage. Case and suite costs are each rounded to six decimal places after summing. The summary and `eval ls` show the resolved default model or `(runner default)` when the runner chooses it internally. The built-in `MODEL_PRICES` table is a reference snapshot in USD per million tokens. The programmatic `prices` option overrides entries by model ID.
 
-The diff lists cases with edited arguments or expectations under **Changed Cases** and excludes them from `--fail-on-regression`. Older records without case hashes and individual workflow runs are compared by status.
+The diff lists cases with edited arguments or expectations under **Changed Cases** and excludes them from `--fail-on-regression`. Changed cases that fail include the reason when available and an inspect command. Older records without case hashes and individual workflow runs are compared by status.
 
 ## `maestro viz`
 

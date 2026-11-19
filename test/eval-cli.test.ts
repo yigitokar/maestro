@@ -9,7 +9,9 @@ import {
   estimateCostUsd,
   evaluateExpectation,
   formatEvalDiff,
+  formatEvalSummary,
   loadEvalCases,
+  readEvalRecord,
   runEval,
 } from '../src/eval.js';
 import { RoutingRunner } from '../src/routing-runner.js';
@@ -96,16 +98,63 @@ return await Promise.all([agent('first', { model: args.model }), agent('second')
   });
 
   it.each([
-    [class GeminiRunner extends FakeRunner {}, 0.5],
-    [class CodexRunner extends FakeRunner {}, null],
-  ] as const)('resolves the implicit model for %s', async (Runner, cost) => {
+    [class GeminiRunner extends FakeRunner {}, 0.5, 'gemini-4-hydrogen'],
+    [class CodexRunner extends FakeRunner {}, null, '(runner default)'],
+  ] as const)('resolves the implicit model for %s', async (Runner, cost, model) => {
+    const cwd = await tmp();
     const record = await runEval({
-      cwd: await tmp(),
+      cwd,
       runner: new Runner(() => ({ inputTokensPerTurn: 1_000_000, outputTokensPerTurn: 0 })),
       script: `export const meta = { name: 'implicit', description: 'd' }; return await agent('go');`,
       cases: [{ id: 'implicit' }],
     });
     expect(record.summary.estimatedCostUsd).toBe(cost);
+    expect(record.model).toBe(model);
+    expect(formatEvalSummary(record)).toContain(`model: \`${model}\``);
+    let listing = '';
+    expect(await main(['eval', 'ls'], { cwd, stdout: { write: (s) => (listing += s) } })).toBe(0);
+    expect(listing).toContain(`  ${model}  `);
+  });
+
+  it('rounds stored case and suite costs independently after summing', async () => {
+    const cwd = await tmp();
+    const record = await runEval({
+      cwd,
+      model: 'gemini-4-hydrogen',
+      runner: new FakeRunner((req) => ({
+        inputTokensPerTurn: req.prompt === 'small' ? 1 : 200_000,
+        outputTokensPerTurn: 0,
+      })),
+      script:
+        "export const meta = { name: 'precision', description: 'd' }; for (let i = 0; i < args.length; i++) await agent(args[i]); return 1;",
+      cases: [
+        { id: 'three', args: ['one', 'two', 'three'] },
+        { id: 'tiny1', args: ['small'] },
+        { id: 'tiny2', args: ['small'] },
+      ],
+    });
+    const stored = await readEvalRecord(path.join(cwd, '.maestro'), record.evalId);
+    expect(stored.cases.map((c) => c.estimatedCostUsd)).toEqual([0.3, 0.000001, 0.000001]);
+    expect(stored.summary.estimatedCostUsd).toBe(0.300001);
+  });
+
+  it('uses journal usage and unknown pricing without a run_start', async () => {
+    const cwd = await tmp();
+    const opts = {
+      cwd,
+      runner: new FakeRunner(() => ({ inputTokensPerTurn: 1_000_000, outputTokensPerTurn: 0 })),
+      script: "export const meta = { name: 'legacy', description: 'd' }; return agent('go');",
+    };
+    const live = run(opts);
+    await live.promise;
+    const cached = run({ ...opts, replayFrom: { runId: live.runId } });
+    await cached.promise;
+    await rm(path.join(live.runDir, 'events.jsonl'));
+    await writeFile(path.join(cached.runDir, 'events.jsonl'), '');
+    const diff = await diffEvalRuns(path.join(cwd, '.maestro'), live.runId, cached.runId);
+    expect(diff.tokens).toMatchObject({ totalA: 1_000_000, totalB: 0 });
+    expect(diff.costUsd).toEqual({ costA: null, costB: 0, delta: null });
+    expect(diff.cache).toMatchObject({ agentCallsA: 1, journalHitsA: 0, agentCallsB: 1, journalHitsB: 1 });
   });
 
   it('runs a replay case with null when its dataset args were removed', async () => {
@@ -172,6 +221,9 @@ return await Promise.all([agent('first', { model: args.model }), agent('second')
     expect(diff.cases.stillPassing).toBe(1);
     expect(formatEvalDiff(diff)).toMatch(/Case Status Changes \([^\n]*3 changed/);
     expect(formatEvalDiff(diff)).toMatch(/### Changed[^\n]*[\s\S]*`expected`: pass → fail/);
+    expect(formatEvalDiff(diff)).toContain(
+      `- \`expected\`: pass → fail (expected 0, got 1) · inspect: \`maestro inspect ${after.cases[2]!.runId} --compact\``,
+    );
     const exitCode = await main(['eval', 'diff', before.evalId, after.evalId, '--fail-on-regression'], {
       cwd,
       stdout: { write: () => {} },
