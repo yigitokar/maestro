@@ -14,6 +14,7 @@ import { CodexRunner } from './codex-runner.js';
 import { EVENT_LOG_FILE } from './event-log.js';
 import { GatewayRunner } from './gateway-runner.js';
 import { GeminiRunner } from './gemini-runner.js';
+import { formatInspectMarkdown, inspectRun } from './inspect.js';
 import { gc } from './isolation.js';
 import { readEntries, readResultBlob, readTrace } from './journal.js';
 import { serveMcp } from './mcp.js';
@@ -36,9 +37,11 @@ export const USAGE = `usage:
   maestro runs [--cwd <dir>] [--state-dir <dir>] [--limit <n>]
                                              list runs newest-first with status, agents and token usage (alias: ls)
   maestro gc [--delete] [--force] [--cwd <dir>]
-  maestro show <runId> [label-or-live-id] [--cwd <dir>] [--state-dir <dir>]
+  maestro show <runId> [label-or-live-id] [--compact] [--json] [--cwd <dir>] [--state-dir <dir>]
                                              list completed agents and latest recorded live activity; with a label (or key prefix), print
                                              that agent's trace: tool calls, final text, result, error
+  maestro inspect <runId> [label-or-key] [--compact] [--json] [--cwd <dir>] [--state-dir <dir>]
+                                             agent-friendly diagnostic summary: failed nodes, exact inputs/outputs, and relevant upstream state
   maestro viz <runId> [--cwd <dir>] [--state-dir <dir>] [--port <n>] [--no-open] [--out <file.html>] [--widget]
                                              open a run's timeline in the browser; it follows a live run
                                              (--out writes the page as one self-contained HTML file instead;
@@ -96,7 +99,7 @@ const VALUE_FLAGS = new Set([
   'out',
   'port',
 ]);
-const BOOL_FLAGS = new Set(['dry-run', 'delete', 'force', 'help', 'no-open', 'widget']);
+const BOOL_FLAGS = new Set(['dry-run', 'delete', 'force', 'help', 'no-open', 'widget', 'compact', 'json']);
 
 function parseArgv(argv: string[]): Parsed {
   const positionals: string[] = [];
@@ -186,6 +189,7 @@ export async function main(argv: string[], ioOverrides: Partial<CliIO> = {}): Pr
     if (command === 'runs' || command === 'ls') return await runsCommand(parsed, io);
     if (command === 'gc') return await gcCommand(parsed, io);
     if (command === 'show') return await showCommand(parsed, io);
+    if (command === 'inspect') return await inspectCommand(parsed, io);
     if (command === 'viz') return await vizCommand(parsed, io);
     if (command === 'mcp') return await mcpCommand(parsed, io);
     throw new UsageError(`unknown command "${command}"`);
@@ -608,6 +612,7 @@ function formatRunDuration(ms: number): string {
 }
 
 async function showCommand(p: Parsed, io: CliIO): Promise<number> {
+  if (p.flags.has('compact') || p.flags.has('json')) return inspectCommand(p, io);
   const [runId, label, ...extra] = p.positionals;
   if (runId === undefined) throw new UsageError('show needs a runId');
   if (extra.length > 0) throw new UsageError(`unexpected arguments: ${extra.join(' ')}`);
@@ -659,6 +664,27 @@ async function showCommand(p: Parsed, io: CliIO): Promise<number> {
     return 1;
   }
   for (const row of picked) io.stdout.write(`${await showRow(runDir, row)}\n`);
+  return 0;
+}
+
+async function inspectCommand(p: Parsed, io: CliIO): Promise<number> {
+  const [runId, selector, ...extra] = p.positionals;
+  if (runId === undefined) throw new UsageError('inspect needs a runId');
+  if (extra.length > 0) throw new UsageError(`unexpected arguments: ${extra.join(' ')}`);
+  if (!SAFE_ID.test(runId)) throw new UsageError(`invalid runId "${runId}"`);
+  const cwd = path.resolve(io.cwd, str(p, 'cwd') ?? '.');
+  const stateDirArg = str(p, 'state-dir');
+  const stateDir = stateDirArg !== undefined ? path.resolve(io.cwd, stateDirArg) : path.join(cwd, '.maestro');
+  const runDir = path.join(stateDir, 'runs', runId);
+  const report = await inspectRun(runDir, runId, {
+    compact: p.flags.has('compact'),
+    ...(selector !== undefined ? { selector } : {}),
+  });
+  if (p.flags.has('json')) {
+    io.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  } else {
+    io.stdout.write(formatInspectMarkdown(report));
+  }
   return 0;
 }
 

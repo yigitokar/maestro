@@ -21,6 +21,7 @@ import {
   type ServerRequest,
 } from '@modelcontextprotocol/sdk/types.js';
 import { Budget } from './budget.js';
+import { formatInspectMarkdown, inspectRun } from './inspect.js';
 import { defaultConcurrency } from './scheduler.js';
 import {
   handleWorkflowToolCall,
@@ -41,6 +42,7 @@ export const WORKFLOW_RESULT_TOOL_NAME = 'WorkflowResult';
 export const WORKFLOW_STOP_TOOL_NAME = 'WorkflowStop';
 export const WORKFLOW_SKIP_TOOL_NAME = 'WorkflowSkip';
 export const WORKFLOW_MESSAGE_TOOL_NAME = 'WorkflowMessage';
+export const WORKFLOW_INSPECT_TOOL_NAME = 'WorkflowInspect';
 
 type CallResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
 
@@ -268,6 +270,37 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
             additionalProperties: false,
           },
         },
+        {
+          name: WORKFLOW_INSPECT_TOOL_NAME,
+          description:
+            'Compact, agent-friendly diagnostic summary of a Workflow run on disk. Returns only failed nodes (with exact input prompt, error, failed tool calls, raw/final text) plus relevant upstream state by default (`compact: true`), avoiding full journal bloat. Pass `label` (or `#index` / key prefix) to inspect a specific agent, or `format: "json"` for structured JSON.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              ...RUN_ID_PROPERTY,
+              compact: {
+                type: 'boolean',
+                description: 'Minimal failure-focused summary for agent context windows (default true).',
+              },
+              label: {
+                type: ['string', 'null'],
+                description: 'Optional agent label, #index, or key prefix to inspect specifically.',
+              },
+              format: {
+                type: 'string',
+                enum: ['markdown', 'json'],
+                description: 'Output format: markdown (default) or json.',
+              },
+              cwd: {
+                type: ['string', 'null'],
+                description:
+                  "Optional working directory passed when starting the run; omit for the server's default.",
+              },
+            },
+            required: ['runId'],
+            additionalProperties: false,
+          },
+        },
       ],
     };
   });
@@ -356,6 +389,41 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
       return current.ok
         ? text({ runId, status: 'done', result: current.result })
         : text({ runId, status: 'failed', error: current.error }, true);
+    }
+    if (name === WORKFLOW_INSPECT_TOOL_NAME) {
+      const inp = (input ?? {}) as {
+        runId?: unknown;
+        compact?: unknown;
+        label?: unknown;
+        format?: unknown;
+        cwd?: unknown;
+      };
+      if (typeof inp.runId !== 'string' || !SAFE_ID.test(inp.runId)) {
+        return text(`invalid runId "${String(inp.runId ?? '')}"`, true);
+      }
+      if (inp.format !== undefined && inp.format !== 'markdown' && inp.format !== 'json') {
+        return text(`invalid format "${String(inp.format)}" (expected markdown or json)`, true);
+      }
+      if (inp.label !== undefined && inp.label !== null && typeof inp.label !== 'string') {
+        return text('label must be a string or null', true);
+      }
+      if (inp.cwd !== undefined && inp.cwd !== null && typeof inp.cwd !== 'string') {
+        return text('cwd must be a string or null', true);
+      }
+      const serverCwd = path.resolve(ctx.cwd ?? process.cwd());
+      const targetCwd =
+        typeof inp.cwd === 'string' && inp.cwd.length > 0 ? path.resolve(serverCwd, inp.cwd) : serverCwd;
+      const stateDir = path.resolve(targetCwd, ctx.stateDir ?? '.maestro');
+      const runDir = path.join(stateDir, 'runs', inp.runId);
+      try {
+        const report = await inspectRun(runDir, inp.runId, {
+          compact: typeof inp.compact === 'boolean' ? inp.compact : true,
+          ...(typeof inp.label === 'string' && inp.label.trim() !== '' ? { selector: inp.label } : {}),
+        });
+        return inp.format === 'json' ? text(report) : text(formatInspectMarkdown(report));
+      } catch (err) {
+        return text(err instanceof Error ? err.message : String(err), true);
+      }
     }
     if (name === WORKFLOW_GUIDE_TOOL_NAME) {
       try {
