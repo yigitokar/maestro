@@ -10,8 +10,9 @@ A runner is what executes one agent. Choose one with `--runner` or the `runner` 
 |---|---|---|
 | `anthropic` (default) | The Claude API | `ANTHROPIC_API_KEY` |
 | `codex` | The Codex CLI, one process per agent | Codex CLI installed and signed in |
+| `gemini` | The Google Gemini Interactions API (`@google/genai`) | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) |
 | `gateway` | Models through Vercel AI Gateway | `AI_GATEWAY_API_KEY` and a `provider/model` ID |
-| `auto` | Direct Claude or Codex, chosen per agent by its model | Whatever the models in the script need |
+| `auto` | Direct Claude, Gemini, or Codex, chosen per agent by its model | Whatever the models in the script need |
 
 `--dry-run` overrides every runner with a fake that answers from the schema and needs no API key.
 
@@ -98,7 +99,23 @@ codex mcp add maestro -- npx -y maestro-workflows mcp --runner gateway --model o
 
 The host remains Codex, while workflow agents are billed through Gateway. Gateway mode sends every agent to Gateway; `auto` continues to route only between direct Anthropic and Codex.
 
-## Claude and Codex in one run
+## Gemini
+
+Set `GEMINI_API_KEY` (or `GOOGLE_API_KEY`), then run with `--runner gemini`:
+
+```bash
+maestro run review.js --runner gemini --model gemini-4-hydrogen
+maestro mcp --runner gemini --model gemini-4-carbon
+```
+
+`GeminiRunner` uses the official `@google/genai` Interactions API with client-side step history (`store: false` by default), preserving thought signatures across turns while keeping repo contents off remote retention.
+
+- **Model.** Defaults to `gemini-4-hydrogen` when `--model` is omitted (Maestro's Claude default is ignored, like Codex). Supports `gemini-4-carbon`, `gemini-4-argon`, `gemini-4-hydrogen`, `gemini-3.5-flash-lite`, `gemma-4-31b-it`, and strips an optional `google/` prefix.
+- **Effort.** `low`, `medium` and `high` map directly to Gemini `thinking_level`; `xhigh` and `max` map to `high`.
+- **Structured answers.** Supports `two-stage` (default), `submit-tool`, and `single-stage` via `--structured-mode` or `new GeminiRunner({ structuredMode })`.
+- **Tools, isolation, live messages, usage.** Built-in read/write tools, custom `.maestro/tools/*.js`, worktree commit reminders, live follow-up instructions (`canMessage: true`), and per-turn cached input and thought token accounting all follow the Claude runner.
+
+## Claude, Gemini and Codex in one run
 
 ```bash
 maestro run review.js --runner auto
@@ -107,20 +124,24 @@ maestro run review.js --runner auto
 With `auto`, each agent goes to a runner by its model name:
 
 - `claude-*` and `anthropic/*` go to Claude.
+- `gemini-*`, `gemma-*` and `google/*` go to Gemini.
 - Everything else goes to Codex. Use a model name your Codex account accepts.
 
 ```js
-const findings = await agent('Find bugs in src/journal.ts.', { model: '<a-codex-model>', schema: FINDINGS })
+const context = await agent('Summarize the full repository layout.', { model: 'gemini-4-hydrogen', label: 'ingest' })
+const findings = await agent(`Find bugs using this map:\n${context}`, { model: '<a-codex-model>', schema: FINDINGS })
 const verdict = await agent(`Judge these findings: ${JSON.stringify(findings)}`, { model: 'claude-opus-5-5' })
 ```
 
-Both kinds of agent share one journal, one concurrency limit, one budget and one worktree pool.
+All three runners share one journal, one concurrency limit, one budget and one worktree pool.
 
 In a library you can supply your own rule:
 
 ```ts
 import { RoutingRunner, run } from 'maestro-workflows';
 
-const runner = new RoutingRunner({ route: (model) => (model.startsWith('claude-') ? 'anthropic' : 'codex') });
+const runner = new RoutingRunner({
+  route: (model) => (model.startsWith('gemini-') ? 'gemini' : model.startsWith('claude-') ? 'anthropic' : 'codex'),
+});
 await run({ scriptPath: 'review.js', runner }).promise;
 ```
