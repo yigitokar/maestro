@@ -6,6 +6,7 @@ import { existsSync, promises as fs } from 'node:fs';
 import path from 'node:path';
 import type Anthropic from '@anthropic-ai/sdk';
 import { loadCustomTools } from './custom-tools.js';
+import { prepareReplaySeed } from './replay.js';
 import { parseScript } from './runtime.js';
 import type { AgentMessageReceipt, LiveAgentStatus, ToolDef } from './types.js';
 import { type RunHandle, type RunOptions, run, SAFE_ID } from './workflow.js';
@@ -47,6 +48,27 @@ export interface WorkflowToolContext
 
 export type WorkflowToolResult =
   | { runId: string; scriptPath: string; status: 'started' }
+  | { is_error: true; content: string };
+
+export interface WorkflowReplayInput {
+  fromRunId?: string | null;
+  from?: string | null;
+  script?: string | null;
+  scriptPath?: string | null;
+  args?: unknown;
+  cwd?: string | null;
+}
+
+export type WorkflowReplayResult =
+  | {
+      runId: string;
+      forkedFrom: string;
+      from?: string;
+      seededAgents: number;
+      invalidatedAgents: number;
+      scriptPath: string;
+      status: 'started';
+    }
   | { is_error: true; content: string };
 
 /** Live status of a tool-started agent; id is shared by the skip and message controls. */
@@ -259,6 +281,115 @@ export async function handleWorkflowToolCall(
     },
   );
   return { runId: handle.runId, scriptPath: path.join(handle.runDir, 'script.js'), status: 'started' };
+}
+
+/**
+ * Starts a forked time-travel replay from an earlier run, seeding upstream `'ok'` journal rows
+ * before `from` into a fresh `runId` without mutating the source run.
+ */
+export async function handleWorkflowReplayCall(
+  input: unknown,
+  ctx: WorkflowToolContext = {},
+): Promise<WorkflowReplayResult> {
+  const fail = (content: string): WorkflowReplayResult => ({ is_error: true, content });
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return fail('input must be an object');
+  const inp = input as WorkflowReplayInput;
+  const fromRunId = present(inp.fromRunId) ? inp.fromRunId : undefined;
+  if (!fromRunId) return fail('fromRunId is required');
+  if (!SAFE_ID.test(fromRunId)) return fail(`invalid fromRunId "${fromRunId}"`);
+  if (inp.from !== undefined && inp.from !== null && typeof inp.from !== 'string') {
+    return fail('from must be a string or null');
+  }
+  const from = present(inp.from) ? inp.from : undefined;
+
+  const sources = (['script', 'scriptPath'] as const).filter((k) => present(inp[k]));
+  if (sources.length > 1) return fail('give at most one of script or scriptPath');
+
+  let args: unknown;
+  if (typeof inp.args === 'string') {
+    if (inp.args.trim() !== '') {
+      try {
+        args = JSON.parse(inp.args);
+      } catch (err) {
+        return fail(`args is not valid JSON: ${errorText(err)}`);
+      }
+    }
+  } else if (inp.args !== null && inp.args !== undefined) {
+    args = inp.args;
+  }
+
+  if (inp.cwd !== undefined && inp.cwd !== null && typeof inp.cwd !== 'string') {
+    return fail('cwd must be a string or null');
+  }
+  const serverCwd = path.resolve(ctx.cwd ?? process.cwd());
+  const cwd = present(inp.cwd) ? path.resolve(serverCwd, inp.cwd) : serverCwd;
+  if (cwd !== serverCwd) {
+    const stat = await fs.stat(cwd).catch(() => null);
+    if (!stat?.isDirectory()) return fail(`cwd is not a directory: ${cwd}`);
+  }
+  const stateDir = path.resolve(cwd, ctx.stateDir ?? '.maestro');
+  const sourceRunDir = path.join(stateDir, 'runs', fromRunId);
+
+  let seed: Awaited<ReturnType<typeof prepareReplaySeed>>;
+  try {
+    seed = await prepareReplaySeed(sourceRunDir, fromRunId, from);
+  } catch (err) {
+    return fail(errorText(err));
+  }
+
+  let script: string | undefined;
+  try {
+    if (present(inp.script)) script = inp.script;
+    else if (present(inp.scriptPath)) script = await fs.readFile(path.resolve(cwd, inp.scriptPath), 'utf8');
+    else {
+      const stored = await fs.readFile(path.join(sourceRunDir, 'script.js'), 'utf8');
+      parseScript(stored);
+    }
+  } catch (err) {
+    return fail(`cannot read or parse workflow script: ${errorText(err)}`);
+  }
+  if (script !== undefined) {
+    try {
+      parseScript(script);
+    } catch (err) {
+      return fail(`invalid workflow script: ${errorText(err)}`);
+    }
+  }
+
+  const { onComplete, ...runOpts } = ctx;
+  let handle: ReturnType<typeof run>;
+  try {
+    handle = run({
+      ...runOpts,
+      cwd,
+      stateDir,
+      script,
+      args,
+      replayFrom: { runId: fromRunId, ...(from !== undefined ? { from } : {}) },
+    });
+  } catch (err) {
+    return fail(errorText(err));
+  }
+  liveRuns.set(handle.runId, { handle });
+  handle.promise.then(
+    (result) => {
+      liveRuns.delete(handle.runId);
+      onComplete?.(handle.runId, { ok: true, result });
+    },
+    (err) => {
+      liveRuns.delete(handle.runId);
+      onComplete?.(handle.runId, { ok: false, error: errorText(err) });
+    },
+  );
+  return {
+    runId: handle.runId,
+    forkedFrom: fromRunId,
+    ...(seed.from !== undefined ? { from: seed.from } : {}),
+    seededAgents: seed.seededRows.length,
+    invalidatedAgents: seed.invalidatedCount,
+    scriptPath: path.join(handle.runDir, 'script.js'),
+    status: 'started',
+  };
 }
 
 /** Wraps a handler result as the tool_result block to send back to the model. */

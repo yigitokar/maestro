@@ -61,12 +61,15 @@ export {
   WORKFLOW_GUIDE_TOOL_NAME,
   WORKFLOW_INSPECT_TOOL_NAME,
   WORKFLOW_MESSAGE_TOOL_NAME,
+  WORKFLOW_REPLAY_TOOL_NAME,
   WORKFLOW_RESULT_TOOL_NAME,
   WORKFLOW_SKIP_TOOL_NAME,
   WORKFLOW_STOP_TOOL_NAME,
 } from './mcp.js';
 export type { ProgressStream, ProgressTreeOptions } from './progress.js';
 export { attachTerminalProgress, formatEventLine, GLYPHS, ProgressTree } from './progress.js';
+export type { ReplaySeed, ReplaySpec, TimelineNode } from './replay.js';
+export { buildTimeline, prepareReplaySeed, resolveReplayTarget, writeReplaySeed } from './replay.js';
 export type { RouteTarget, RoutingRunnerOptions } from './routing-runner.js';
 export { defaultModelRoute, RoutingRunner } from './routing-runner.js';
 export type { AnthropicRunnerOptions, StructuredMode } from './runner.js';
@@ -99,11 +102,14 @@ export { abortableSleep, FakeRunner, stubFromSchema } from './testing/fake-runne
 export type {
   LiveWorkflowAgent,
   WorkflowOutcome,
+  WorkflowReplayInput,
+  WorkflowReplayResult,
   WorkflowToolContext,
   WorkflowToolInput,
   WorkflowToolResult,
 } from './tool.js';
 export {
+  handleWorkflowReplayCall,
   handleWorkflowToolCall,
   liveWorkflowAgents,
   maestroToolDefinition,
@@ -121,5 +127,5 @@ export type { VizEntryDetail, VizEntrySummary, VizServer, VizSnapshot } from './
 export { exportVizHtml, exportVizWidget, readEventLines, readSnapshot, serveViz } from './viz.js';
 export type { WidgetAgent, WidgetModel } from './viz-widget.js';
 export { vizWidget, widgetModel } from './viz-widget.js';
-export type { PersistedOutcome, RunHandle, RunOptions } from './workflow.js';
-export { OUTCOME_FILE, readOutcome, run } from './workflow.js';
+export type { PersistedOutcome, ReplayOptions, RunHandle, RunOptions } from './workflow.js';
+export { OUTCOME_FILE, readOutcome, replay, run } from './workflow.js';

@@ -663,5 +663,11 @@ export function formatInspectMarkdown(report: InspectReport): string {
     }
   }
 
+  if (report.nodes.length > 0 && report.nodes.some((node) => node.status !== 'ok')) {
+    const firstFailed = report.nodes.find((node) => node.status !== 'ok')!;
+    const selector = firstFailed.label ?? `#${firstFailed.index}`;
+    lines.push('', `> Replay from first failure: \`maestro replay ${report.runId} --from ${selector}\``);
+  }
+
   return `${lines.join('\n')}\n`;
 }

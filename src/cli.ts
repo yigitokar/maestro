@@ -34,6 +34,9 @@ export const USAGE = `usage:
                           [--model <model>] [--runner <anthropic|codex|gemini|auto|gateway>]
                           [--structured-mode <two-stage|submit-tool|single-stage>]
   maestro run --resume <runId> [options]     resume with the stored script.js and args.json
+  maestro replay <runId> [--from <node>] [script.js] [options]
+                                             fork upstream cached agents into a new runId and re-execute live from <node>
+                                             (<node>: label, #index, key prefix, or phase:<title>; original run stays untouched)
   maestro runs [--cwd <dir>] [--state-dir <dir>] [--limit <n>]
                                              list runs newest-first with status, agents and token usage (alias: ls)
   maestro gc [--delete] [--force] [--cwd <dir>]
@@ -87,6 +90,7 @@ const VALUE_FLAGS = new Set([
   'args',
   'args-file',
   'resume',
+  'from',
   'budget',
   'cwd',
   'state-dir',
@@ -186,6 +190,7 @@ export async function main(argv: string[], ioOverrides: Partial<CliIO> = {}): Pr
       return 0;
     }
     if (command === 'run') return await runCommand(parsed, io);
+    if (command === 'replay') return await replayCommand(parsed, io);
     if (command === 'runs' || command === 'ls') return await runsCommand(parsed, io);
     if (command === 'gc') return await gcCommand(parsed, io);
     if (command === 'show') return await showCommand(parsed, io);
@@ -203,13 +208,19 @@ export async function main(argv: string[], ioOverrides: Partial<CliIO> = {}): Pr
   }
 }
 
-async function runCommand(p: Parsed, io: CliIO): Promise<number> {
-  if (p.positionals.length > 1)
-    throw new UsageError(`unexpected arguments: ${p.positionals.slice(1).join(' ')}`);
-  const scriptArg = p.positionals[0];
-  const resume = str(p, 'resume');
-  if (scriptArg === undefined && resume === undefined)
-    throw new UsageError('run needs a script file or --resume');
+interface ExecutionOptions {
+  cwd: string;
+  args: unknown;
+  budget: number | null;
+  concurrency: number | undefined;
+  dryRun: boolean;
+  runner: AgentRunner;
+  stateDir: string | undefined;
+  toolsDir: string | undefined;
+  model: string | undefined;
+}
+
+async function parseExecutionOptions(p: Parsed, io: CliIO): Promise<ExecutionOptions | null> {
   const cwd = path.resolve(io.cwd, str(p, 'cwd') ?? '.');
 
   let args: unknown;
@@ -252,7 +263,7 @@ async function runCommand(p: Parsed, io: CliIO): Promise<number> {
       io.stderr.write(
         'maestro: GEMINI_API_KEY (or GOOGLE_API_KEY) is missing or blank. Export the key first, or use --dry-run for offline runs.\n',
       );
-      return 1;
+      return null;
     }
     runner = new GeminiRunner({ apiKey: geminiApiKey, structuredMode });
   } else if (selectedRunner === 'auto') {
@@ -265,7 +276,7 @@ async function runCommand(p: Parsed, io: CliIO): Promise<number> {
       io.stderr.write(
         'maestro: AI_GATEWAY_API_KEY is missing or blank. Export the key first, or use --dry-run for offline runs.\n',
       );
-      return 1;
+      return null;
     }
     runner = new GatewayRunner({ apiKey: io.env.AI_GATEWAY_API_KEY, structuredMode });
   } else {
@@ -274,26 +285,49 @@ async function runCommand(p: Parsed, io: CliIO): Promise<number> {
         'maestro: ANTHROPIC_API_KEY is not set. Agents call the Anthropic API; export the key first, ' +
           'or use --dry-run to run the script against an in-memory fake runner.\n',
       );
-      return 1;
+      return null;
     }
     runner = new AnthropicRunner({ structuredMode });
   }
 
   const stateDir = str(p, 'state-dir');
   const toolsDir = str(p, 'tools-dir');
+  return {
+    cwd,
+    args,
+    budget,
+    concurrency,
+    dryRun,
+    runner,
+    stateDir: stateDir !== undefined ? path.resolve(io.cwd, stateDir) : undefined,
+    toolsDir: toolsDir !== undefined ? path.resolve(io.cwd, toolsDir) : undefined,
+    model: str(p, 'model'),
+  };
+}
+
+async function runCommand(p: Parsed, io: CliIO): Promise<number> {
+  if (p.positionals.length > 1)
+    throw new UsageError(`unexpected arguments: ${p.positionals.slice(1).join(' ')}`);
+  const scriptArg = p.positionals[0];
+  const resume = str(p, 'resume');
+  if (scriptArg === undefined && resume === undefined)
+    throw new UsageError('run needs a script file or --resume');
+  const exec = await parseExecutionOptions(p, io);
+  if (!exec) return 1;
+
   const handle = run({
     ...(scriptArg !== undefined ? { scriptPath: path.resolve(io.cwd, scriptArg) } : {}),
-    ...(args !== undefined ? { args } : {}),
+    ...(exec.args !== undefined ? { args: exec.args } : {}),
     ...(resume !== undefined ? { resumeFromRunId: resume } : {}),
-    ...(stateDir !== undefined ? { stateDir: path.resolve(io.cwd, stateDir) } : {}),
-    ...(toolsDir !== undefined ? { toolsDir: path.resolve(io.cwd, toolsDir) } : {}),
-    ...(concurrency !== undefined ? { concurrency } : {}),
-    ...(str(p, 'model') !== undefined ? { model: str(p, 'model') } : {}),
-    runner,
-    cwd,
-    budget,
+    ...(exec.stateDir !== undefined ? { stateDir: exec.stateDir } : {}),
+    ...(exec.toolsDir !== undefined ? { toolsDir: exec.toolsDir } : {}),
+    ...(exec.concurrency !== undefined ? { concurrency: exec.concurrency } : {}),
+    ...(exec.model !== undefined ? { model: exec.model } : {}),
+    runner: exec.runner,
+    cwd: exec.cwd,
+    budget: exec.budget,
   });
-  io.stderr.write(`maestro: run ${handle.runId}${dryRun ? ' (dry run)' : ''} in ${handle.runDir}\n`);
+  io.stderr.write(`maestro: run ${handle.runId}${exec.dryRun ? ' (dry run)' : ''} in ${handle.runDir}\n`);
   const detach = attachTerminalProgress(handle, io.stderr);
   const onSigint = () => handle.stop('interrupted (SIGINT)');
   if (io.handleSignals) process.once('SIGINT', onSigint);
@@ -303,6 +337,49 @@ async function runCommand(p: Parsed, io: CliIO): Promise<number> {
     return 0;
   } catch (e) {
     io.stderr.write(`maestro: run ${handle.runId} failed: ${errorText(e)}\n`);
+    io.stderr.write(`maestro: resume with: maestro run --resume ${handle.runId}\n`);
+    return 1;
+  } finally {
+    detach();
+    if (io.handleSignals) process.off('SIGINT', onSigint);
+  }
+}
+
+async function replayCommand(p: Parsed, io: CliIO): Promise<number> {
+  const [sourceRunId, scriptArg, ...extra] = p.positionals;
+  if (sourceRunId === undefined) throw new UsageError('replay needs a source runId');
+  if (extra.length > 0) throw new UsageError(`unexpected arguments: ${extra.join(' ')}`);
+  if (!SAFE_ID.test(sourceRunId)) throw new UsageError(`invalid runId "${sourceRunId}"`);
+  if (str(p, 'resume') !== undefined) throw new UsageError('replay does not accept --resume');
+  const from = str(p, 'from');
+  const exec = await parseExecutionOptions(p, io);
+  if (!exec) return 1;
+
+  const handle = run({
+    ...(scriptArg !== undefined ? { scriptPath: path.resolve(io.cwd, scriptArg) } : {}),
+    ...(exec.args !== undefined ? { args: exec.args } : {}),
+    replayFrom: { runId: sourceRunId, ...(from !== undefined ? { from } : {}) },
+    ...(exec.stateDir !== undefined ? { stateDir: exec.stateDir } : {}),
+    ...(exec.toolsDir !== undefined ? { toolsDir: exec.toolsDir } : {}),
+    ...(exec.concurrency !== undefined ? { concurrency: exec.concurrency } : {}),
+    ...(exec.model !== undefined ? { model: exec.model } : {}),
+    runner: exec.runner,
+    cwd: exec.cwd,
+    budget: exec.budget,
+  });
+  const fromNote = from ? ` --from ${from}` : '';
+  io.stderr.write(
+    `maestro: replay ${handle.runId} (from ${sourceRunId}${fromNote})${exec.dryRun ? ' (dry run)' : ''} in ${handle.runDir}\n`,
+  );
+  const detach = attachTerminalProgress(handle, io.stderr);
+  const onSigint = () => handle.stop('interrupted (SIGINT)');
+  if (io.handleSignals) process.once('SIGINT', onSigint);
+  try {
+    const value = await handle.promise;
+    io.stdout.write(`${JSON.stringify(value === undefined ? null : value, null, 2)}\n`);
+    return 0;
+  } catch (e) {
+    io.stderr.write(`maestro: replay ${handle.runId} failed: ${errorText(e)}\n`);
     io.stderr.write(`maestro: resume with: maestro run --resume ${handle.runId}\n`);
     return 1;
   } finally {

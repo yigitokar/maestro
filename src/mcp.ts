@@ -24,6 +24,7 @@ import { Budget } from './budget.js';
 import { formatInspectMarkdown, inspectRun } from './inspect.js';
 import { defaultConcurrency } from './scheduler.js';
 import {
+  handleWorkflowReplayCall,
   handleWorkflowToolCall,
   type LiveWorkflowAgent,
   liveWorkflowAgents,
@@ -43,6 +44,7 @@ export const WORKFLOW_STOP_TOOL_NAME = 'WorkflowStop';
 export const WORKFLOW_SKIP_TOOL_NAME = 'WorkflowSkip';
 export const WORKFLOW_MESSAGE_TOOL_NAME = 'WorkflowMessage';
 export const WORKFLOW_INSPECT_TOOL_NAME = 'WorkflowInspect';
+export const WORKFLOW_REPLAY_TOOL_NAME = 'WorkflowReplay';
 
 type CallResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
 
@@ -301,6 +303,45 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
             additionalProperties: false,
           },
         },
+        {
+          name: WORKFLOW_REPLAY_TOOL_NAME,
+          description:
+            'Time-travel replay: fork an earlier Workflow run into a new runId starting live execution from a specific node (`from`: label, #index, key prefix, or `phase:<title>`). All upstream `ok` nodes before `from` are served directly from cache (zero tokens) while the original run stays untouched for diffing. Pass an edited `script` or `scriptPath` to iterate on prompts/graph without re-running upstream LLM calls.',
+          inputSchema: {
+            type: 'object',
+            properties: {
+              fromRunId: {
+                type: 'string',
+                description: 'Source runId to replay from (never modified on disk).',
+              },
+              from: {
+                type: ['string', 'null'],
+                description:
+                  'Node selector (label, #index, key prefix, or phase:<title>) to re-execute live from; omit/null to fork all cached ok nodes.',
+              },
+              script: {
+                type: ['string', 'null'],
+                description:
+                  "Optional updated inline workflow script; omit/null to reuse the source run's script.js.",
+              },
+              scriptPath: {
+                type: ['string', 'null'],
+                description: 'Optional updated workflow script path, relative to cwd.',
+              },
+              args: {
+                type: ['string', 'null'],
+                description: "Optional JSON-encoded args; omit/null to reuse the source run's args.json.",
+              },
+              cwd: {
+                type: ['string', 'null'],
+                description:
+                  "Optional working directory (must match the source run's cwd); omit/null for the server's default.",
+              },
+            },
+            required: ['fromRunId'],
+            additionalProperties: false,
+          },
+        },
       ],
     };
   });
@@ -317,6 +358,12 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
       // or the earlier attempt's outcome becomes 'running'.
       const now = outcomes.get(res.runId);
       if (now === undefined || now === earlier) outcomes.set(res.runId, 'running');
+      return text(res);
+    }
+    if (name === WORKFLOW_REPLAY_TOOL_NAME) {
+      const res = await handleWorkflowReplayCall(input ?? {}, { ...runCtx, onComplete: settle });
+      if ('is_error' in res) return text(res.content, true);
+      if (outcomes.get(res.runId) === undefined) outcomes.set(res.runId, 'running');
       return text(res);
     }
     if (
