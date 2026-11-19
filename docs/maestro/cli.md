@@ -34,6 +34,14 @@ The terminal progress tree updates live agent activity and token usage when atta
 | `--runner <name>` | `anthropic` (default), `codex`, `gemini`, `gateway` or `auto`. See [Runners](/maestro/runners). |
 | `--structured-mode <mode>` | `two-stage`, `submit-tool` or `single-stage`. Defaults to `two-stage` for Anthropic/Gemini and `submit-tool` for Gateway. See [Runners](/maestro/runners). |
 
+## `maestro replay`
+
+```text
+maestro replay <runId> [--from <node>] [script.js] [options]
+```
+
+Time-travel replay: forks upstream `ok` cached agents from `<runId>` into a brand-new `runId` and re-executes live from `<node>` onward, leaving the original run directory untouched for comparison and audit. `<node>` accepts an agent label, `#index`, key prefix, or `phase:<title>`. Pass an edited `script.js` to iterate on prompts or graph logic without re-running expensive upstream LLM calls. Accepts the same runner, model, budget, args and directory flags as `maestro run`.
+
 ## `maestro runs`
 
 Lists the runs stored in a directory, newest first. `maestro ls` is the same command.

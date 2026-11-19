@@ -16,6 +16,7 @@ import {
   WORKFLOW_GUIDE_TOOL_NAME,
   WORKFLOW_INSPECT_TOOL_NAME,
   WORKFLOW_MESSAGE_TOOL_NAME,
+  WORKFLOW_REPLAY_TOOL_NAME,
   WORKFLOW_RESULT_TOOL_NAME,
   WORKFLOW_SKIP_TOOL_NAME,
   WORKFLOW_STOP_TOOL_NAME,
@@ -342,10 +343,11 @@ describe('maestro mcp', () => {
         'Workflow',
         WORKFLOW_GUIDE_TOOL_NAME,
         WORKFLOW_INSPECT_TOOL_NAME,
-        WORKFLOW_RESULT_TOOL_NAME,
-        WORKFLOW_STOP_TOOL_NAME,
-        WORKFLOW_SKIP_TOOL_NAME,
         WORKFLOW_MESSAGE_TOOL_NAME,
+        WORKFLOW_REPLAY_TOOL_NAME,
+        WORKFLOW_RESULT_TOOL_NAME,
+        WORKFLOW_SKIP_TOOL_NAME,
+        WORKFLOW_STOP_TOOL_NAME,
       ].sort(),
     );
     for (const t of tools) expect((t.inputSchema as any).additionalProperties, t.name).toBe(false);
@@ -652,5 +654,37 @@ return { ctx, res };`;
       arguments: { runId: 'does-not-exist' },
     });
     expect(missing.isError).toBe(true);
+  });
+
+  it('WorkflowReplay forks a new runId from a target node and serves upstream nodes from cache', async () => {
+    let calls = 0;
+    const { client } = await connect({
+      handler: (req) => {
+        calls++;
+        return { result: `call#${calls}:${req.prompt}` };
+      },
+    });
+    const script = `export const meta = { name: 'mcp-replay', description: 'd' };
+const a = await agent('step-a', { label: 'a' });
+const b = await agent('step-b:' + a, { label: 'b' });
+return { a, b };`;
+    const runId1 = await startWorkflow(client, script);
+    const done1 = await poll(client, runId1);
+    expect(done1.result).toEqual({ a: 'call#1:step-a', b: 'call#2:step-b:call#1:step-a' });
+
+    const replayed = await client.callTool({
+      name: WORKFLOW_REPLAY_TOOL_NAME,
+      arguments: { fromRunId: runId1, from: 'b' },
+    });
+    expect(replayed.isError, textOf(replayed)).toBeFalsy();
+    const meta = JSON.parse(textOf(replayed));
+    expect(meta.forkedFrom).toBe(runId1);
+    expect(meta.runId).not.toBe(runId1);
+    expect(meta.seededAgents).toBe(1);
+    expect(meta.invalidatedAgents).toBe(1);
+
+    const done2 = await poll(client, meta.runId);
+    expect(done2.result).toEqual({ a: 'call#1:step-a', b: 'call#3:step-b:call#1:step-a' });
+    expect(calls).toBe(3); // `a` came from cache; only `b` ran live!
   });
 });

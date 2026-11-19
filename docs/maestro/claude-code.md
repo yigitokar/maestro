@@ -22,7 +22,7 @@ mkdir -p ~/.claude/skills/maestro-workflow-authoring && curl -fsSL https://raw.g
 
 With the default runner the server uses the `ANTHROPIC_API_KEY` in Claude Code's environment, and the agents' cost is billed to that key. To run agents on your Codex plan instead, add `--runner codex` to the server command.
 
-## The seven tools
+## The eight tools
 
 | Tool | What it does |
 |---|---|
@@ -30,6 +30,7 @@ With the default runner the server uses the `ANTHROPIC_API_KEY` in Claude Code's
 | `WorkflowGuide` | Returns the guide to writing a script. It takes no input and starts nothing. |
 | `WorkflowResult` | Returns a run's state: `running` with the agents now live, then `done` with the result or `failed` with the error. |
 | `WorkflowInspect` | Returns a compact, agent-friendly failure summary (failed nodes, exact prompts/errors/tool failures, and relevant upstream state) in Markdown or JSON. |
+| `WorkflowReplay` | Forks upstream cached agents from a previous run into a new `runId` and re-executes live from a chosen node (`from`), keeping the original run untouched. |
 | `WorkflowStop` | Stops a run. Its journal stays, so it can be resumed. |
 | `WorkflowSkip` | Skips one running agent. That `agent()` call returns `null` and the run goes on. |
 | `WorkflowMessage` | Queues a follow-up instruction for one live agent and returns a delivery receipt. |

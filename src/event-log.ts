@@ -18,6 +18,7 @@ export type EventLogExtra =
   | {
       type: 'run_start';
       resume: boolean;
+      replayedFrom?: { runId: string; from?: string };
       name: string;
       description: string;
       phases: string[];

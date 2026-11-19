@@ -42,6 +42,14 @@ Successful results produced after live messages are also reused, with an explici
 
 Answers are matched by content, so a script must be deterministic. See [Writing workflows](/maestro/workflows).
 
+## Time-travel replay
+
+```bash
+maestro replay <runId> --from <node> [edited.js]
+```
+
+Unlike `--resume` (which mutates `<runId>` in place and reuses any unchanged `ok` call), `replay` creates a **new** `runId` seeded only with the upstream `ok` cache entries that ran before `<node>` (selected by label, `#index`, key prefix, or `phase:<title>`). `<node>` and everything after it execute live even when their prompts have not changed, and the original run stays untouched so both runs can be inspected or diffed side by side.
+
 ## Agent statuses
 
 | Status | Meaning | On resume |

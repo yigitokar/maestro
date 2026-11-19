@@ -13,6 +13,7 @@ import { EMPTY_TOOL_REGISTRY, loadCustomTools, type ToolRegistry } from './custo
 import { EVENT_LOG_PROMPT_CHARS, EventLog } from './event-log.js';
 import { Isolation, type WorktreeLease } from './isolation.js';
 import { hashCall, Journal, makeKey, Occurrences } from './journal.js';
+import { prepareReplaySeed, type ReplaySeed, type ReplaySpec, writeReplaySeed } from './replay.js';
 import { AnthropicRunner, systemPrompt } from './runner.js';
 import {
   type HostHooks,
@@ -41,12 +42,17 @@ import { DEFAULT_MODEL, MaestroError } from './types.js';
 import { addUsage, cacheReadRatio, hasCacheInfo, totalInput } from './usage.js';
 
 export interface RunOptions {
-  /** Exactly one of script | scriptPath | name; a resume may omit all three and reuse the stored script.js. */
+  /** Exactly one of script | scriptPath | name; a resume or replay may omit all three to reuse the source script.js. */
   script?: string;
   scriptPath?: string;
   name?: string;
   args?: unknown;
   resumeFromRunId?: string;
+  /**
+   * Time-travel replay: forks upstream `'ok'` journal rows from `replayFrom.runId` (before
+   * `replayFrom.from`) into a fresh runId without modifying the source run.
+   */
+  replayFrom?: ReplaySpec;
   /** Default: new AnthropicRunner(). */
   runner?: AgentRunner;
   /** Agents' working dir / git repo. Default process.cwd(). */
@@ -127,6 +133,19 @@ export async function readOutcome(runDir: string): Promise<PersistedOutcome | un
   } catch {
     return undefined;
   }
+}
+
+export interface ReplayOptions extends Omit<RunOptions, 'resumeFromRunId' | 'replayFrom'> {
+  /** Source runId whose upstream `'ok'` journal rows seed this forked replay. */
+  fromRunId: string;
+  /** Node selector (`label`, `#index`, `key` prefix, or `phase:<title>`) to re-execute live from. */
+  from?: string;
+}
+
+/** Convenience wrapper around `run({ replayFrom: { runId, from }, ... })`. */
+export function replay(opts: ReplayOptions): RunHandle {
+  const { fromRunId, from, ...rest } = opts;
+  return run({ ...rest, replayFrom: { runId: fromRunId, ...(from !== undefined ? { from } : {}) } });
 }
 
 export function run(opts: RunOptions): RunHandle {
@@ -516,6 +535,9 @@ export function run(opts: RunOptions): RunHandle {
     // Let the caller attach listeners before the first event.
     await Promise.resolve();
     if (!SAFE_ID.test(runId)) throw new Error(`invalid runId "${runId}"`);
+    if (opts.resumeFromRunId !== undefined && opts.replayFrom !== undefined) {
+      throw new Error('pass either resumeFromRunId or replayFrom, not both');
+    }
     if (
       opts.resumeFromRunId !== undefined &&
       opts.runId !== undefined &&
@@ -524,42 +546,67 @@ export function run(opts: RunOptions): RunHandle {
       throw new Error(`runId ${opts.runId} conflicts with resumeFromRunId ${opts.resumeFromRunId}`);
     }
     const resume = opts.resumeFromRunId !== undefined;
+    const replaySpec = opts.replayFrom;
+    if (replaySpec !== undefined) {
+      if (!SAFE_ID.test(replaySpec.runId)) throw new Error(`invalid replayFrom.runId "${replaySpec.runId}"`);
+      if (replaySpec.runId === runId) {
+        throw new Error(`replay runId "${runId}" must differ from source runId "${replaySpec.runId}"`);
+      }
+    }
     const given = [opts.script, opts.scriptPath, opts.name].filter((v) => v !== undefined).length;
     if (given > 1) throw new Error('pass exactly one of script, scriptPath or name');
-    if (given === 0 && !resume) throw new Error('pass one of script, scriptPath or name');
+    if (given === 0 && !resume && replaySpec === undefined)
+      throw new Error('pass one of script, scriptPath or name');
     if (resume && !existsSync(runDir)) throw new Error(`no run ${runId} under ${path.dirname(runDir)}`);
     if (!resume && existsSync(runDir)) {
       throw new Error(`run ${runId} already exists at ${runDir}; pass resumeFromRunId to resume it`);
     }
 
+    const sourceRunDir = replaySpec !== undefined ? path.join(stateDir, 'runs', replaySpec.runId) : runDir;
+    let replaySeed: ReplaySeed | undefined;
+    if (replaySpec !== undefined) {
+      // Validate source run and `--from` selector before creating the new run directory.
+      replaySeed = await prepareReplaySeed(sourceRunDir, replaySpec.runId, replaySpec.from);
+    }
+
     // Resolve and parse before touching the run dir: a broken script never replaces a good script.js.
     const scriptFile = path.join(runDir, 'script.js');
     const argsFile = path.join(runDir, 'args.json');
+    const sourceScriptFile = path.join(sourceRunDir, 'script.js');
+    const sourceArgsFile = path.join(sourceRunDir, 'args.json');
     let source: string;
     if (opts.script !== undefined) source = opts.script;
     else if (opts.scriptPath !== undefined)
       source = await readFile(path.resolve(cwd, opts.scriptPath), 'utf8');
     else if (opts.name !== undefined) source = (await resolveRef(opts.name)).source;
-    else source = await readFile(scriptFile, 'utf8');
+    else source = await readFile(sourceScriptFile, 'utf8');
     const parsed: ParsedScript = parseScript(source);
 
     let args: unknown = opts.args;
-    if (args === undefined && resume && existsSync(argsFile))
-      args = JSON.parse(await readFile(argsFile, 'utf8'));
+    if (args === undefined && (resume || replaySpec !== undefined) && existsSync(sourceArgsFile))
+      args = JSON.parse(await readFile(sourceArgsFile, 'utf8'));
     args = normalizeArgs(args);
     // Before the run dir too: agent() picks tools synchronously, and a bad tool file fails the start.
     customTools = await loadCustomTools({ tools: opts.tools, toolsDir });
     if (customTools.size > 0) emitLog(`custom tools: ${[...customTools.keys()].join(', ')}`);
 
+    if (replaySeed !== undefined) {
+      await writeReplaySeed(runDir, replaySeed);
+    }
+
     // spec 3.1: if the journal cannot be written the run does not start.
     journal = await Journal.open(runDir, { log: (m) => emitLog(m) });
     runOpened = true;
     if (resume) await rm(path.join(runDir, OUTCOME_FILE), { force: true }).catch(() => {});
+    const replayedFromMeta = replaySeed
+      ? withDefined({ runId: replaySeed.sourceRunId, from: replaySeed.from })
+      : undefined;
     await eventLog.open(runDir, {
       t: startedAt,
-      line: {
-        type: 'run_start',
+      line: withDefined({
+        type: 'run_start' as const,
         resume,
+        replayedFrom: replayedFromMeta,
         name: parsed.meta.name,
         description: parsed.meta.description,
         phases: (parsed.meta.phases ?? []).map((ph) => ph.title),
@@ -567,8 +614,18 @@ export function run(opts: RunOptions): RunHandle {
         model,
         concurrency: opts.concurrency ?? defaultConcurrency(),
         budget: opts.budget instanceof Budget ? opts.budget.total : (opts.budget ?? null),
-      },
+      }),
     });
+    if (replaySeed) {
+      const targetDesc = replaySeed.target
+        ? ` from ${replaySeed.target.label ?? `#${replaySeed.target.id}`}`
+        : '';
+      emitLog(
+        `replay: forked from ${replaySeed.sourceRunId}${targetDesc} ` +
+          `(seeded ${replaySeed.seededRows.length} cached agent${replaySeed.seededRows.length === 1 ? '' : 's'}, ` +
+          `invalidated ${replaySeed.invalidatedCount})`,
+      );
+    }
     warnUnknownMetaKeys(parsed.meta);
     try {
       await writeFile(scriptFile, source);
@@ -577,7 +634,18 @@ export function run(opts: RunOptions): RunHandle {
       // runner (changing the key would orphan every existing journal). So a resume that changes either
       // says so: its cache hits were produced by the earlier configuration.
       const configFile = path.join(runDir, 'run.json');
-      const config = { model, runner: getRunner().constructor.name };
+      const config = withDefined({
+        model,
+        runner: getRunner().constructor.name,
+        replayedFrom: replaySeed
+          ? withDefined({
+              runId: replaySeed.sourceRunId,
+              from: replaySeed.from,
+              seededAgents: replaySeed.seededRows.length,
+              invalidatedAgents: replaySeed.invalidatedCount,
+            })
+          : undefined,
+      });
       if (resume) {
         const before = await readFile(configFile, 'utf8').then(JSON.parse, () => null);
         for (const k of ['model', 'runner'] as const) {
