@@ -11,6 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { parseBudgetDirective } from './budget.js';
 import { CodexRunner } from './codex-runner.js';
+import { diffEvalRuns, formatEvalDiff, formatEvalSummary, listEvalRecords, runEval } from './eval.js';
 import { EVENT_LOG_FILE } from './event-log.js';
 import { GatewayRunner } from './gateway-runner.js';
 import { GeminiRunner } from './gemini-runner.js';
@@ -45,6 +46,13 @@ export const USAGE = `usage:
                                              that agent's trace: tool calls, final text, result, error
   maestro inspect <runId> [label-or-key] [--compact] [--json] [--cwd <dir>] [--state-dir <dir>]
                                              agent-friendly diagnostic summary: failed nodes, exact inputs/outputs, and relevant upstream state
+  maestro eval <script.js> --cases <file> [--grader <file.js>] [--name <evalId>] [--from-eval <evalId>] [--from <node>]
+                           [--only <ids>] [--limit <n>] [--case-concurrency <n>] [--json] [run options]
+                                             run a workflow across an eval dataset (JSON/JSONL) and save results under <state-dir>/evals/
+  maestro eval diff <run-a> <run-b> [--json] [--fail-on-regression] [--cwd <dir>] [--state-dir <dir>]
+                                             side-by-side comparison: score delta, fixed vs regressions, tokens/cost and [CACHE HIT] ratio
+  maestro eval ls [--limit <n>] [--json] [--cwd <dir>] [--state-dir <dir>]
+                                             list saved eval runs newest-first
   maestro viz <runId> [--cwd <dir>] [--state-dir <dir>] [--port <n>] [--no-open] [--out <file.html>] [--widget]
                                              open a run's timeline in the browser; it follows a live run
                                              (--out writes the page as one self-contained HTML file instead;
@@ -91,6 +99,12 @@ const VALUE_FLAGS = new Set([
   'args-file',
   'resume',
   'from',
+  'from-eval',
+  'cases',
+  'grader',
+  'name',
+  'only',
+  'case-concurrency',
   'budget',
   'cwd',
   'state-dir',
@@ -103,7 +117,17 @@ const VALUE_FLAGS = new Set([
   'out',
   'port',
 ]);
-const BOOL_FLAGS = new Set(['dry-run', 'delete', 'force', 'help', 'no-open', 'widget', 'compact', 'json']);
+const BOOL_FLAGS = new Set([
+  'dry-run',
+  'delete',
+  'force',
+  'help',
+  'no-open',
+  'widget',
+  'compact',
+  'json',
+  'fail-on-regression',
+]);
 
 function parseArgv(argv: string[]): Parsed {
   const positionals: string[] = [];
@@ -195,6 +219,7 @@ export async function main(argv: string[], ioOverrides: Partial<CliIO> = {}): Pr
     if (command === 'gc') return await gcCommand(parsed, io);
     if (command === 'show') return await showCommand(parsed, io);
     if (command === 'inspect') return await inspectCommand(parsed, io);
+    if (command === 'eval') return await evalCommand(parsed, io);
     if (command === 'viz') return await vizCommand(parsed, io);
     if (command === 'mcp') return await mcpCommand(parsed, io);
     throw new UsageError(`unknown command "${command}"`);
@@ -761,6 +786,140 @@ async function inspectCommand(p: Parsed, io: CliIO): Promise<number> {
     io.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   } else {
     io.stdout.write(formatInspectMarkdown(report));
+  }
+  return 0;
+}
+
+async function evalCommand(p: Parsed, io: CliIO): Promise<number> {
+  const sub = p.positionals[0];
+  if (sub === 'diff') return evalDiffCommand(p, io);
+  if (sub === 'ls' || sub === 'runs') return evalListCommand(p, io);
+  return evalRunCommand(p, io);
+}
+
+async function evalRunCommand(p: Parsed, io: CliIO): Promise<number> {
+  const [scriptArg, ...extra] = p.positionals;
+  if (scriptArg === undefined) throw new UsageError('eval needs a workflow script (or subcommand: diff, ls)');
+  if (extra.length > 0) throw new UsageError(`unexpected arguments: ${extra.join(' ')}`);
+  const casesPath = str(p, 'cases');
+  if (casesPath === undefined) throw new UsageError('eval requires --cases <file.json|jsonl>');
+
+  const limitArg = str(p, 'limit');
+  let limit: number | undefined;
+  if (limitArg !== undefined) {
+    limit = Number(limitArg);
+    if (!Number.isInteger(limit) || limit < 1) {
+      throw new UsageError(`--limit must be a positive integer, got "${limitArg}"`);
+    }
+  }
+  const caseConcArg = str(p, 'case-concurrency');
+  let caseConcurrency: number | undefined;
+  if (caseConcArg !== undefined) {
+    caseConcurrency = Number(caseConcArg);
+    if (!Number.isInteger(caseConcurrency) || caseConcurrency < 1) {
+      throw new UsageError(`--case-concurrency must be a positive integer, got "${caseConcArg}"`);
+    }
+  }
+
+  const exec = await parseExecutionOptions(p, io);
+  if (!exec) return 1;
+
+  const onlyArg = str(p, 'only');
+  const only = onlyArg
+    ? onlyArg
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean)
+    : undefined;
+  const graderArg = str(p, 'grader');
+  const evalId = str(p, 'name');
+  const fromEvalId = str(p, 'from-eval');
+  const fromNode = str(p, 'from');
+
+  const record = await runEval({
+    scriptPath: path.resolve(io.cwd, scriptArg),
+    casesPath: path.resolve(io.cwd, casesPath),
+    ...(graderArg !== undefined ? { graderPath: path.resolve(io.cwd, graderArg) } : {}),
+    ...(evalId !== undefined ? { evalId } : {}),
+    ...(fromEvalId !== undefined ? { fromEvalId } : {}),
+    ...(fromNode !== undefined ? { fromNode } : {}),
+    ...(only !== undefined ? { only } : {}),
+    ...(limit !== undefined ? { limit } : {}),
+    ...(caseConcurrency !== undefined ? { caseConcurrency } : {}),
+    ...(exec.concurrency !== undefined ? { concurrency: exec.concurrency } : {}),
+    ...(exec.model !== undefined ? { model: exec.model } : {}),
+    ...(exec.stateDir !== undefined ? { stateDir: exec.stateDir } : {}),
+    ...(exec.toolsDir !== undefined ? { toolsDir: exec.toolsDir } : {}),
+    runner: exec.runner,
+    cwd: exec.cwd,
+    budget: exec.budget,
+    onCaseComplete: (res, idx, total) => {
+      const icon = res.status === 'pass' ? '✓' : res.status === 'fail' ? '✗' : '!';
+      const hitTag = res.journalCacheHits > 0 ? ` [${res.journalCacheHits}/${res.agentCalls} CACHE HIT]` : '';
+      io.stderr.write(`maestro eval: [${idx + 1}/${total}] ${icon} ${res.id} (${res.status})${hitTag}\n`);
+    },
+  });
+
+  if (p.flags.has('json')) {
+    io.stdout.write(`${JSON.stringify(record, null, 2)}\n`);
+  } else {
+    io.stdout.write(formatEvalSummary(record));
+  }
+  return record.summary.passed === record.summary.total ? 0 : 1;
+}
+
+async function evalDiffCommand(p: Parsed, io: CliIO): Promise<number> {
+  const [, runA, runB, ...extra] = p.positionals;
+  if (runA === undefined || runB === undefined) {
+    throw new UsageError('eval diff requires two run IDs: maestro eval diff <run-a> <run-b>');
+  }
+  if (extra.length > 0) throw new UsageError(`unexpected arguments: ${extra.join(' ')}`);
+  const cwd = path.resolve(io.cwd, str(p, 'cwd') ?? '.');
+  const stateDirArg = str(p, 'state-dir');
+  const stateDir = stateDirArg !== undefined ? path.resolve(io.cwd, stateDirArg) : path.join(cwd, '.maestro');
+  const diff = await diffEvalRuns(stateDir, runA, runB);
+  if (p.flags.has('json')) {
+    io.stdout.write(`${JSON.stringify(diff, null, 2)}\n`);
+  } else {
+    io.stdout.write(formatEvalDiff(diff));
+  }
+  if (p.flags.has('fail-on-regression') && diff.cases.regressions.length > 0) return 1;
+  return 0;
+}
+
+async function evalListCommand(p: Parsed, io: CliIO): Promise<number> {
+  if (p.positionals.length > 1) {
+    throw new UsageError(`unexpected arguments: ${p.positionals.slice(1).join(' ')}`);
+  }
+  const limitArg = str(p, 'limit');
+  let limit: number | undefined;
+  if (limitArg !== undefined) {
+    limit = Number(limitArg);
+    if (!Number.isInteger(limit) || limit < 1) {
+      throw new UsageError(`--limit must be a positive integer, got "${limitArg}"`);
+    }
+  }
+  const cwd = path.resolve(io.cwd, str(p, 'cwd') ?? '.');
+  const stateDirArg = str(p, 'state-dir');
+  const stateDir = stateDirArg !== undefined ? path.resolve(io.cwd, stateDirArg) : path.join(cwd, '.maestro');
+  const records = await listEvalRecords(stateDir, limit);
+  if (p.flags.has('json')) {
+    io.stdout.write(`${JSON.stringify(records, null, 2)}\n`);
+    return 0;
+  }
+  if (records.length === 0) {
+    io.stdout.write(`(no evals in ${path.join(stateDir, 'evals')})\n`);
+    return 0;
+  }
+  for (const r of records) {
+    const s = r.summary;
+    const pct = Math.round(s.passRate * 100);
+    const hit =
+      s.journalCacheHitRatio === null ? '' : ` · ${Math.round(s.journalCacheHitRatio * 100)}% [CACHE HIT]`;
+    io.stdout.write(
+      `${r.evalId}  ${s.passed}/${s.total} (${pct}%)  ${r.workflowName ?? '-'}  ${r.model}  ` +
+        `${s.tokens.total.toLocaleString('en-US')} tok${hit}\n`,
+    );
   }
   return 0;
 }

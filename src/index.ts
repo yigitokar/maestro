@@ -7,6 +7,35 @@ export type { CodexRunnerOptions } from './codex-runner.js';
 export { CodexRunner } from './codex-runner.js';
 export type { ToolRegistry } from './custom-tools.js';
 export { checkToolDef, loadCustomTools, loadToolsDir, makeToolRegistry } from './custom-tools.js';
+export type {
+  CaseStatusDiff,
+  EvalCase,
+  EvalCaseResult,
+  EvalDiffReport,
+  EvalExpectation,
+  EvalGradeResult,
+  EvalGraderContext,
+  EvalGraderFn,
+  EvalRecord,
+  EvalSummary,
+  ModelPrice,
+  RunEvalOptions,
+} from './eval.js';
+export {
+  diffEvalRecords,
+  diffEvalRuns,
+  estimateCostUsd,
+  evalsDirFor,
+  evaluateExpectation,
+  formatEvalDiff,
+  formatEvalSummary,
+  listEvalRecords,
+  loadEvalCases,
+  loadEvalGrader,
+  MODEL_PRICES,
+  readEvalRecord,
+  runEval,
+} from './eval.js';
 export type { EventLogExtra, EventLogLine } from './event-log.js';
 export { EVENT_LOG_FILE } from './event-log.js';
 export type { GatewayRunnerOptions } from './gateway-runner.js';
