@@ -84,6 +84,10 @@ Runs a workflow across a JSON or JSONL case dataset, grades each case via declar
 
 Pass `--from-eval <prevEvalId>` (optionally paired with `--from <node>`) to time-travel replay every matching case from an earlier eval run so unchanged upstream agents are served from cache. Compare any two eval runs—or two individual workflow `runId`s—with `maestro eval diff <run-a> <run-b>` to see score delta, fixed vs. regressed cases, token/cost delta, and `[CACHE HIT]` ratio.
 
+Eval estimates cost per live agent call using the model selected by the runner. Journal cache hits cost zero. If any live tokens have an unknown or unpriced model, the case and suite estimates are `null`. The built-in `MODEL_PRICES` table is a reference snapshot in USD per million tokens. The programmatic `prices` option overrides entries by model ID.
+
+The diff lists cases with edited arguments or expectations under **Changed Cases** and excludes them from `--fail-on-regression`. Older records without case hashes and individual workflow runs are compared by status.
+
 ## `maestro viz`
 
 ```text

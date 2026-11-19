@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { main } from '../src/cli.js';
 import {
+  diffEvalRecords,
   diffEvalRuns,
   estimateCostUsd,
   evaluateExpectation,
@@ -11,6 +12,7 @@ import {
   loadEvalCases,
   runEval,
 } from '../src/eval.js';
+import { RoutingRunner } from '../src/routing-runner.js';
 import { FakeRunner } from '../src/testing/fake-runner.js';
 import { run } from '../src/workflow.js';
 
@@ -63,6 +65,107 @@ describe('eval helpers', () => {
 });
 
 describe('runEval & diffEvalRuns (end-to-end eval refinement loop)', () => {
+  it('prices live usage by routed model and propagates unpriced usage to the summary', async () => {
+    const cwd = await tmp();
+    const fake = new FakeRunner(() => ({ inputTokensPerTurn: 1_000_000, outputTokensPerTurn: 0 }));
+    const opts = {
+      cwd,
+      runner: new RoutingRunner({ anthropic: fake, gemini: fake, codex: fake }),
+      script: `export const meta = { name: 'prices', description: 'd' };
+return await Promise.all([agent('first', { model: args.model }), agent('second')]);`,
+      cases: [{ id: 'mixed', args: { model: 'gemini-4-hydrogen' } }],
+    };
+    const mixed = await runEval(opts);
+    expect(mixed.cases[0]?.estimatedCostUsd).toBe(4.5);
+    expect(mixed.summary.estimatedCostUsd).toBe(4.5);
+    const extra = { id: 'other', args: { model: 'other-model' } };
+    const cases = [...opts.cases, extra];
+    const unknown = await runEval({ ...opts, cases });
+    expect(unknown.cases.map((c) => c.estimatedCostUsd)).toEqual([4.5, null]);
+    expect(unknown.summary.estimatedCostUsd).toBeNull();
+    const replay = await runEval({ ...opts, cases, fromEvalId: unknown.evalId });
+    expect(replay.summary.journalCacheHits).toBe(4);
+    expect(replay.summary.estimatedCostUsd).toBe(0);
+    const custom = await runEval({ ...opts, cases, prices: { 'other-model': { input: 1, output: 0 } } });
+    expect(custom.summary.estimatedCostUsd).toBe(9.5);
+  });
+
+  it.each([
+    [class GeminiRunner extends FakeRunner {}, 0.5],
+    [class CodexRunner extends FakeRunner {}, null],
+  ] as const)('resolves the implicit model for %s', async (Runner, cost) => {
+    const record = await runEval({
+      cwd: await tmp(),
+      runner: new Runner(() => ({ inputTokensPerTurn: 1_000_000, outputTokensPerTurn: 0 })),
+      script: `export const meta = { name: 'implicit', description: 'd' }; return await agent('go');`,
+      cases: [{ id: 'implicit' }],
+    });
+    expect(record.summary.estimatedCostUsd).toBe(cost);
+  });
+
+  it('reports edits to args, expect or expected separately and compares legacy cases', async () => {
+    const cwd = await tmp();
+    const opts = {
+      cwd,
+      runner: new FakeRunner(),
+      script: `export const meta = { name: 'same', description: 'd' }; return 1;`,
+    };
+    const before = await runEval({
+      ...opts,
+      cases: [
+        { id: 'args', args: 1 },
+        { id: 'expect', expect: { equals: 0 } },
+        { id: 'expected', expected: 1 },
+        { id: 'reordered', args: { a: 1, b: 2 } },
+      ],
+    });
+    const after = await runEval({
+      ...opts,
+      cases: [
+        { id: 'args', args: 2 },
+        { id: 'expect', expect: { equals: 1 } },
+        { id: 'expected', expected: 0 },
+        { id: 'reordered', args: { b: 2, a: 1 } },
+      ],
+    });
+    const diff = await diffEvalRuns(path.join(cwd, '.maestro'), before.evalId, after.evalId);
+    expect(diff.cases.changed.map((c) => c.id)).toEqual(['args', 'expect', 'expected']);
+    expect(diff.cases.fixed).toEqual([]);
+    expect(diff.cases.regressions).toEqual([]);
+    expect(diff.cases.stillPassing).toBe(1);
+    expect(formatEvalDiff(diff)).toMatch(/### Changed[^\n]*[\s\S]*`expected`: pass → fail/);
+    const exitCode = await main(['eval', 'diff', before.evalId, after.evalId, '--fail-on-regression'], {
+      cwd,
+      stdout: { write: () => {} },
+    });
+    expect(exitCode).toBe(0);
+    for (const c of before.cases) {
+      delete c.argsHash;
+      delete c.expectationHash;
+    }
+    expect(diffEvalRecords(before, after).cases.regressions.map((c) => c.id)).toEqual(['expected']);
+  });
+
+  it('drops failures of abandoned nodes on resume, retaining legacy behavior without run_start', async () => {
+    const cwd = await tmp();
+    const opts = {
+      cwd,
+      script: `export const meta = { name: 'resume', description: 'd' }; return await agent('old');`,
+    };
+    const old = run({ ...opts, runner: new FakeRunner(() => ({ result: null })) });
+    await old.promise;
+    await run({
+      cwd,
+      resumeFromRunId: old.runId,
+      runner: new FakeRunner(),
+      script: opts.script.replace("'old'", "'new'"),
+    }).promise;
+    const stateDir = path.join(cwd, '.maestro');
+    expect((await diffEvalRuns(stateDir, old.runId, old.runId)).score.passedB).toBe(1);
+    await rm(path.join(old.runDir, 'events.jsonl'));
+    expect((await diffEvalRuns(stateDir, old.runId, old.runId)).score.passedB).toBe(0);
+  });
+
   it('runs v1, replays v2 with --from-eval cache reuse, and diffs fixed cases, regressions, tokens and [CACHE HIT] ratio', async () => {
     const cwd = await tmp();
     const cases = [
@@ -85,21 +188,25 @@ return await agent('v2-answer:' + ctx, { label: 'answer' });`;
       if (req.prompt.startsWith('ingest:')) {
         return {
           result: req.prompt.slice('ingest:'.length),
-          usage: { input_tokens: 1_000, output_tokens: 200, cache_read_input_tokens: 500 },
+          inputTokensPerTurn: 1_000,
+          outputTokensPerTurn: 200,
+          cacheReadTokensPerTurn: 500,
         };
       }
       if (req.prompt.startsWith('v1-answer:')) {
         const q = req.prompt.slice('v1-answer:'.length);
         return {
           result: { verdict: q === 'auth' || q === 'csrf' ? 'ok' : 'bad' },
-          usage: { input_tokens: 400, output_tokens: 100 },
+          inputTokensPerTurn: 400,
+          outputTokensPerTurn: 100,
         };
       }
       if (req.prompt.startsWith('v2-answer:')) {
         const q = req.prompt.slice('v2-answer:'.length);
         return {
           result: { verdict: q === 'csrf' ? 'bad' : 'ok' },
-          usage: { input_tokens: 400, output_tokens: 100 },
+          inputTokensPerTurn: 400,
+          outputTokensPerTurn: 100,
         };
       }
       return { result: null };
@@ -135,7 +242,25 @@ return await agent('v2-answer:' + ctx, { label: 'answer' });`;
     expect(v2.summary.agentCalls).toBe(8);
     expect(v2.summary.journalCacheHitRatio).toBe(0.5);
     // Live tokens dropped dramatically because all 4 ingest calls were served from cache.
-    expect(v2.summary.tokens.total).toBeLessThan(v1.summary.tokens.total);
+    expect(v1.summary.tokens).toEqual({
+      input: 5600,
+      output: 1200,
+      cacheRead: 2000,
+      cacheWrite: 0,
+      totalInput: 7600,
+      total: 8800,
+    });
+    expect(v1.summary.promptCacheRatio).toBe(2000 / 7600);
+    expect(v2.summary.tokens).toEqual({
+      input: 1600,
+      output: 400,
+      cacheRead: 0,
+      cacheWrite: 0,
+      totalInput: 1600,
+      total: 2000,
+    });
+    expect(v2.summary.promptCacheRatio).toBeNull();
+    for (const c of v2.cases) expect(c.usage).toEqual(c.liveUsage);
 
     const diff = await diffEvalRuns(path.join(cwd, '.maestro'), 'v1', 'v2');
     expect(diff.score.passedA).toBe(2);
@@ -144,7 +269,7 @@ return await agent('v2-answer:' + ctx, { label: 'answer' });`;
     expect(diff.cases.fixed.map((c) => c.id)).toEqual(['case-2', 'case-3']);
     expect(diff.cases.regressions.map((c) => c.id)).toEqual(['case-4']);
     expect(diff.cases.stillPassing).toBe(1);
-    expect(diff.tokens.totalDelta).toBeLessThan(0);
+    expect(diff.tokens.totalDelta).toBe(-6800);
     expect(diff.cache.journalHitRatioB).toBe(0.5);
 
     const md = formatEvalDiff(diff);

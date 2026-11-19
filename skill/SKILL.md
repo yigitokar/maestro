@@ -152,6 +152,10 @@ Before you diagnose an unexpected or empty result, call `WorkflowInspect({ runId
 
 To iterate over a multi-case eval suite, run `npx -y maestro-workflows eval <script.js> --cases <cases.jsonl> --name v1`, inspect any failing case with `WorkflowInspect` / `maestro inspect <runId> --compact`, re-run with `--name v2 --from-eval v1` to reuse cached upstream nodes, and compare with `npx -y maestro-workflows eval diff v1 v2`.
 
+Eval estimates cost per live agent call using the model selected by the runner. Journal cache hits cost zero. If any live tokens have an unknown or unpriced model, the case and suite estimates are `null`. The built-in `MODEL_PRICES` table is a reference snapshot in USD per million tokens. The programmatic `prices` option overrides entries by model ID.
+
+The diff lists cases with edited arguments or expectations under **Changed Cases** and excludes them from `--fail-on-regression`. Older records without case hashes and individual workflow runs are compared by status.
+
 If the user wants to watch the run, give them this command:
 
 ```bash
