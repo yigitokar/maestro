@@ -134,6 +134,33 @@ describe('GeminiRunner execution', () => {
     await expect(runner.run(req)).rejects.toBeInstanceOf(MaestroError);
   });
 
+  it('reports the model it sent: the runner override, else the resolved request model', async () => {
+    const done: GeminiInteractionResponse = {
+      status: 'completed',
+      output_text: 'ok',
+      usage: { total_input_tokens: 10, total_output_tokens: 1 },
+    };
+    const overridden = makeMockClient([done]);
+    const res = await new GeminiRunner({ client: overridden.client, model: 'google/gemini-4-carbon' }).run(
+      makeReq({ model: 'gemini-4-hydrogen' }).req,
+    );
+    expect(overridden.calls[0]!.model).toBe('gemini-4-carbon');
+    expect(res).toMatchObject({ status: 'ok', model: 'gemini-4-carbon' });
+
+    const defaulted = makeMockClient([done]);
+    const fromClaude = await new GeminiRunner({ client: defaulted.client }).run(
+      makeReq({ model: 'claude-opus-5-5' }).req,
+    );
+    expect(defaulted.calls[0]!.model).toBe(DEFAULT_GEMINI_MODEL);
+    expect(fromClaude.model).toBe(DEFAULT_GEMINI_MODEL);
+
+    const failing = makeMockClient([Object.assign(new Error('bad request'), { status: 400 })]);
+    const failed = await new GeminiRunner({ client: failing.client, model: 'gemini-4-argon' }).run(
+      makeReq().req,
+    );
+    expect(failed).toMatchObject({ status: 'null', model: 'gemini-4-argon' });
+  });
+
   it('runs a multi-turn tool loop, preserves thought steps, records traces, and reports per-turn usage', async () => {
     const readTool: ToolDef = {
       name: 'lookup',

@@ -33,6 +33,7 @@ export type EventLogExtra =
       prompt: string;
       /** True when the prompt was longer than EVENT_LOG_PROMPT_CHARS. */
       truncated?: true;
+      /** The model the agent's own opts asked for. What the runner sent is on the agent_end line. */
       model?: string;
       effort?: string;
       isolation?: 'worktree';

@@ -142,6 +142,8 @@ class RunState {
       usage: { ...this.usage },
       turns: this.turns,
       trace: { toolCalls: this.toolCalls.slice(), finalText: this.finalText.slice(0, TRACE_TEXT_CHARS) },
+      // Every request of this run carries req.model unchanged, so it is the model that ran.
+      model: this.req.model,
     };
     if (extra.raw !== undefined) out.raw = extra.raw;
     if (extra.error !== undefined) out.error = extra.error;

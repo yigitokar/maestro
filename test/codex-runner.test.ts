@@ -470,17 +470,22 @@ describe('CodexRunner: arguments, tools and isolation', () => {
     { request: 'claude-sonnet-custom', expected: undefined },
     { request: 'gpt-codex-test', expected: 'gpt-codex-test' },
   ])('selects model for $request', async ({ request, expected }) => {
-    await new CodexRunner({ bin }).run(makeReq({ model: request }).req);
+    const res = await new CodexRunner({ bin }).run(makeReq({ model: request }).req);
     expect(flag(records()[0]!.argv, '-m')).toBe(expected);
+    // Without -m the Codex configuration picks the model, which the runner does not learn. It says so
+    // with null, so the call is not taken for one on the requested model.
+    expect(res.status).toBe('ok');
+    expect(res.model).toBe(expected ?? null);
   });
 
   it('gives the option model precedence and places extra args before the prompt', async () => {
-    await new CodexRunner({
+    const res = await new CodexRunner({
       bin,
       model: 'option-model',
       ignoreUserConfig: true,
       extraArgs: ['--config', 'test_setting=true'],
     }).run(makeReq({ model: 'request-model' }).req);
+    expect(res.model).toBe('option-model');
     const argv = records()[0]!.argv;
     expect(flag(argv, '-m')).toBe('option-model');
     expect(argv).toContain('--ignore-user-config');

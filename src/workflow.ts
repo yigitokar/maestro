@@ -391,6 +391,16 @@ export function run(opts: RunOptions): RunHandle {
     }
 
     const usage = res?.usage ?? turnUsage;
+    // What the runner says it sent; a runner-level override makes it differ from the requested model.
+    // Recorded for audit and pricing only: it never enters the key, so a resume still finds the row.
+    // Null ("a model I cannot name") is kept apart from undefined ("no report"): only the second may be
+    // priced as the requested model. A custom runner's value is unchecked, hence the type test.
+    const sentModel =
+      res?.model === null
+        ? null
+        : typeof res?.model === 'string' && res.model.trim() !== ''
+          ? res.model
+          : undefined;
     const entry: Entry = withDefined({
       index: id,
       hash: a.hash,
@@ -400,6 +410,7 @@ export function run(opts: RunOptions): RunHandle {
       phase: o.phase ?? frame.phase,
       result: status === 'ok' ? (result ?? null) : null,
       usage,
+      model: sentModel,
       status,
       raw,
       error,
@@ -409,7 +420,7 @@ export function run(opts: RunOptions): RunHandle {
           : {
               prompt: a.prompt,
               options: o,
-              model: o.model ?? model,
+              model: sentModel ?? o.model ?? model,
               tools: a.tools.map((t) => t.name),
             },
       worktree,
@@ -422,14 +433,17 @@ export function run(opts: RunOptions): RunHandle {
     } catch (e) {
       // Not an agent-level failure: the run fails loudly instead of continuing half-recorded.
       emitLog(`agent ${o.label ?? key} not journaled, the run fails: ${errorText(e)}`, frame.group);
-      emit({ type: 'agent_end', ...base, status: 'null', cached: false, usage });
+      // The tokens were spent although the row is lost, so the event still says on which model.
+      emit(
+        withDefined({ type: 'agent_end', ...base, status: 'null', cached: false, usage, model: sentModel }),
+      );
       if (fatal === undefined) {
         fatal = e;
         if (!runController.signal.aborted) runController.abort(e);
       }
       throw e;
     }
-    emit({ type: 'agent_end', ...base, status, cached: false, usage });
+    emit(withDefined({ type: 'agent_end', ...base, status, cached: false, usage, model: sentModel }));
     if (stopped) throw stopError();
     return status === 'ok' ? copyValue(entry.result) : null;
   }

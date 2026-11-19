@@ -144,6 +144,17 @@ describe('AnthropicRunner: tool loop', () => {
     expect(body.system[0].text).toContain('Always answer in lowercase.');
   });
 
+  it('reports the model it sent, also when the call fails', async () => {
+    const ok = scripted([reply([text('x')], 'end_turn')]);
+    const res = await runnerFor(ok.client).run(makeReq({ model: 'claude-haiku-5-5' }).req);
+    expect(ok.bodies[0].model).toBe('claude-haiku-5-5');
+    expect(res).toMatchObject({ status: 'ok', model: 'claude-haiku-5-5' });
+
+    const bad = scripted([apiError(400, 'invalid_request_error', 'no')]);
+    const failed = await runnerFor(bad.client).run(makeReq({ model: 'claude-sonnet-5-5' }).req);
+    expect(failed).toMatchObject({ status: 'null', model: 'claude-sonnet-5-5' });
+  });
+
   it('omits output_config when no effort is given', async () => {
     const { client, bodies } = scripted([reply([text('x')], 'end_turn')]);
     await runnerFor(client).run(makeReq().req);

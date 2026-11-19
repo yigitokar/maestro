@@ -84,6 +84,11 @@ export interface Entry {
   /** True when `result` is a `{ blob: key }` reference (disambiguates from a real `{ blob }` result). */
   blob?: true;
   usage: Usage;
+  /**
+   * The model the runner reported sending for this call (`RunResult.model`): null when it could not name
+   * the model, absent when it reported nothing.
+   */
+  model?: string | null;
   status: EntryStatus;
   /** Raw final text when schema parsing failed twice (spec 3.2). */
   raw?: string;
@@ -93,6 +98,7 @@ export interface Entry {
   failureInput?: {
     prompt: string;
     options: AgentOpts;
+    /** The model the runner reported sending; the requested model when it named none. */
     model: string;
     tools: string[];
   };
@@ -174,6 +180,17 @@ export interface RunResult {
   error?: string;
   /** Tool calls and final text of this run, journaled as audit (absent from runners that do not trace). */
   trace?: Trace;
+  /**
+   * The model ID this runner sent to its provider. It can differ from `RunRequest.model`: a runner-level
+   * override, a default put in place of another provider's ID. The run records it with the call and
+   * `maestro eval` prices the call at it.
+   *
+   * `null` says the call ran on a model this runner cannot name (CodexRunner on the Codex configuration
+   * default); such a call gets no cost estimate. Unset says nothing, and the call is priced from the
+   * requested model. So a runner that may send another model than the requested one must not leave it
+   * unset.
+   */
+  model?: string | null;
 }
 
 /**
@@ -224,6 +241,11 @@ export type WorkflowEvent =
       status: EntryStatus;
       cached: boolean;
       usage: Usage;
+      /**
+       * The model the runner reported sending (`RunResult.model`); null when it could not name the model.
+       * Absent on a cache hit, which sends nothing, and when the runner reported nothing.
+       */
+      model?: string | null;
     }
   | { type: 'phase'; runId: string; title: string; group?: string }
   | { type: 'log'; runId: string; message: string; group?: string }

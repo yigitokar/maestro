@@ -6,6 +6,7 @@ import { GeminiRunner } from '../src/gemini-runner.js';
 import { defaultModelRoute, RoutingRunner } from '../src/routing-runner.js';
 import { AnthropicRunner } from '../src/runner.js';
 import { FakeRunner } from '../src/testing/fake-runner.js';
+import type { AgentRunner, RunRequest } from '../src/types.js';
 import { run } from '../src/workflow.js';
 
 const dirs: string[] = [];
@@ -62,6 +63,32 @@ return { context, findings, verdict };`,
     expect(geminiFake.liveCalls).toBe(1);
     expect(codexFake.liveCalls).toBe(2);
     expect(anthropicFake.liveCalls).toBe(1);
+  });
+
+  it("returns the routed runner's result as it is, with the model that runner reported", async () => {
+    const reporting: AgentRunner = {
+      run: async (req) => ({
+        result: 'ok',
+        status: 'ok',
+        usage: { input_tokens: 1, output_tokens: 1 },
+        turns: 1,
+        model: `sent:${req.model}`,
+      }),
+    };
+    const router = new RoutingRunner({ gemini: reporting, anthropic: new FakeRunner() });
+    const request = (model: string): RunRequest => ({
+      prompt: 'p',
+      system: 's',
+      tools: [],
+      model,
+      cwd: process.cwd(),
+      signal: new AbortController().signal,
+      isolated: false,
+      onUsage: () => {},
+      log: () => {},
+    });
+    expect((await router.run(request('gemini-4-hydrogen'))).model).toBe('sent:gemini-4-hydrogen');
+    expect(await router.run(request('claude-opus-5-5'))).not.toHaveProperty('model');
   });
 
   it('forwards maxRequestTokens from gemini options too', () => {

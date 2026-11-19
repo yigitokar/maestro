@@ -110,7 +110,11 @@ class RunState {
   error?: string;
   turnFailure?: string;
 
-  constructor(private readonly req: RunRequest) {}
+  constructor(
+    private readonly req: RunRequest,
+    /** The model passed to Codex; undefined when the Codex configuration picks it. */
+    private readonly model: string | undefined,
+  ) {}
 
   addUsageDelta(usage: Usage): void {
     addUsage(this.usage, usage);
@@ -169,7 +173,18 @@ class RunState {
   }
 
   done(result: unknown, status: EntryStatus, extra: { error?: string; raw?: string } = {}): RunResult {
-    return { result, status, usage: this.usage, turns: this.turns, trace: this.trace, ...extra };
+    return {
+      result,
+      status,
+      usage: this.usage,
+      turns: this.turns,
+      trace: this.trace,
+      // Without a model argument the Codex configuration picks the model and this runner does not
+      // learn which. Null says so; leaving the field out would let the call pass for one on the
+      // requested model and be priced as that.
+      model: this.model || null,
+      ...extra,
+    };
   }
 }
 
@@ -187,7 +202,8 @@ export class CodexRunner implements AgentRunner {
         'write_tool_without_isolation',
       );
     }
-    const st = new RunState(req);
+    const model = this.opts.model ?? (req.model.startsWith('claude-') ? undefined : req.model);
+    const st = new RunState(req, model);
     if (req.signal.aborted) return st.done(null, 'skipped', { error: 'aborted' });
     let tempDir: string | undefined;
     let bridge: CodexToolBridge | undefined;
@@ -223,7 +239,6 @@ export class CodexRunner implements AgentRunner {
         });
       }
       const env = childGitEnv();
-      const model = this.opts.model ?? (req.model.startsWith('claude-') ? undefined : req.model);
       let bridgeArgs: string[] = [];
       if (customTools.length > 0 && bridgeEnabled) {
         bridge = await startCodexToolBridge({

@@ -58,9 +58,10 @@ describe('eval helpers', () => {
     expect(bad.reason).toContain('found forbidden substring');
   });
 
-  it('documents how runner overrides affect the model used for pricing', async () => {
+  it('documents which model a live call is priced at', async () => {
     const cliGuide = await readFile(new URL('../docs/maestro/cli.md', import.meta.url), 'utf8');
-    expect(cliGuide).toMatch(/requested model[^.]*runner[^.]*override/i);
+    expect(cliGuide).toMatch(/prices each live call at the model its runner reported sending/);
+    expect(cliGuide).toMatch(/no model was recorded[^.]*requested model/);
   });
 
   it('estimates USD cost for known Claude and Gemini models and returns null for unknown models', () => {
