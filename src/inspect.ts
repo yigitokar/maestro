@@ -17,7 +17,7 @@ import { type PersistedOutcome, readOutcome } from './workflow.js';
 export interface InspectOptions {
   /** Compact mode (strictly minimal failure-focused output). Default false for library, true for MCP. */
   compact?: boolean;
-  /** Include complete recorded prompt, schema and output fields. */
+  /** Include complete workflow args and recorded prompt, schema and output fields. */
   full?: boolean;
   /** Optional selector: agent label, `#<index>`, or key prefix. */
   selector?: string;
@@ -519,7 +519,7 @@ export async function inspectRun(
   let argsPreview: string | undefined;
   let argsTruncated: boolean | undefined;
   if (rawArgs !== undefined && rawArgs !== '' && rawArgs !== 'null') {
-    const cut = truncateText(rawArgs, compact ? 500 : 1_500);
+    const cut = previewField(rawArgs, opts.full ? Infinity : compact ? 500 : 1_500);
     argsPreview = cut.text;
     if (cut.truncated) argsTruncated = true;
   }
@@ -679,16 +679,19 @@ export function formatInspectMarkdown(report: InspectReport): string {
       if (node.input?.model) specParts.push(`model=\`${node.input.model}\``);
       if (node.input?.effort) specParts.push(`effort=\`${node.input.effort}\``);
       if (node.input?.isolation) specParts.push(`isolation=\`${node.input.isolation}\``);
-      if (node.input?.schema)
-        specParts.push(
-          node.input.schema === true
-            ? 'schema present (definition unavailable)'
-            : `schema=\`${node.input.schema}\``,
-        );
+      if (node.input?.schema === true) specParts.push('schema present (definition unavailable)');
       if (node.input?.tools?.length) specParts.push(`tools=[${node.input.tools.join(', ')}]`);
       specParts.push(`tokens=${n(totalInput(node.usage))} in / ${n(node.usage.output_tokens)} out`);
       lines.push(`- **meta:** ${specParts.join(', ')}`);
 
+      if (typeof node.input?.schema === 'string') {
+        let fenceLength = 3;
+        for (const match of node.input.schema.matchAll(/`+/g)) {
+          fenceLength = Math.max(fenceLength, match[0].length + 1);
+        }
+        const fence = '`'.repeat(fenceLength);
+        lines.push('- **schema:**', `${fence}json`, node.input.schema, fence);
+      }
       if (node.input?.prompt !== undefined) {
         const length =
           node.input.promptLength === undefined

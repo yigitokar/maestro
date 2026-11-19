@@ -455,7 +455,7 @@ async function collectRunMetrics(runDir: string, prices: Record<string, ModelPri
   let estimatedCostUsd: number | null = 0;
   let agentCalls = 0;
   let journalCacheHits = 0;
-  const liveUsage: Usage = { input_tokens: 0, output_tokens: 0 };
+  const liveUsage: Usage = lastStartIdx < 0 ? usage : { input_tokens: 0, output_tokens: 0 };
   let workflowName: string | undefined;
   let runStartTime: number | undefined;
   let runEndTime: number | undefined;
@@ -473,7 +473,7 @@ async function collectRunMetrics(runDir: string, prices: Record<string, ModelPri
       invokedKeys.add(ev.key);
     } else if (ev.type === 'agent_prompt' && ev.model !== undefined) {
       promptModels.set(ev.id, ev.model);
-    } else if (ev.type === 'agent_end') {
+    } else if (ev.type === 'agent_end' && lastStartIdx >= 0) {
       agentCalls++;
       if (ev.cached) journalCacheHits++;
       else {
@@ -491,6 +491,11 @@ async function collectRunMetrics(runDir: string, prices: Record<string, ModelPri
     }
   }
 
+  if (lastStartIdx < 0) {
+    agentCalls = rows.length;
+    journalCacheHits = rows.filter((r) => r.cachedFrom !== undefined).length;
+    estimatedCostUsd = totalInput(usage) > 0 || usage.output_tokens > 0 ? null : 0;
+  }
   const failedAgents = [...latestByKey.values()].filter(
     (r) => r.status !== 'ok' && (lastStartIdx < 0 || invokedKeys.has(r.key)),
   ).length;
@@ -506,6 +511,14 @@ async function collectRunMetrics(runDir: string, prices: Record<string, ModelPri
     durationMs:
       runStartTime !== undefined && runEndTime !== undefined ? Math.max(0, runEndTime - runStartTime) : 0,
   };
+}
+
+function roundCost(cost: number | null): number | null {
+  return cost === null ? null : Math.round(cost * 1_000_000) / 1_000_000;
+}
+
+function roundedCaseResult(result: EvalCaseResult): EvalCaseResult {
+  return { ...result, estimatedCostUsd: roundCost(result.estimatedCostUsd) };
 }
 
 function summarizeCases(cases: EvalCaseResult[], totalDurationMs: number): EvalSummary {
@@ -548,7 +561,7 @@ function summarizeCases(cases: EvalCaseResult[], totalDurationMs: number): EvalS
       cacheWrite: liveUsage.cache_creation_input_tokens ?? 0,
       total: totalIn + liveUsage.output_tokens,
     },
-    estimatedCostUsd,
+    estimatedCostUsd: roundCost(estimatedCostUsd),
     agentCalls,
     journalCacheHits,
     journalCacheHitRatio: agentCalls === 0 ? null : journalCacheHits / agentCalls,
@@ -737,7 +750,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalRecord> {
         promptCacheRatio: metrics.promptCacheRatio,
       };
       results[i] = caseResult;
-      opts.onCaseComplete?.(caseResult, i, cases.length);
+      opts.onCaseComplete?.(roundedCaseResult(caseResult), i, cases.length);
     }
   };
 
@@ -752,12 +765,12 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalRecord> {
     ...(workflowName !== undefined ? { workflowName } : {}),
     ...(opts.casesPath !== undefined ? { casesPath: path.resolve(cwd, opts.casesPath) } : {}),
     ...(opts.graderPath !== undefined ? { graderPath: path.resolve(cwd, opts.graderPath) } : {}),
-    model,
+    model: effectiveModel(runnerName, model) ?? '(runner default)',
     runner: runnerName,
     ...(opts.fromEvalId !== undefined ? { fromEvalId: opts.fromEvalId } : {}),
     ...(opts.fromNode !== undefined ? { fromNode: opts.fromNode } : {}),
     summary: summarizeCases(results, totalDurationMs),
-    cases: results,
+    cases: results.map(roundedCaseResult),
   };
 
   const evalDir = path.join(evalsDirFor(stateDir), evalId);
@@ -822,7 +835,7 @@ async function workflowRunAsEvalRecord(
     model,
     runner,
     summary: summarizeCases([caseRes], metrics.durationMs),
-    cases: [caseRes],
+    cases: [roundedCaseResult(caseRes)],
   };
 }
 
@@ -1013,6 +1026,12 @@ export function formatEvalSummary(record: EvalRecord): string {
   return `${lines.join('\n')}\n`;
 }
 
+function failureDetails(c: CaseStatusDiff): string {
+  const reason = c.afterReason ? ` (${c.afterReason})` : '';
+  const hint = c.afterRunId ? ` · inspect: \`maestro inspect ${c.afterRunId} --compact\`` : '';
+  return reason + hint;
+}
+
 /** Formats an `EvalDiffReport` side-by-side summary as crisp Markdown. */
 export function formatEvalDiff(diff: EvalDiffReport): string {
   const n = (v: number) => v.toLocaleString('en-US');
@@ -1036,7 +1055,11 @@ export function formatEvalDiff(diff: EvalDiffReport): string {
   );
   if (diff.cases.changed.length > 0) {
     lines.push('', `### Changed Cases (${diff.cases.changed.length})`);
-    for (const c of diff.cases.changed) lines.push(`- \`${c.id}\`: ${c.beforeStatus} → ${c.afterStatus}`);
+    for (const c of diff.cases.changed) {
+      lines.push(
+        `- \`${c.id}\`: ${c.beforeStatus} → ${c.afterStatus}${c.afterStatus === 'pass' ? '' : failureDetails(c)}`,
+      );
+    }
   }
   if (diff.cases.fixed.length > 0) {
     lines.push('', `### Fixed (${diff.cases.fixed.length})`);
@@ -1049,10 +1072,7 @@ export function formatEvalDiff(diff: EvalDiffReport): string {
   if (diff.cases.regressions.length > 0) {
     lines.push('', `### Regressions (${diff.cases.regressions.length})`);
     for (const c of diff.cases.regressions) {
-      const inspectHint = c.afterRunId ? ` · inspect: \`maestro inspect ${c.afterRunId} --compact\`` : '';
-      lines.push(
-        `- ✗ \`${c.id}\`: pass → ${c.afterStatus}${c.afterReason ? ` (${c.afterReason})` : ''}${inspectHint}`,
-      );
+      lines.push(`- ✗ \`${c.id}\`: pass → ${c.afterStatus}${failureDetails(c)}`);
     }
   }
   if (diff.cases.stillFailing.length > 0) {
