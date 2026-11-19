@@ -1,13 +1,14 @@
 // Compact, agent-friendly failure inspection (`maestro inspect --compact` & MCP `WorkflowInspect`).
 // Reads <runDir>/{journal.jsonl, events.jsonl, args.json, run.json, outcome.json} and distills a
-// bounded diagnostic report containing only failed/selected steps, their exact inputs/outputs, and
+// bounded diagnostic report containing only failed/selected steps, their input/output previews, and
 // relevant upstream state needed to identify the root cause without bloating an agent's context window.
 
 import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { EventLogLine } from './event-log.js';
-import { readEntries, readResultBlob, readTrace } from './journal.js';
+import { readEntries, readFailureInput, readResultBlob, readTrace } from './journal.js';
+import { buildTimeline } from './replay.js';
 import type { Entry, EntryStatus, LiveAgentStatus, TraceToolCall, Usage } from './types.js';
 import { addUsage, cacheReadRatio, totalInput } from './usage.js';
 import { readEventLines } from './viz.js';
@@ -16,6 +17,8 @@ import { type PersistedOutcome, readOutcome } from './workflow.js';
 export interface InspectOptions {
   /** Compact mode (strictly minimal failure-focused output). Default false for library, true for MCP. */
   compact?: boolean;
+  /** Include complete workflow args and recorded prompt, schema and output fields. */
+  full?: boolean;
   /** Optional selector: agent label, `#<index>`, or key prefix. */
   selector?: string;
   /** Override max characters for prompt/text/raw fields. */
@@ -27,11 +30,14 @@ export interface InspectOptions {
 export interface InspectedNodeInput {
   prompt?: string;
   promptTruncated?: boolean;
+  promptLength?: number;
+  /** Event previews can omit the prompt tail and schema definition. */
+  source?: 'journal' | 'event-preview';
   model?: string;
   effort?: string;
   isolation?: 'worktree';
   tools?: string[];
-  schema?: boolean;
+  schema?: string | boolean;
 }
 
 export interface InspectedNode {
@@ -82,10 +88,12 @@ export interface InspectReport {
   /** True when outcome is ok but one or more agents ended null or skipped. */
   degraded: boolean;
   compact: boolean;
+  full?: boolean;
   model?: string;
   runner?: string;
   replayedFrom?: { runId: string; from?: string };
-  outcome?: PersistedOutcome;
+  outcome?: PersistedOutcome & { resultTruncated?: true };
+  firstFailureReplaySelector?: string;
   argsPreview?: string;
   argsTruncated?: boolean;
   stats: {
@@ -116,6 +124,20 @@ interface PromptMeta extends InspectedNodeInput {
 function truncateText(text: string, limit: number): { text: string; truncated: boolean } {
   if (text.length <= limit) return { text, truncated: false };
   return { text: `${text.slice(0, limit)}…`, truncated: true };
+}
+
+function previewField(text: string, limit: number): { text: string; truncated: boolean } {
+  if (text.length <= limit) return { text, truncated: false };
+  const kept = Math.max(0, Math.floor(limit));
+  let head = Math.ceil(kept / 2);
+  let tail = text.length - (kept - head);
+  // Move each cut inward when the preceding unit starts a surrogate pair.
+  if ((text.codePointAt(head - 1) ?? 0) > 0xffff) head--;
+  if ((text.codePointAt(tail - 1) ?? 0) > 0xffff) tail++;
+  return {
+    text: `${text.slice(0, head)}… [${tail - head} characters omitted; --full shows them] …${text.slice(tail)}`,
+    truncated: true,
+  };
 }
 
 function stringifyCompact(value: unknown): string {
@@ -168,6 +190,8 @@ function parseEventMetadata(events: EventLogLine[]) {
   const live = new Map<number, LiveAgentStatus>();
   let journalCacheHits = 0;
   let liveCalls = 0;
+  const endedIds = new Set<number>();
+  const starts = new Map<string, Extract<EventLogLine, { type: 'agent_start' }>>();
   const cachedInLastAttempt = new Set<string>();
 
   for (let i = 0; i < events.length; i++) {
@@ -184,6 +208,7 @@ function parseEventMetadata(events: EventLogLine[]) {
     } else if (ev.type === 'run_end') {
       live.clear();
     } else if (ev.type === 'agent_start') {
+      if (inLastAttempt) starts.set(ev.key, ev);
       currentIdToKey.set(ev.id, { key: ev.key, group: ev.group });
     } else if (ev.type === 'agent_prompt') {
       const ref = currentIdToKey.get(ev.id);
@@ -202,6 +227,7 @@ function parseEventMetadata(events: EventLogLine[]) {
     } else if (ev.type === 'agent_end') {
       live.delete(ev.id);
       if (inLastAttempt) {
+        endedIds.add(ev.id);
         if (ev.cached) {
           journalCacheHits++;
           cachedInLastAttempt.add(ev.key);
@@ -225,18 +251,9 @@ function parseEventMetadata(events: EventLogLine[]) {
     journalCacheHits,
     liveCalls,
     cachedInLastAttempt,
+    starts,
+    endedIds,
   };
-}
-
-/** Deduplicates journal rows to the latest row per key while preserving first-seen order. */
-function latestRowsByKey(rows: Entry[]): Entry[] {
-  const byKey = new Map<string, Entry>();
-  const order: string[] = [];
-  for (const row of rows) {
-    if (!byKey.has(row.key)) order.push(row.key);
-    byKey.set(row.key, row);
-  }
-  return order.map((k) => byKey.get(k)!);
 }
 
 /** Checks whether a candidate upstream output appears referenced inside any target prompt. */
@@ -268,10 +285,12 @@ function isReferencedInPrompts(candidate: Entry, resultText: string, targetPromp
 /** Matches a node selector (`label`, `#<index>`, or key prefix) against the latest rows. */
 export function selectRows(rows: Entry[], selector: string): Entry[] {
   const trimmed = selector.trim();
+  if (/^#\d+$/.test(trimmed)) return rows.filter((r) => r.index === Number(trimmed.slice(1)));
+
   const byLabel = rows.filter((r) => r.label === trimmed);
   if (byLabel.length > 0) return byLabel;
-  if (/^#?\d+$/.test(trimmed)) {
-    const idx = Number(trimmed.startsWith('#') ? trimmed.slice(1) : trimmed);
+  if (/^\d+$/.test(trimmed)) {
+    const idx = Number(trimmed);
     const byIdx = rows.filter((r) => r.index === idx);
     if (byIdx.length > 0) return byIdx;
   }
@@ -287,9 +306,9 @@ export async function inspectRun(
     throw new Error(`no run ${runId} in ${path.dirname(runDir)}`);
   }
   const compact = opts.compact ?? false;
-  const maxFieldChars = opts.maxFieldChars ?? (compact ? 1_200 : 2_500);
+  const maxFieldChars = opts.full ? Infinity : (opts.maxFieldChars ?? (compact ? 1_200 : 2_500));
   const maxUpstream = opts.maxUpstream ?? (compact ? 5 : 15);
-  const upstreamPreviewChars = compact ? 400 : 1_000;
+  const upstreamPreviewChars = opts.full ? Infinity : compact ? 400 : 1_000;
   const recentToolsLimit = compact ? 5 : 20;
 
   const [rawRows, { lines: events }, outcome, runMeta, rawArgs] = await Promise.all([
@@ -305,7 +324,16 @@ export async function inspectRun(
   ]);
 
   const evMeta = parseEventMetadata(events);
-  const latestRows = latestRowsByKey(rawRows);
+  const rowsByKey = new Map(rawRows.map((row) => [row.key, row]));
+  // Cache hits have no new row. Take their position and labels from this invocation.
+  const latestRows =
+    evMeta.lastStartIdx < 0
+      ? [...rowsByKey.values()]
+      : [...evMeta.starts.values()].flatMap((start) => {
+          if (!evMeta.endedIds.has(start.id)) return [];
+          const row = rowsByKey.get(start.key);
+          return row ? [{ ...row, index: start.id, label: start.label, phase: start.phase }] : [];
+        });
 
   const status: 'done' | 'failed' | 'running' =
     evMeta.endEvent !== undefined
@@ -322,9 +350,11 @@ export async function inspectRun(
             : 'failed'
           : 'running';
 
-  // Aggregate usage across all journal rows (matching `maestro runs`).
+  // Aggregate usage spent in this run across attempts (matching `maestro runs`).
   const totalUsage: Usage = { input_tokens: 0, output_tokens: 0 };
-  for (const r of rawRows) addUsage(totalUsage, r.usage);
+  for (const r of rawRows) {
+    if (r.cachedFrom === undefined) addUsage(totalUsage, r.usage);
+  }
 
   let okCount = 0;
   let nullCount = 0;
@@ -341,6 +371,16 @@ export async function inspectRun(
   let targetRows: Entry[];
   if (opts.selector !== undefined) {
     targetRows = selectRows(latestRows, opts.selector);
+    if (targetRows.length === 0 && evMeta.lastStartIdx >= 0) {
+      const historical = selectRows(
+        rawRows.filter((row) => {
+          const start = evMeta.starts.get(row.key);
+          return !start || evMeta.endedIds.has(start.id);
+        }),
+        opts.selector,
+      );
+      targetRows = [...new Map(historical.map((row) => [row.key, row])).values()];
+    }
     if (targetRows.length === 0) {
       throw new Error(`no agent matching "${opts.selector}" in run ${runId}`);
     }
@@ -350,26 +390,36 @@ export async function inspectRun(
     targetRows = [];
   }
 
+  const targetPrompts: string[] = [];
   const nodes: InspectedNode[] = await Promise.all(
     targetRows.map(async (row): Promise<InspectedNode> => {
       const promptMeta = evMeta.promptByKey.get(row.key);
-      const trace = await readTrace(runDir, row);
+      const [trace, recorded] = await Promise.all([readTrace(runDir, row), readFailureInput(runDir, row)]);
       const allCalls = trace?.toolCalls ?? [];
       const failedToolCalls = allCalls.filter((c) => !c.ok);
       const recentToolCalls = allCalls.slice(-recentToolsLimit);
 
       let input: InspectedNodeInput | undefined;
-      if (promptMeta) {
-        const p =
-          promptMeta.prompt !== undefined ? truncateText(promptMeta.prompt, maxFieldChars) : undefined;
+      const prompt = recorded?.prompt ?? promptMeta?.prompt;
+      if (prompt !== undefined) {
+        targetPrompts.push(prompt);
+        const cut = previewField(prompt, maxFieldChars);
+        const eventTruncated = !recorded && promptMeta?.promptTruncated;
+        const options = recorded?.options ?? promptMeta;
         input = {
-          ...(p ? { prompt: p.text } : {}),
-          ...(p?.truncated || promptMeta.promptTruncated ? { promptTruncated: true } : {}),
-          ...(promptMeta.model !== undefined ? { model: promptMeta.model } : {}),
-          ...(promptMeta.effort !== undefined ? { effort: promptMeta.effort } : {}),
-          ...(promptMeta.isolation !== undefined ? { isolation: promptMeta.isolation } : {}),
-          ...(promptMeta.tools !== undefined ? { tools: promptMeta.tools } : {}),
-          ...(promptMeta.schema !== undefined ? { schema: promptMeta.schema } : {}),
+          source: recorded ? 'journal' : 'event-preview',
+          prompt: cut.text,
+          ...(eventTruncated ? {} : { promptLength: prompt.length }),
+          ...(cut.truncated || eventTruncated ? { promptTruncated: true } : {}),
+          model: recorded?.model ?? promptMeta?.model,
+          tools: recorded?.tools ?? promptMeta?.tools,
+          effort: options?.effort,
+          isolation: options?.isolation,
+          schema: recorded
+            ? recorded.options.schema === undefined
+              ? undefined
+              : previewField(stringifyCompact(recorded.options.schema), maxFieldChars).text
+            : promptMeta?.schema,
         };
       }
 
@@ -377,16 +427,16 @@ export async function inspectRun(
       let resultTruncated: boolean | undefined;
       if (row.result !== null && row.result !== undefined) {
         const resolved = await resolveResult(runDir, row);
-        const cut = truncateText(stringifyCompact(resolved), maxFieldChars);
+        const cut = previewField(stringifyCompact(resolved), maxFieldChars);
         resultPreview = cut.text;
         if (cut.truncated) resultTruncated = true;
       }
 
       const finalText =
         trace?.finalText && trace.finalText.trim() !== ''
-          ? truncateText(trace.finalText, maxFieldChars).text
+          ? previewField(trace.finalText, maxFieldChars).text
           : undefined;
-      const raw = row.raw !== undefined ? truncateText(row.raw, maxFieldChars).text : undefined;
+      const raw = row.raw !== undefined ? previewField(row.raw, maxFieldChars).text : undefined;
 
       return {
         index: row.index,
@@ -434,10 +484,6 @@ export async function inspectRun(
     const candidates = latestRows
       .slice(0, earliestTargetPos)
       .filter((r) => r.status === 'ok' && !targetKeys.has(r.key));
-    const targetPrompts = targetRows
-      .map((r) => evMeta.promptByKey.get(r.key)?.prompt)
-      .filter((p): p is string => typeof p === 'string' && p.length > 0);
-
     const resolvedCandidates = await Promise.all(
       candidates.map(async (row, pos) => {
         const resolved = await resolveResult(runDir, row);
@@ -450,13 +496,14 @@ export async function inspectRun(
     // Referenced nodes first (most relevant), then most recent preceding nodes; preserve execution order in output.
     const referenced = resolvedCandidates.filter((c) => c.referenced);
     const unreferenced = resolvedCandidates.filter((c) => !c.referenced);
+    const remaining = maxUpstream - referenced.length;
     const chosen = [
       ...referenced.slice(-maxUpstream),
-      ...unreferenced.slice(-Math.max(0, maxUpstream - referenced.length)),
+      ...(remaining > 0 ? unreferenced.slice(-remaining) : []),
     ].sort((a, b) => a.pos - b.pos);
 
     for (const c of chosen) {
-      const cut = truncateText(c.text, upstreamPreviewChars);
+      const cut = previewField(c.text, upstreamPreviewChars);
       upstream.push({
         index: c.row.index,
         key: c.row.key,
@@ -472,7 +519,7 @@ export async function inspectRun(
   let argsPreview: string | undefined;
   let argsTruncated: boolean | undefined;
   if (rawArgs !== undefined && rawArgs !== '' && rawArgs !== 'null') {
-    const cut = truncateText(rawArgs, compact ? 500 : 1_500);
+    const cut = previewField(rawArgs, opts.full ? Infinity : compact ? 500 : 1_500);
     argsPreview = cut.text;
     if (cut.truncated) argsTruncated = true;
   }
@@ -495,12 +542,39 @@ export async function inspectRun(
         }))
       : undefined;
 
+  let firstFailureReplaySelector: string | undefined;
+  const failed = targetRows.find((row) => row.status !== 'ok');
+  if (failed) {
+    const timeline = buildTimeline(rawRows, events);
+    const node = timeline.find((n) => n.id === failed.index && n.key === failed.key);
+    if (node) {
+      const label = node.label;
+      const usableLabel =
+        label &&
+        label.trim() === label &&
+        !/^(?:phase:|#\d+$)/i.test(label) &&
+        timeline.filter((n) => n.label === label).length === 1;
+      firstFailureReplaySelector = usableLabel ? label : `#${node.id}`;
+    }
+  }
+
+  let reportOutcome: InspectReport['outcome'] = outcome;
+  if (outcome?.ok && !opts.full) {
+    const cut = previewField(
+      stringifyCompact(outcome.result),
+      Math.min(maxFieldChars, compact ? 400 : 1_200),
+    );
+    if (cut.truncated) reportOutcome = { ok: true, result: cut.text, resultTruncated: true };
+  }
+
   return {
+    ...(firstFailureReplaySelector !== undefined ? { firstFailureReplaySelector } : {}),
     runId,
     ...(evMeta.name !== undefined ? { name: evMeta.name } : {}),
     status,
     degraded,
     compact,
+    ...(opts.full ? { full: true } : {}),
     ...(typeof runMeta?.model === 'string'
       ? { model: runMeta.model }
       : evMeta.model !== undefined
@@ -512,11 +586,11 @@ export async function inspectRun(
         ? { runner: evMeta.runner }
         : {}),
     ...(replayedFrom ? { replayedFrom } : {}),
-    ...(outcome !== undefined ? { outcome } : {}),
+    ...(reportOutcome !== undefined ? { outcome: reportOutcome } : {}),
     ...(argsPreview !== undefined ? { argsPreview } : {}),
     ...(argsTruncated ? { argsTruncated: true } : {}),
     stats: {
-      totalAgents: latestRows.length,
+      totalAgents: evMeta.lastStartIdx >= 0 ? evMeta.starts.size : latestRows.length,
       ok: okCount,
       null: nullCount,
       skipped: skippedCount,
@@ -565,8 +639,10 @@ export function formatInspectMarkdown(report: InspectReport): string {
 
   if (report.outcome) {
     if (report.outcome.ok) {
-      const cut = truncateText(stringifyCompact(report.outcome.result), report.compact ? 400 : 1_200);
-      lines.push(`- outcome: \`ok\` — \`${cut.text}\``);
+      const preview = report.outcome.resultTruncated
+        ? String(report.outcome.result)
+        : stringifyCompact(report.outcome.result);
+      lines.push(`- outcome: \`ok\` — \`${preview}\``);
     } else {
       lines.push(`- outcome: \`failed\` — ${report.outcome.error}`);
     }
@@ -603,13 +679,26 @@ export function formatInspectMarkdown(report: InspectReport): string {
       if (node.input?.model) specParts.push(`model=\`${node.input.model}\``);
       if (node.input?.effort) specParts.push(`effort=\`${node.input.effort}\``);
       if (node.input?.isolation) specParts.push(`isolation=\`${node.input.isolation}\``);
-      if (node.input?.schema) specParts.push('schema=true');
+      if (node.input?.schema === true) specParts.push('schema present (definition unavailable)');
       if (node.input?.tools?.length) specParts.push(`tools=[${node.input.tools.join(', ')}]`);
       specParts.push(`tokens=${n(totalInput(node.usage))} in / ${n(node.usage.output_tokens)} out`);
       lines.push(`- **meta:** ${specParts.join(', ')}`);
 
+      if (typeof node.input?.schema === 'string') {
+        let fenceLength = 3;
+        for (const match of node.input.schema.matchAll(/`+/g)) {
+          fenceLength = Math.max(fenceLength, match[0].length + 1);
+        }
+        const fence = '`'.repeat(fenceLength);
+        lines.push('- **schema:**', `${fence}json`, node.input.schema, fence);
+      }
       if (node.input?.prompt !== undefined) {
-        lines.push('- **input prompt:**', '```text', node.input.prompt, '```');
+        const length =
+          node.input.promptLength === undefined
+            ? 'total length unknown'
+            : `${node.input.promptLength} characters`;
+        const source = node.input.source === 'event-preview' ? ', event preview' : '';
+        lines.push(`- **input prompt (${length}${source}):**`, '```text', node.input.prompt, '```');
       }
       if (node.failedToolCalls.length > 0) {
         lines.push(`- **failed tool calls (${node.failedToolCalls.length} of ${node.totalToolCalls}):**`);
@@ -663,9 +752,9 @@ export function formatInspectMarkdown(report: InspectReport): string {
     }
   }
 
-  if (report.nodes.length > 0 && report.nodes.some((node) => node.status !== 'ok')) {
-    const firstFailed = report.nodes.find((node) => node.status !== 'ok')!;
-    const selector = firstFailed.label ?? `#${firstFailed.index}`;
+  if (report.firstFailureReplaySelector !== undefined) {
+    const value = report.firstFailureReplaySelector;
+    const selector = /^[\w.:-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
     lines.push('', `> Replay from first failure: \`maestro replay ${report.runId} --from ${selector}\``);
   }
 

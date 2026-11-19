@@ -4,12 +4,14 @@
 // optionally seeds upstream caches from an earlier eval run (`fromEvalId` / `from`), and compares
 // two eval runs (or two individual workflow runs) with score, case-status, token/cost, and [CACHE HIT] deltas.
 
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { readEntries } from './journal.js';
+import { resolveGeminiModel } from './gemini-runner.js';
+import { canonicalJSON, readEntries } from './journal.js';
+import { defaultModelRoute } from './routing-runner.js';
 import type { AgentRunner, Entry, Usage } from './types.js';
 import { DEFAULT_MODEL } from './types.js';
 import { addUsage, cacheReadRatio, totalInput } from './usage.js';
@@ -69,7 +71,7 @@ export interface ModelPrice {
   output: number;
 }
 
-/** Reference pricing table (USD / 1M tokens) used for optional cost estimates in eval reports. */
+/** Reference snapshot in USD per million tokens. The `prices` option overrides entries by model ID. */
 export const MODEL_PRICES: Record<string, ModelPrice> = {
   'claude-opus-5-5': { input: 4, cacheWrite: 5, cacheRead: 0.2, output: 20 },
   'claude-sonnet-5-5': { input: 2, cacheWrite: 2.5, cacheRead: 0.1, output: 10 },
@@ -82,6 +84,8 @@ export const MODEL_PRICES: Record<string, ModelPrice> = {
 
 export interface EvalCaseResult {
   id: string;
+  argsHash?: string;
+  expectationHash?: string;
   runId: string;
   status: 'pass' | 'fail' | 'error';
   pass: boolean;
@@ -90,7 +94,7 @@ export interface EvalCaseResult {
   durationMs: number;
   degraded: boolean;
   failedAgents: number;
-  /** Total token usage across all journal rows of this case's run. */
+  /** Total token usage across this run's journal rows, excluding rows seeded from replay. */
   usage: Usage;
   /** Live API token usage only (excluding journal cache hits). */
   liveUsage: Usage;
@@ -201,6 +205,7 @@ export interface EvalDiffReport {
     passRateDelta: number;
   };
   cases: {
+    changed: CaseStatusDiff[];
     fixed: CaseStatusDiff[];
     regressions: CaseStatusDiff[];
     stillFailing: CaseStatusDiff[];
@@ -378,27 +383,46 @@ export function evaluateExpectation(expect: EvalExpectation, output: unknown): E
   return { pass: false, score: 0, reason: failures.join('; ') };
 }
 
-/** Estimates USD cost from token usage and model price table; null if the model has no known price. */
+/**
+ * Estimates USD cost from token usage, returning null for an unpriced model.
+ * Eval prices the requested model from the event log using default routing. Runner-level
+ * overrides (including custom routes and Codex configuration defaults) are unrecorded.
+ */
 export function estimateCostUsd(
   usage: Usage,
   model: string,
   prices: Record<string, ModelPrice> = MODEL_PRICES,
 ): number | null {
+  const cost = usageCost(usage, model, prices);
+  return cost === null ? null : Math.round(cost * 10_000) / 10_000;
+}
+
+// Keep full precision when accumulating small calls across models and cases.
+function usageCost(usage: Usage, model: string, prices: Record<string, ModelPrice>): number | null {
   const normalized = model.trim().replace(/^(?:anthropic|google|openai)\//i, '');
-  const price = prices[model] ?? prices[normalized];
+  const key = Object.hasOwn(prices, model) ? model : normalized;
+  const table = Object.hasOwn(prices, key) ? prices : MODEL_PRICES;
+  const price = Object.hasOwn(table, key) ? table[key] : undefined;
   if (!price) return null;
   const cacheWrite = price.cacheWrite ?? price.input * 1.25;
   const cacheRead = price.cacheRead ?? price.input * 0.1;
-  const dollars =
+  return (
     (usage.input_tokens * price.input +
       (usage.cache_creation_input_tokens ?? 0) * cacheWrite +
       (usage.cache_read_input_tokens ?? 0) * cacheRead +
       usage.output_tokens * price.output) /
-    1_000_000;
-  return Math.round(dollars * 10_000) / 10_000;
+    1_000_000
+  );
 }
 
-async function collectRunMetrics(runDir: string) {
+function effectiveModel(runner: string | undefined, model: string | undefined): string | undefined {
+  const route = runner === 'RoutingRunner' && model ? defaultModelRoute(model) : undefined;
+  if (runner === 'GeminiRunner' || route === 'gemini') return resolveGeminiModel(model ?? '');
+  if ((runner === 'CodexRunner' || route === 'codex') && model?.startsWith('claude-')) return undefined;
+  return model;
+}
+
+async function collectRunMetrics(runDir: string, prices: Record<string, ModelPrice>) {
   const [rows, { lines: events }] = await Promise.all([
     readEntries(runDir).catch(() => [] as Entry[]),
     readEventLines(runDir),
@@ -406,10 +430,9 @@ async function collectRunMetrics(runDir: string) {
   const usage: Usage = { input_tokens: 0, output_tokens: 0 };
   const latestByKey = new Map<string, Entry>();
   for (const r of rows) {
-    addUsage(usage, r.usage);
+    if (r.cachedFrom === undefined) addUsage(usage, r.usage);
     latestByKey.set(r.key, r);
   }
-  const failedAgents = [...latestByKey.values()].filter((r) => r.status !== 'ok').length;
 
   let lastStartIdx = -1;
   for (let i = events.length - 1; i >= 0; i--) {
@@ -418,9 +441,14 @@ async function collectRunMetrics(runDir: string) {
       break;
     }
   }
+  const invokedKeys = new Set<string>();
+  const promptModels = new Map<number, string>();
+  let defaultModel: string | undefined;
+  let runner: string | undefined;
+  let estimatedCostUsd: number | null = 0;
   let agentCalls = 0;
   let journalCacheHits = 0;
-  const liveUsage: Usage = { input_tokens: 0, output_tokens: 0 };
+  const liveUsage: Usage = lastStartIdx < 0 ? usage : { input_tokens: 0, output_tokens: 0 };
   let workflowName: string | undefined;
   let runStartTime: number | undefined;
   let runEndTime: number | undefined;
@@ -428,18 +456,40 @@ async function collectRunMetrics(runDir: string) {
   for (let i = Math.max(0, lastStartIdx); i < events.length; i++) {
     const ev = events[i]!;
     if (ev.type === 'run_start') {
+      defaultModel = ev.model;
+      runner = ev.runner;
       workflowName = ev.name;
       runStartTime = ev.t;
     } else if (ev.type === 'run_end') {
       runEndTime = ev.t;
-    } else if (ev.type === 'agent_end') {
+    } else if (ev.type === 'agent_start') {
+      invokedKeys.add(ev.key);
+    } else if (ev.type === 'agent_prompt' && ev.model !== undefined) {
+      promptModels.set(ev.id, ev.model);
+    } else if (ev.type === 'agent_end' && lastStartIdx >= 0) {
       agentCalls++;
       if (ev.cached) journalCacheHits++;
-      else addUsage(liveUsage, ev.usage);
+      else {
+        addUsage(liveUsage, ev.usage);
+        if (estimatedCostUsd !== null && (totalInput(ev.usage) > 0 || ev.usage.output_tokens > 0)) {
+          const model = effectiveModel(runner, promptModels.get(ev.id) ?? defaultModel);
+          const cost = model ? usageCost(ev.usage, model, prices) : null;
+          estimatedCostUsd = cost === null ? null : estimatedCostUsd + cost;
+        }
+      }
     }
   }
 
+  if (lastStartIdx < 0) {
+    agentCalls = rows.length;
+    journalCacheHits = rows.filter((r) => r.cachedFrom !== undefined).length;
+    estimatedCostUsd = totalInput(usage) > 0 || usage.output_tokens > 0 ? null : 0;
+  }
+  const failedAgents = [...latestByKey.values()].filter(
+    (r) => r.status !== 'ok' && (lastStartIdx < 0 || invokedKeys.has(r.key)),
+  ).length;
   return {
+    estimatedCostUsd,
     usage,
     liveUsage,
     failedAgents,
@@ -452,12 +502,15 @@ async function collectRunMetrics(runDir: string) {
   };
 }
 
-function summarizeCases(
-  cases: EvalCaseResult[],
-  totalDurationMs: number,
-  model: string,
-  prices: Record<string, ModelPrice>,
-): EvalSummary {
+function roundCost(cost: number | null): number | null {
+  return cost === null ? null : Math.round(cost * 1_000_000) / 1_000_000;
+}
+
+function roundedCaseResult(result: EvalCaseResult): EvalCaseResult {
+  return { ...result, estimatedCostUsd: roundCost(result.estimatedCostUsd) };
+}
+
+function summarizeCases(cases: EvalCaseResult[], totalDurationMs: number): EvalSummary {
   const total = cases.length;
   let passed = 0;
   let failed = 0;
@@ -467,7 +520,10 @@ function summarizeCases(
   let journalCacheHits = 0;
   const liveUsage: Usage = { input_tokens: 0, output_tokens: 0 };
 
+  let estimatedCostUsd: number | null = 0;
   for (const c of cases) {
+    if (c.estimatedCostUsd === null) estimatedCostUsd = null;
+    else if (estimatedCostUsd !== null) estimatedCostUsd += c.estimatedCostUsd;
     if (c.status === 'pass') passed++;
     else if (c.status === 'fail') failed++;
     else errored++;
@@ -478,7 +534,6 @@ function summarizeCases(
   }
 
   const totalIn = totalInput(liveUsage);
-  const estimatedCostUsd = estimateCostUsd(liveUsage, model, prices);
   return {
     total,
     passed,
@@ -495,7 +550,7 @@ function summarizeCases(
       cacheWrite: liveUsage.cache_creation_input_tokens ?? 0,
       total: totalIn + liveUsage.output_tokens,
     },
-    estimatedCostUsd,
+    estimatedCostUsd: roundCost(estimatedCostUsd),
     agentCalls,
     journalCacheHits,
     journalCacheHitRatio: agentCalls === 0 ? null : journalCacheHits / agentCalls,
@@ -582,12 +637,17 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalRecord> {
     while (nextIdx < cases.length) {
       const i = nextIdx++;
       const c = cases[i]!;
+      const args = c.args ?? null;
+      const argsHash = createHash('sha256').update(canonicalJSON({ args })).digest('hex');
+      const expectationHash = createHash('sha256')
+        .update(canonicalJSON({ expect: c.expect, expected: c.expected }))
+        .digest('hex');
       const caseStart = Date.now();
       const sourceRunId = sourceCaseRunIds.get(c.id);
       const handle = run({
         ...(opts.script !== undefined ? { script: opts.script } : {}),
         ...(opts.scriptPath !== undefined ? { scriptPath: path.resolve(cwd, opts.scriptPath) } : {}),
-        ...(c.args !== undefined ? { args: c.args } : {}),
+        args,
         ...(sourceRunId !== undefined
           ? {
               replayFrom: {
@@ -615,7 +675,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalRecord> {
         runError = errorText(err);
       }
       const durationMs = Date.now() - caseStart;
-      const metrics = await collectRunMetrics(handle.runDir);
+      const metrics = await collectRunMetrics(handle.runDir, prices);
       workflowName ??= metrics.workflowName;
 
       let grade: EvalGradeResult;
@@ -661,6 +721,8 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalRecord> {
       const status: 'pass' | 'fail' | 'error' = isErrorStatus ? 'error' : grade.pass ? 'pass' : 'fail';
       const caseResult: EvalCaseResult = {
         id: c.id,
+        argsHash,
+        expectationHash,
         runId: handle.runId,
         status,
         pass: status === 'pass',
@@ -671,13 +733,13 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalRecord> {
         failedAgents: metrics.failedAgents,
         usage: metrics.usage,
         liveUsage: metrics.liveUsage,
-        estimatedCostUsd: estimateCostUsd(metrics.liveUsage, model, prices),
+        estimatedCostUsd: metrics.estimatedCostUsd,
         agentCalls: metrics.agentCalls,
         journalCacheHits: metrics.journalCacheHits,
         promptCacheRatio: metrics.promptCacheRatio,
       };
       results[i] = caseResult;
-      opts.onCaseComplete?.(caseResult, i, cases.length);
+      opts.onCaseComplete?.(roundedCaseResult(caseResult), i, cases.length);
     }
   };
 
@@ -692,12 +754,12 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalRecord> {
     ...(workflowName !== undefined ? { workflowName } : {}),
     ...(opts.casesPath !== undefined ? { casesPath: path.resolve(cwd, opts.casesPath) } : {}),
     ...(opts.graderPath !== undefined ? { graderPath: path.resolve(cwd, opts.graderPath) } : {}),
-    model,
+    model: effectiveModel(runnerName, model) ?? '(runner default)',
     runner: runnerName,
     ...(opts.fromEvalId !== undefined ? { fromEvalId: opts.fromEvalId } : {}),
     ...(opts.fromNode !== undefined ? { fromNode: opts.fromNode } : {}),
-    summary: summarizeCases(results, totalDurationMs, model, prices),
-    cases: results,
+    summary: summarizeCases(results, totalDurationMs),
+    cases: results.map(roundedCaseResult),
   };
 
   const evalDir = path.join(evalsDirFor(stateDir), evalId);
@@ -723,7 +785,7 @@ async function workflowRunAsEvalRecord(
   if (!existsSync(runDir)) throw new Error(`no eval or workflow run "${runId}" found under ${stateDir}`);
   const [outcome, metrics, runMeta] = await Promise.all([
     readOutcome(runDir),
-    collectRunMetrics(runDir),
+    collectRunMetrics(runDir, prices),
     readFile(path.join(runDir, 'run.json'), 'utf8')
       .then((s) => JSON.parse(s) as { model?: string; runner?: string })
       .catch(() => ({ model: undefined, runner: undefined })),
@@ -750,7 +812,7 @@ async function workflowRunAsEvalRecord(
     failedAgents: metrics.failedAgents,
     usage: metrics.usage,
     liveUsage: metrics.liveUsage,
-    estimatedCostUsd: estimateCostUsd(metrics.liveUsage, model, prices),
+    estimatedCostUsd: metrics.estimatedCostUsd,
     agentCalls: metrics.agentCalls,
     journalCacheHits: metrics.journalCacheHits,
     promptCacheRatio: metrics.promptCacheRatio,
@@ -761,8 +823,8 @@ async function workflowRunAsEvalRecord(
     createdAt: '',
     model,
     runner,
-    summary: summarizeCases([caseRes], metrics.durationMs, model, prices),
-    cases: [caseRes],
+    summary: summarizeCases([caseRes], metrics.durationMs),
+    cases: [roundedCaseResult(caseRes)],
   };
 }
 
@@ -772,6 +834,7 @@ export function diffEvalRecords(a: EvalRecord, b: EvalRecord, kind: 'eval' | 'ru
   const mapB = new Map(b.cases.map((c) => [c.id, c]));
   const allIds = [...new Set([...a.cases.map((c) => c.id), ...b.cases.map((c) => c.id)])];
 
+  const changed: CaseStatusDiff[] = [];
   const fixed: CaseStatusDiff[] = [];
   const regressions: CaseStatusDiff[] = [];
   const stillFailing: CaseStatusDiff[] = [];
@@ -812,7 +875,15 @@ export function diffEvalRecords(a: EvalRecord, b: EvalRecord, kind: 'eval' | 'ru
       beforeRunId: ca.runId,
       afterRunId: cb.runId,
     };
-    if (!ca.pass && cb.pass) fixed.push(item);
+    if (
+      ca.argsHash &&
+      cb.argsHash &&
+      ca.expectationHash &&
+      cb.expectationHash &&
+      (ca.argsHash !== cb.argsHash || ca.expectationHash !== cb.expectationHash)
+    ) {
+      changed.push(item);
+    } else if (!ca.pass && cb.pass) fixed.push(item);
     else if (ca.pass && !cb.pass) regressions.push(item);
     else if (!ca.pass && !cb.pass) stillFailing.push(item);
     else stillPassing++;
@@ -841,7 +912,7 @@ export function diffEvalRecords(a: EvalRecord, b: EvalRecord, kind: 'eval' | 'ru
       passedDelta: b.summary.passed - a.summary.passed,
       passRateDelta: b.summary.passRate - a.summary.passRate,
     },
-    cases: { fixed, regressions, stillFailing, stillPassing, added, removed },
+    cases: { changed, fixed, regressions, stillFailing, stillPassing, added, removed },
     tokens: {
       inputA,
       inputB,
@@ -944,6 +1015,12 @@ export function formatEvalSummary(record: EvalRecord): string {
   return `${lines.join('\n')}\n`;
 }
 
+function failureDetails(c: CaseStatusDiff): string {
+  const reason = c.afterReason ? ` (${c.afterReason})` : '';
+  const hint = c.afterRunId ? ` · inspect: \`maestro inspect ${c.afterRunId} --compact\`` : '';
+  return reason + hint;
+}
+
 /** Formats an `EvalDiffReport` side-by-side summary as crisp Markdown. */
 export function formatEvalDiff(diff: EvalDiffReport): string {
   const n = (v: number) => v.toLocaleString('en-US');
@@ -963,8 +1040,16 @@ export function formatEvalDiff(diff: EvalDiffReport): string {
 
   lines.push(
     '',
-    `## Case Status Changes (${diff.cases.fixed.length} fixed, ${diff.cases.regressions.length} regressions, ${diff.cases.stillFailing.length} still failing, ${diff.cases.stillPassing} unchanged passing)`,
+    `## Case Status Changes (${diff.cases.fixed.length} fixed, ${diff.cases.regressions.length} regressions, ${diff.cases.changed.length} changed, ${diff.cases.stillFailing.length} still failing, ${diff.cases.stillPassing} unchanged passing)`,
   );
+  if (diff.cases.changed.length > 0) {
+    lines.push('', `### Changed Cases (${diff.cases.changed.length})`);
+    for (const c of diff.cases.changed) {
+      lines.push(
+        `- \`${c.id}\`: ${c.beforeStatus} → ${c.afterStatus}${c.afterStatus === 'pass' ? '' : failureDetails(c)}`,
+      );
+    }
+  }
   if (diff.cases.fixed.length > 0) {
     lines.push('', `### Fixed (${diff.cases.fixed.length})`);
     for (const c of diff.cases.fixed) {
@@ -976,10 +1061,7 @@ export function formatEvalDiff(diff: EvalDiffReport): string {
   if (diff.cases.regressions.length > 0) {
     lines.push('', `### Regressions (${diff.cases.regressions.length})`);
     for (const c of diff.cases.regressions) {
-      const inspectHint = c.afterRunId ? ` · inspect: \`maestro inspect ${c.afterRunId} --compact\`` : '';
-      lines.push(
-        `- ✗ \`${c.id}\`: pass → ${c.afterStatus}${c.afterReason ? ` (${c.afterReason})` : ''}${inspectHint}`,
-      );
+      lines.push(`- ✗ \`${c.id}\`: pass → ${c.afterStatus}${failureDetails(c)}`);
     }
   }
   if (diff.cases.stillFailing.length > 0) {

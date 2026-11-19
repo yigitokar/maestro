@@ -94,7 +94,7 @@ export function buildTimeline(rows: Entry[], events: EventLogLine[]): TimelineNo
 
 /**
  * Resolves a `--from <node>` selector against a run's execution timeline.
- * Resolution order: `phase:<title>`, exact `label`, `#<index>` / `<index>`, key prefix.
+ * Resolution order: `phase:<title>`, `#<index>`, unique label, bare index, unique key prefix.
  */
 export function resolveReplayTarget(timeline: TimelineNode[], selector: string): TimelineNode | undefined {
   const trimmed = selector.trim();
@@ -109,16 +109,26 @@ export function resolveReplayTarget(timeline: TimelineNode[], selector: string):
     return timeline.find((n) => n.phase?.toLowerCase() === lower);
   }
 
-  const byLabel = timeline.find((n) => n.label === trimmed);
+  function uniqueMatch(matches: TimelineNode[]): TimelineNode | undefined {
+    if (matches.length > 1) {
+      const indices = matches.map((node) => `#${node.id}`).join(', ');
+      throw new Error(`replay: node "${trimmed}" is ambiguous. Pass one of ${indices} with --from.`);
+    }
+    return matches[0];
+  }
+
+  if (/^#\d+$/.test(trimmed)) return timeline.find((n) => n.id === Number(trimmed.slice(1)));
+
+  const byLabel = uniqueMatch(timeline.filter((n) => n.label === trimmed));
   if (byLabel) return byLabel;
 
-  if (/^#?\d+$/.test(trimmed)) {
-    const idx = Number(trimmed.startsWith('#') ? trimmed.slice(1) : trimmed);
+  if (/^\d+$/.test(trimmed)) {
+    const idx = Number(trimmed);
     const byId = timeline.find((n) => n.id === idx);
     if (byId) return byId;
   }
 
-  return timeline.find((n) => n.key.startsWith(trimmed));
+  return uniqueMatch(timeline.filter((n) => n.key.startsWith(trimmed)));
 }
 
 function describeAvailableNodes(timeline: TimelineNode[]): string {
@@ -213,10 +223,12 @@ export async function writeReplaySeed(targetRunDir: string, seed: ReplaySeed): P
   }
 
   if (seed.seededRows.length === 0) return;
-  const content = `${seed.seededRows.map((row) => JSON.stringify(row)).join('\n')}\n`;
+  const lines = seed.seededRows.map((row) =>
+    JSON.stringify({ ...row, cachedFrom: row.cachedFrom ?? seed.sourceRunId }),
+  );
   const fh = await open(path.join(targetRunDir, 'journal.jsonl'), 'w');
   try {
-    await fh.writeFile(content, 'utf8');
+    await fh.writeFile(`${lines.join('\n')}\n`, 'utf8');
     await fh.sync();
   } finally {
     await fh.close();

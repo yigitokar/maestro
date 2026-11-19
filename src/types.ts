@@ -75,6 +75,8 @@ export interface Entry {
   hash: string;
   n: number;
   key: string;
+  /** For a seeded row, the run that incurred its token usage. */
+  cachedFrom?: string;
   label?: string;
   phase?: string;
   /** Inline result, or `{ blob: key }` when `blob` is true (result > 64 KB lives in blobs/<key>.json). */
@@ -87,6 +89,15 @@ export interface Entry {
   raw?: string;
   /** Error message / reason for a null or skipped row, for audit. */
   error?: string;
+  /** Full workflow call captured for a failed/skipped agent. Older journals have only the event preview. */
+  failureInput?: {
+    prompt: string;
+    options: AgentOpts;
+    model: string;
+    tools: string[];
+  };
+  /** Large failure inputs live in blobs/<key>.input.json. */
+  failureInputBlob?: true;
   /** Dirty worktree left behind by a writer (spec 3.6), for audit and `maestro gc`. */
   worktree?: { path: string; diffStat: string };
   /** Audit-only trace of the live run; `{ blob: key }` when `traceBlob` (over 64 KB, blobs/<key>.trace.json). */

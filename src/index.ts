@@ -78,6 +78,7 @@ export {
   makeKey,
   Occurrences,
   readEntries,
+  readFailureInput,
   readResultBlob,
   readTrace,
   resolveBlobFile,

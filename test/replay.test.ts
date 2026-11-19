@@ -5,6 +5,8 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { main } from '../src/cli.js';
 import { inspectRun } from '../src/inspect.js';
+import { readEntries } from '../src/journal.js';
+import { resolveReplayTarget } from '../src/replay.js';
 import { FakeRunner } from '../src/testing/fake-runner.js';
 import { LIMITS, type WorkflowEvent } from '../src/types.js';
 import { replay, run } from '../src/workflow.js';
@@ -31,6 +33,13 @@ const report = await agent('summarize: ' + issues, { label: 'synth', phase: 'Syn
 return { docs, issues, report };`;
 
 describe('time-travel replay', () => {
+  it('reserves #digits for indices while bare digits prefer labels', () => {
+    const timeline = ['first', '#0', '0', '#9'].map((label, id) => ({ id, key: label, pos: id, label }));
+    expect(resolveReplayTarget(timeline, '#0')?.id).toBe(0);
+    expect(resolveReplayTarget(timeline, '0')?.id).toBe(2);
+    expect(resolveReplayTarget(timeline, '#9')).toBeUndefined();
+  });
+
   it('forks into a new runId, serves upstream nodes from cache, re-runs target & downstream live, and leaves source untouched', async () => {
     const cwd = await tmp();
     const r1 = new FakeRunner((req) => ({ result: `v1:${req.prompt}` }));
@@ -132,6 +141,38 @@ describe('time-travel replay', () => {
     expect(out3.report).toBe('v3:concise summary: v1:analyze: v1:read repo');
   });
 
+  it('preserves the run charged for each row through resume and another replay', async () => {
+    const cwd = await tmp();
+    const runner = new FakeRunner();
+    const source = run({ cwd, runner, script: THREE_PHASE_SCRIPT });
+    await source.promise;
+    const fork = replay({ cwd, runner, fromRunId: source.runId, from: 'analyze' });
+    await fork.promise;
+    await run({ cwd, runner, resumeFromRunId: fork.runId }).promise;
+    expect(runner.liveCalls).toBe(5);
+    const child = replay({ cwd, runner, fromRunId: fork.runId, from: '2' });
+    await child.promise;
+    const rows = await readEntries(child.runDir);
+    expect(rows.map((row) => row.cachedFrom)).toEqual([source.runId, fork.runId, undefined]);
+    expect(rows.map((row) => row.usage.input_tokens)).toEqual([50, 50, 50]);
+  });
+
+  it.each(['label', 'key prefix'])(
+    'rejects an ambiguous %s before creating the replay directory',
+    async (kind) => {
+      const cwd = await tmp();
+      const runner = new FakeRunner();
+      const script = `export const meta = { name: 'workers', description: 'd' };
+for (let i = 0; i < 3; i++) await agent('work', { label: 'worker' });`;
+      const source = run({ cwd, runner, script });
+      await source.promise;
+      const from = kind === 'label' ? 'worker' : (await readEntries(source.runDir))[0]!.hash;
+      const fork = replay({ cwd, runner, fromRunId: source.runId, from });
+      await expect(fork.promise).rejects.toThrow(/ambiguous.*pass one of.*#0.*#1.*#2/i);
+      expect(existsSync(fork.runDir)).toBe(false);
+    },
+  );
+
   it('copies >64 KB upstream result blobs cleanly into the forked run', async () => {
     const cwd = await tmp();
     const bigPayload = 'x'.repeat(LIMITS.blobThresholdBytes + 2048);
@@ -192,6 +233,9 @@ return { len: big.text.length, end };`;
     expect(r2.code, r2.stderr).toBe(0);
     expect(r2.stderr).toContain(`from ${sourceRunId} --from synth`);
     expect(r2.stderr).toContain('seeded 2 cached agents, invalidated 1');
+    const listing = await runCli(['runs']);
+    expect(listing.stdout).toMatch(/3 agents \(3 ok\) +50 in, 100 out/);
+    expect(listing.stdout).toMatch(/3 agents \(3 ok\) +150 in, 300 out/);
     const parsed = JSON.parse(r2.stdout);
     expect(parsed.report).toContain('refined:');
   });

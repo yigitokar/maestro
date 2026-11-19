@@ -37,15 +37,15 @@ export const USAGE = `usage:
   maestro run --resume <runId> [options]     resume with the stored script.js and args.json
   maestro replay <runId> [--from <node>] [script.js] [options]
                                              fork upstream cached agents into a new runId and re-execute live from <node>
-                                             (<node>: label, #index, key prefix, or phase:<title>; original run stays untouched)
+                                             (<node>: unique label, #index, unique key prefix, or phase:<title>; original run stays untouched)
   maestro runs [--cwd <dir>] [--state-dir <dir>] [--limit <n>]
                                              list runs newest-first with status, agents and token usage (alias: ls)
   maestro gc [--delete] [--force] [--cwd <dir>]
-  maestro show <runId> [label-or-live-id] [--compact] [--json] [--cwd <dir>] [--state-dir <dir>]
+  maestro show <runId> [label-or-live-id] [--compact] [--full] [--json] [--cwd <dir>] [--state-dir <dir>]
                                              list completed agents and latest recorded live activity; with a label (or key prefix), print
                                              that agent's trace: tool calls, final text, result, error
-  maestro inspect <runId> [label-or-key] [--compact] [--json] [--cwd <dir>] [--state-dir <dir>]
-                                             agent-friendly diagnostic summary: failed nodes, exact inputs/outputs, and relevant upstream state
+  maestro inspect <runId> [label-or-key] [--compact] [--full] [--json] [--cwd <dir>] [--state-dir <dir>]
+                                             agent-friendly diagnostic summary: failed nodes, input/output previews (--full for complete recorded fields), and relevant upstream state
   maestro eval <script.js> --cases <file> [--grader <file.js>] [--name <evalId>] [--from-eval <evalId>] [--from <node>]
                            [--only <ids>] [--limit <n>] [--case-concurrency <n>] [--json] [run options]
                                              run a workflow across an eval dataset (JSON/JSONL) and save results under <state-dir>/evals/
@@ -125,6 +125,7 @@ const BOOL_FLAGS = new Set([
   'no-open',
   'widget',
   'compact',
+  'full',
   'json',
   'fail-on-regression',
 ]);
@@ -652,7 +653,7 @@ async function runsCommand(p: Parsed, io: CliIO): Promise<number> {
       let nullCount = 0;
       let skippedCount = 0;
       for (const r of rows) {
-        addUsage(usage, r.usage);
+        if (r.cachedFrom === undefined) addUsage(usage, r.usage);
         if (r.status === 'ok') okCount++;
         else if (r.status === 'null') nullCount++;
         else if (r.status === 'skipped') skippedCount++;
@@ -714,7 +715,7 @@ function formatRunDuration(ms: number): string {
 }
 
 async function showCommand(p: Parsed, io: CliIO): Promise<number> {
-  if (p.flags.has('compact') || p.flags.has('json')) return inspectCommand(p, io);
+  if (p.flags.has('compact') || p.flags.has('full') || p.flags.has('json')) return inspectCommand(p, io);
   const [runId, label, ...extra] = p.positionals;
   if (runId === undefined) throw new UsageError('show needs a runId');
   if (extra.length > 0) throw new UsageError(`unexpected arguments: ${extra.join(' ')}`);
@@ -780,6 +781,7 @@ async function inspectCommand(p: Parsed, io: CliIO): Promise<number> {
   const runDir = path.join(stateDir, 'runs', runId);
   const report = await inspectRun(runDir, runId, {
     compact: p.flags.has('compact'),
+    full: p.flags.has('full'),
     ...(selector !== undefined ? { selector } : {}),
   });
   if (p.flags.has('json')) {

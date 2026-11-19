@@ -1,11 +1,12 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { appendFile, mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { main } from '../src/cli.js';
 import { formatInspectMarkdown, inspectRun } from '../src/inspect.js';
+import { readEntries, readFailureInput, resolveBlobFile } from '../src/journal.js';
 import { FakeRunner } from '../src/testing/fake-runner.js';
-import { run } from '../src/workflow.js';
+import { replay, run } from '../src/workflow.js';
 
 const dirs: string[] = [];
 afterEach(async () => {
@@ -19,7 +20,7 @@ async function tmp(): Promise<string> {
 }
 
 describe('inspectRun & formatInspectMarkdown', () => {
-  it('distills failed nodes with exact inputs, outputs, failed tools, and referenced upstream state in compact mode', async () => {
+  it('distills failed nodes with recorded inputs, outputs, failed tools, and referenced upstream state in compact mode', async () => {
     const cwd = await tmp();
     const runner = new FakeRunner((req) => {
       if (req.prompt.includes('ingest-alpha')) {
@@ -71,7 +72,8 @@ return patched;`;
     const handle = run({ cwd, runner, script, args: { repo: 'acme/api' }, runId: 'run-fail-1' });
     await expect(handle.promise).rejects.toThrow('patch:auth failed');
 
-    const report = await inspectRun(handle.runDir, handle.runId, { compact: true });
+    const report = await inspectRun(handle.runDir, handle.runId, { compact: true, maxUpstream: 1 });
+    expect(report.upstream.map((u) => u.label)).toEqual(['ingest:alpha']);
     expect(report.status).toBe('failed');
     expect(report.degraded).toBe(false);
     expect(report.outcome).toEqual({ ok: false, error: 'patch:auth failed' });
@@ -100,6 +102,7 @@ return patched;`;
     expect(md).toContain('# Run run-fail-1 (audit-and-patch) — failed');
     expect(md).toContain('## Failed Nodes (1)');
     expect(md).toContain('`patch:auth`');
+    expect(md).toContain('--from patch:auth');
     expect(md).toContain('schema parse failed twice');
     expect(md).toContain('`ingest:alpha`');
     expect(md).toContain('referenced in failing prompt');
@@ -163,10 +166,201 @@ return { a, b };`;
     expect(r2.stats.liveCalls).toBe(1);
   });
 
+  it('counts only invoked keys after an edit and prefers their rows for selectors', async () => {
+    const cwd = await tmp();
+    const script = `export const meta = { name: 'edit', description: 'd' };
+await agent('retired', { label: 'retired' });
+await agent('cached', { label: 'cached' });
+return agent('v1', { label: 'classify' });`;
+    const runner = new FakeRunner((req) => ({ result: req.prompt === 'v1' ? null : 'ok' }));
+    const first = run({ cwd, runner, script });
+    await first.promise;
+    const old = (await readEntries(first.runDir))[2]!;
+    const edited = script.replace("await agent('retired', { label: 'retired' });", '').replace('v1', 'v2');
+    await run({ cwd, runner, resumeFromRunId: first.runId, script: edited }).promise;
+    const inspect = (selector?: string) => inspectRun(first.runDir, first.runId, { compact: true, selector });
+    const report = await inspect();
+    expect(report.degraded).toBe(false);
+    expect(report.nodes).toHaveLength(0);
+    expect(report.stats).toMatchObject({ totalAgents: 2, ok: 2, null: 0, journalCacheHits: 1 });
+    expect(report.overview?.map((r) => r.label)).toEqual(['cached', 'classify']);
+    const classify = await inspect('classify');
+    expect(classify.nodes.map((r) => r.status)).toEqual(['ok']);
+    expect(classify.upstream.map((r) => r.label)).toEqual(['cached']);
+    expect((await inspect('#0')).nodes[0]?.label).toBe('cached');
+    expect((await inspect(old.key)).nodes[0]?.status).toBe('null');
+    await rm(path.join(first.runDir, 'events.jsonl'));
+    expect((await inspect()).stats.totalAgents).toBe(4);
+  });
+
+  it('persists long failure inputs and bounds prompt, schema, result and raw text until full is requested', async () => {
+    const cwd = await tmp();
+    const payload = `head${'x'.repeat(70000)}tail`;
+    const schema = { type: 'object', properties: {}, description: `${payload}${'`'.repeat(5)}` };
+    const script = `export const meta = { name: 'long', description: 'd' };
+await agent('seed', { label: 'seed' });
+return agent(args.payload, { label: 'broken', schema: args.schema });`;
+    const runner = new FakeRunner((req) =>
+      req.prompt === 'seed' ? { result: payload } : { result: null, raw: payload },
+    );
+    const h = run({ cwd, runner, script, args: { payload, schema }, model: 'test-model' });
+    await h.promise;
+    const [ok, failed] = await readEntries(h.runDir);
+    expect(ok).not.toHaveProperty('failureInput');
+    expect(failed).toHaveProperty('failureInputBlob', true);
+    expect(await readFailureInput(h.runDir, failed!)).toEqual({
+      prompt: payload,
+      options: { label: 'broken', schema },
+      model: 'test-model',
+      tools: runner.calls[1]!.tools.map((t) => t.name),
+    });
+    const inspect = (full: boolean) => inspectRun(h.runDir, h.runId, { full, compact: true });
+    const report = await inspect(false);
+    const node = report.nodes[0]!;
+    expect(node.input?.promptLength).toBe(payload.length);
+    for (const field of [
+      node.input?.prompt,
+      node.raw,
+      node.input?.schema,
+      report.upstream[0]?.resultPreview,
+    ]) {
+      expect(field).toContain('head');
+      expect(field).toContain('tail');
+      expect(field).toContain('--full');
+    }
+    expect(node.input?.prompt).toContain(String(payload.length - 1200));
+    const full = await inspect(true);
+    expect(full.nodes[0]?.input).toMatchObject({
+      prompt: payload,
+      schema: JSON.stringify(schema),
+      model: 'test-model',
+    });
+    expect(formatInspectMarkdown(full)).toContain(
+      ['``````json', JSON.stringify(schema), '``````'].join('\n'),
+    );
+    expect(formatInspectMarkdown(full)).not.toContain('schema=`');
+    expect(full.nodes[0]?.raw).toBe(payload);
+    expect(full.upstream[0]?.resultPreview).toBe(JSON.stringify(payload));
+    await rm(resolveBlobFile(path.join(h.runDir, 'blobs'), failed!.key, '.input.json'));
+    const fallback = await inspect(true);
+    expect(fallback.nodes[0]?.input).toMatchObject({
+      source: 'event-preview',
+      promptTruncated: true,
+      prompt: payload.slice(0, 4000),
+    });
+    expect(formatInspectMarkdown(fallback)).toContain('schema present (definition unavailable)');
+    expect(formatInspectMarkdown(fallback)).toContain('total length unknown, event preview');
+  });
+
+  it('uses an index in replay hints when successful siblings share the failed label', async () => {
+    const cwd = await tmp();
+    const runner = new FakeRunner((req) => ({ result: req.prompt === 'bad' ? null : 'ok' }));
+    const script = `export const meta = { name: 'labels', description: 'd' };
+await agent('good', { label: 'worker' });
+return agent('bad', { label: 'worker' });`;
+    const h = run({ cwd, runner, script });
+    await h.promise;
+    expect(formatInspectMarkdown(await inspectRun(h.runDir, h.runId, { compact: true }))).toContain(
+      "--from '#1'",
+    );
+  });
+
+  it('reserves explicit indices when a label looks like an index', async () => {
+    const cwd = await tmp();
+    const script = `export const meta = { name: 'labels', description: 'd' };
+await agent('first', { label: 'first' });
+return agent('second', { label: '#0' });`;
+    const h = run({ cwd, runner: new FakeRunner(), script });
+    await h.promise;
+    expect((await inspectRun(h.runDir, h.runId, { selector: '#0' })).nodes[0]?.index).toBe(0);
+  });
+
+  it('excludes an unfinished retry from completed counts and failed nodes', async () => {
+    const cwd = await tmp();
+    const script = `export const meta = { name: 'retry', description: 'd' }; return agent('fail');`;
+    const h = run({ cwd, script, runner: new FakeRunner(() => ({ result: null })) });
+    await h.promise;
+    const [row] = await readEntries(h.runDir);
+    await rm(path.join(h.runDir, 'outcome.json'));
+    const events = [
+      { t: Date.now(), type: 'run_start', runId: h.runId },
+      { t: Date.now(), type: 'agent_start', id: 0, key: row!.key },
+    ];
+    await appendFile(
+      path.join(h.runDir, 'events.jsonl'),
+      events.map((e) => `${JSON.stringify(e)}\n`).join(''),
+    );
+    const report = await inspectRun(h.runDir, h.runId, { compact: true });
+    expect(report.stats).toMatchObject({ ok: 0, null: 0, skipped: 0 });
+    expect(report.nodes).toEqual([]);
+  });
+
+  it('bounds the outcome result and preserves the full structured value on request', async () => {
+    const cwd = await tmp();
+    const args = { data: 'x'.repeat(70000) };
+    const h = run({
+      cwd,
+      args,
+      script: "export const meta = { name: 'outcome', description: 'd' }; return args;",
+    });
+    await h.promise;
+    const report = await inspectRun(h.runDir, h.runId, { compact: true });
+    expect(JSON.stringify(report)).not.toContain('x'.repeat(1500));
+    expect(report.outcome).toMatchObject({ ok: true, resultTruncated: true });
+    expect((await inspectRun(h.runDir, h.runId, { full: true })).outcome).toEqual({ ok: true, result: args });
+  });
+
+  it('previews both ends of workflow args and includes all args with full', async () => {
+    const h = run({
+      cwd: await tmp(),
+      runner: new FakeRunner(),
+      args: { value: `${'x'.repeat(5000)}tail` },
+      script: "export const meta = { name: 'args', description: 'd' }; return 1;",
+    });
+    await h.promise;
+    const raw = (await readFile(path.join(h.runDir, 'args.json'), 'utf8')).trim();
+    for (const compact of [true, false]) {
+      const report = await inspectRun(h.runDir, h.runId, { compact });
+      const limit = compact ? 500 : 1500;
+      expect(report.argsPreview).toBe(
+        `${raw.slice(0, limit / 2)}… [${raw.length - limit} characters omitted; --full shows them] …${raw.slice(-limit / 2)}`,
+      );
+      expect(report.argsTruncated).toBe(true);
+      const full = await inspectRun(h.runDir, h.runId, { compact, full: true });
+      expect(full.argsPreview).toBe(raw);
+      expect(full.argsTruncated).toBeFalsy();
+    }
+  });
+
+  it('keeps both ends of prompt previews well formed', async () => {
+    const cwd = await tmp();
+    const script = `export const meta = { name: 'unicode', description: 'd' }; return agent('a😀middle😀z');`;
+    const h = run({ cwd, script, runner: new FakeRunner(() => ({ result: null })) });
+    await h.promise;
+    const report = await inspectRun(h.runDir, h.runId, { maxFieldChars: 4 });
+    expect(report.nodes[0]?.input?.prompt).toMatch(/^a… .* …z$/u);
+  });
+
+  it('charges a replay only for its live calls', async () => {
+    const cwd = await tmp();
+    const script = `export const meta = { name: 'tokens', description: 'd' };
+await agent('seed', { label: 'seed' });
+return agent('target', { label: 'target' });`;
+    const runner = new FakeRunner((req) => ({ cacheReadTokensPerTurn: req.prompt === 'seed' ? 500 : 50 }));
+    const source = run({ cwd, runner, script });
+    await source.promise;
+    const fork = replay({ cwd, runner, fromRunId: source.runId, from: 'target' });
+    await fork.promise;
+    const report = await inspectRun(fork.runDir, fork.runId);
+    expect(report.stats).toMatchObject({ inputTokens: 100, outputTokens: 100, promptCacheRatio: 0.5 });
+  });
+
   it('supports CLI `maestro inspect --compact`, `--json`, label selector, and `maestro show --compact`', async () => {
     const cwd = await tmp();
     const runner = new FakeRunner((req) =>
-      req.prompt === 'bad' ? { status: 'null', result: null, error: 'boom' } : { result: 'good' },
+      req.prompt === 'bad'
+        ? { status: 'null', result: null, error: 'boom', raw: 'z'.repeat(5000) }
+        : { result: 'good' },
     );
     const script = `export const meta = { name: 'cli-insp', description: 'd' };
 await agent('good', { label: 'step:good' });
@@ -205,5 +399,11 @@ return 'done';`;
     const viaShow = await runCli(['show', 'cli-run', '--compact']);
     expect(viaShow.code, viaShow.stderr).toBe(0);
     expect(viaShow.stdout).toBe(mdRes.stdout);
+    expect((await runCli(['show', 'cli-run', '--full'])).stdout).toContain('z'.repeat(5000));
+    for (const command of ['show', 'inspect']) {
+      const full = await runCli([command, 'cli-run', '--compact', '--full']);
+      expect(full.code, full.stderr).toBe(0);
+      expect(full.stdout).toContain('z'.repeat(5000));
+    }
   });
 });

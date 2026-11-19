@@ -13,8 +13,8 @@ Every run gets an id such as `20261025-150301-a1b2c3` and a directory `.maestro/
 | `script.js` | The script as it ran. |
 | `args.json` | The arguments. |
 | `run.json` | The run's model and runner. |
-| `journal.jsonl` | One line per `agent()` call: its key, status, result, token usage, trace and live message audit. |
-| `blobs/` | Results larger than 64 KB, one file each. |
+| `journal.jsonl` | One line per `agent()` call: its key, status, result, token usage, trace and live message audit. Failed and skipped calls also store `failureInput` with the full prompt, options, resolved model and tool names. |
+| `blobs/` | Results, traces and failure inputs larger than 64 KB, one file each. A row with `failureInputBlob: true` stores its input in `blobs/<key>.input.json`. |
 | `events.jsonl` | Every event with a wall-clock time. Used only for display. |
 | `outcome.json` | The final result or error, written when the run ends. |
 
@@ -48,7 +48,7 @@ Answers are matched by content, so a script must be deterministic. See [Writing 
 maestro replay <runId> --from <node> [edited.js]
 ```
 
-Unlike `--resume` (which mutates `<runId>` in place and reuses any unchanged `ok` call), `replay` creates a **new** `runId` seeded only with the upstream `ok` cache entries that ran before `<node>` (selected by label, `#index`, key prefix, or `phase:<title>`). `<node>` and everything after it execute live even when their prompts have not changed, and the original run stays untouched so both runs can be inspected or diffed side by side.
+Unlike `--resume` (which mutates `<runId>` in place and reuses any unchanged `ok` call), `replay` creates a **new** `runId` seeded only with the upstream `ok` cache entries that ran before `<node>` (selected by unique label, unique key prefix, `#index` or `index`, or `phase:<title>` for the first node in that phase). `<node>` and everything after it execute live even when their prompts have not changed, and the original run stays untouched so both runs can be inspected or diffed side by side.
 
 ## Agent statuses
 
@@ -92,7 +92,7 @@ The MCP `WorkflowResult.liveAgents` and library `handle.liveAgents()` show queue
 maestro runs --limit 10
 ```
 
-Lists runs from newest to oldest with status, duration, agent counts and token usage.
+Lists runs from newest to oldest with status, duration, agent counts and token usage. A replay counts seeded agents, but their tokens are charged only to the run that originally executed them.
 
 ```bash
 maestro show <runId>
