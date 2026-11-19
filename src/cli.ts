@@ -37,7 +37,7 @@ export const USAGE = `usage:
   maestro run --resume <runId> [options]     resume with the stored script.js and args.json
   maestro replay <runId> [--from <node>] [script.js] [options]
                                              fork upstream cached agents into a new runId and re-execute live from <node>
-                                             (<node>: label, #index, key prefix, or phase:<title>; original run stays untouched)
+                                             (<node>: unique label, #index, unique key prefix, or phase:<title>; original run stays untouched)
   maestro runs [--cwd <dir>] [--state-dir <dir>] [--limit <n>]
                                              list runs newest-first with status, agents and token usage (alias: ls)
   maestro gc [--delete] [--force] [--cwd <dir>]
@@ -715,7 +715,7 @@ function formatRunDuration(ms: number): string {
 }
 
 async function showCommand(p: Parsed, io: CliIO): Promise<number> {
-  if (p.flags.has('compact') || p.flags.has('json')) return inspectCommand(p, io);
+  if (p.flags.has('compact') || p.flags.has('full') || p.flags.has('json')) return inspectCommand(p, io);
   const [runId, label, ...extra] = p.positionals;
   if (runId === undefined) throw new UsageError('show needs a runId');
   if (extra.length > 0) throw new UsageError(`unexpected arguments: ${extra.join(' ')}`);

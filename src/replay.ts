@@ -94,7 +94,7 @@ export function buildTimeline(rows: Entry[], events: EventLogLine[]): TimelineNo
 
 /**
  * Resolves a `--from <node>` selector against a run's execution timeline.
- * Resolution order: `phase:<title>`, exact `label`, `#<index>` / `<index>`, key prefix.
+ * Resolution order: `phase:<title>`, `#<index>`, unique label, bare index, unique key prefix.
  */
 export function resolveReplayTarget(timeline: TimelineNode[], selector: string): TimelineNode | undefined {
   const trimmed = selector.trim();
@@ -117,11 +117,13 @@ export function resolveReplayTarget(timeline: TimelineNode[], selector: string):
     return matches[0];
   }
 
+  if (/^#\d+$/.test(trimmed)) return timeline.find((n) => n.id === Number(trimmed.slice(1)));
+
   const byLabel = uniqueMatch(timeline.filter((n) => n.label === trimmed));
   if (byLabel) return byLabel;
 
-  if (/^#?\d+$/.test(trimmed)) {
-    const idx = Number(trimmed.startsWith('#') ? trimmed.slice(1) : trimmed);
+  if (/^\d+$/.test(trimmed)) {
+    const idx = Number(trimmed);
     const byId = timeline.find((n) => n.id === idx);
     if (byId) return byId;
   }

@@ -350,6 +350,9 @@ describe('maestro mcp', () => {
         WORKFLOW_STOP_TOOL_NAME,
       ].sort(),
     );
+    expect(tools.find((t) => t.name === WORKFLOW_REPLAY_TOOL_NAME)?.description).toMatch(
+      /unique label.*unique key prefix/,
+    );
     for (const t of tools) expect((t.inputSchema as any).additionalProperties, t.name).toBe(false);
     const skip = tools.find((t) => t.name === WORKFLOW_SKIP_TOOL_NAME)!;
     expect((skip.inputSchema as any).required).toEqual(['runId', 'agentId']);

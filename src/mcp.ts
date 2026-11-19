@@ -307,7 +307,7 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
         {
           name: WORKFLOW_REPLAY_TOOL_NAME,
           description:
-            'Time-travel replay: fork an earlier Workflow run into a new runId starting live execution from a specific node (`from`: label, #index, key prefix, or `phase:<title>`). All upstream `ok` nodes before `from` are served directly from cache (zero tokens) while the original run stays untouched for diffing. Pass an edited `script` or `scriptPath` to iterate on prompts/graph without re-running upstream LLM calls.',
+            'Time-travel replay: fork an earlier Workflow run into a new runId starting live execution from a specific node (`from`: unique label, #index, unique key prefix, or `phase:<title>`). All upstream `ok` nodes before `from` are served directly from cache (zero tokens) while the original run stays untouched for diffing. Pass an edited `script` or `scriptPath` to iterate on prompts/graph without re-running upstream LLM calls.',
           inputSchema: {
             type: 'object',
             properties: {
@@ -318,7 +318,7 @@ export function createMcpServer(options: McpServerOptions = {}): Server {
               from: {
                 type: ['string', 'null'],
                 description:
-                  'Node selector (label, #index, key prefix, or phase:<title>) to re-execute live from; omit/null to fork all cached ok nodes.',
+                  'Node selector (unique label, #index, unique key prefix, or phase:<title>) to re-execute live from; omit/null to fork all cached ok nodes.',
               },
               script: {
                 type: ['string', 'null'],

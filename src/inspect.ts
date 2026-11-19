@@ -8,6 +8,7 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { EventLogLine } from './event-log.js';
 import { readEntries, readFailureInput, readResultBlob, readTrace } from './journal.js';
+import { buildTimeline } from './replay.js';
 import type { Entry, EntryStatus, LiveAgentStatus, TraceToolCall, Usage } from './types.js';
 import { addUsage, cacheReadRatio, totalInput } from './usage.js';
 import { readEventLines } from './viz.js';
@@ -91,7 +92,8 @@ export interface InspectReport {
   model?: string;
   runner?: string;
   replayedFrom?: { runId: string; from?: string };
-  outcome?: PersistedOutcome;
+  outcome?: PersistedOutcome & { resultTruncated?: true };
+  firstFailureReplaySelector?: string;
   argsPreview?: string;
   argsTruncated?: boolean;
   stats: {
@@ -127,10 +129,13 @@ function truncateText(text: string, limit: number): { text: string; truncated: b
 function previewField(text: string, limit: number): { text: string; truncated: boolean } {
   if (text.length <= limit) return { text, truncated: false };
   const kept = Math.max(0, Math.floor(limit));
-  const head = Math.ceil(kept / 2);
-  const tail = text.slice(text.length - (kept - head));
+  let head = Math.ceil(kept / 2);
+  let tail = text.length - (kept - head);
+  // Move each cut inward when the preceding unit starts a surrogate pair.
+  if ((text.codePointAt(head - 1) ?? 0) > 0xffff) head--;
+  if ((text.codePointAt(tail - 1) ?? 0) > 0xffff) tail++;
   return {
-    text: `${text.slice(0, head)}… [${text.length - kept} characters omitted; --full shows them] …${tail}`,
+    text: `${text.slice(0, head)}… [${tail - head} characters omitted; --full shows them] …${text.slice(tail)}`,
     truncated: true,
   };
 }
@@ -185,6 +190,7 @@ function parseEventMetadata(events: EventLogLine[]) {
   const live = new Map<number, LiveAgentStatus>();
   let journalCacheHits = 0;
   let liveCalls = 0;
+  const endedIds = new Set<number>();
   const starts = new Map<string, Extract<EventLogLine, { type: 'agent_start' }>>();
   const cachedInLastAttempt = new Set<string>();
 
@@ -221,6 +227,7 @@ function parseEventMetadata(events: EventLogLine[]) {
     } else if (ev.type === 'agent_end') {
       live.delete(ev.id);
       if (inLastAttempt) {
+        endedIds.add(ev.id);
         if (ev.cached) {
           journalCacheHits++;
           cachedInLastAttempt.add(ev.key);
@@ -245,6 +252,7 @@ function parseEventMetadata(events: EventLogLine[]) {
     liveCalls,
     cachedInLastAttempt,
     starts,
+    endedIds,
   };
 }
 
@@ -277,10 +285,12 @@ function isReferencedInPrompts(candidate: Entry, resultText: string, targetPromp
 /** Matches a node selector (`label`, `#<index>`, or key prefix) against the latest rows. */
 export function selectRows(rows: Entry[], selector: string): Entry[] {
   const trimmed = selector.trim();
+  if (/^#\d+$/.test(trimmed)) return rows.filter((r) => r.index === Number(trimmed.slice(1)));
+
   const byLabel = rows.filter((r) => r.label === trimmed);
   if (byLabel.length > 0) return byLabel;
-  if (/^#?\d+$/.test(trimmed)) {
-    const idx = Number(trimmed.startsWith('#') ? trimmed.slice(1) : trimmed);
+  if (/^\d+$/.test(trimmed)) {
+    const idx = Number(trimmed);
     const byIdx = rows.filter((r) => r.index === idx);
     if (byIdx.length > 0) return byIdx;
   }
@@ -320,6 +330,7 @@ export async function inspectRun(
     evMeta.lastStartIdx < 0
       ? [...rowsByKey.values()]
       : [...evMeta.starts.values()].flatMap((start) => {
+          if (!evMeta.endedIds.has(start.id)) return [];
           const row = rowsByKey.get(start.key);
           return row ? [{ ...row, index: start.id, label: start.label, phase: start.phase }] : [];
         });
@@ -361,7 +372,13 @@ export async function inspectRun(
   if (opts.selector !== undefined) {
     targetRows = selectRows(latestRows, opts.selector);
     if (targetRows.length === 0 && evMeta.lastStartIdx >= 0) {
-      const historical = selectRows(rawRows, opts.selector);
+      const historical = selectRows(
+        rawRows.filter((row) => {
+          const start = evMeta.starts.get(row.key);
+          return !start || evMeta.endedIds.has(start.id);
+        }),
+        opts.selector,
+      );
       targetRows = [...new Map(historical.map((row) => [row.key, row])).values()];
     }
     if (targetRows.length === 0) {
@@ -479,9 +496,10 @@ export async function inspectRun(
     // Referenced nodes first (most relevant), then most recent preceding nodes; preserve execution order in output.
     const referenced = resolvedCandidates.filter((c) => c.referenced);
     const unreferenced = resolvedCandidates.filter((c) => !c.referenced);
+    const remaining = maxUpstream - referenced.length;
     const chosen = [
       ...referenced.slice(-maxUpstream),
-      ...unreferenced.slice(-Math.max(0, maxUpstream - referenced.length)),
+      ...(remaining > 0 ? unreferenced.slice(-remaining) : []),
     ].sort((a, b) => a.pos - b.pos);
 
     for (const c of chosen) {
@@ -524,7 +542,33 @@ export async function inspectRun(
         }))
       : undefined;
 
+  let firstFailureReplaySelector: string | undefined;
+  const failed = targetRows.find((row) => row.status !== 'ok');
+  if (failed) {
+    const timeline = buildTimeline(rawRows, events);
+    const node = timeline.find((n) => n.id === failed.index && n.key === failed.key);
+    if (node) {
+      const label = node.label;
+      const usableLabel =
+        label &&
+        label.trim() === label &&
+        !/^(?:phase:|#\d+$)/i.test(label) &&
+        timeline.filter((n) => n.label === label).length === 1;
+      firstFailureReplaySelector = usableLabel ? label : `#${node.id}`;
+    }
+  }
+
+  let reportOutcome: InspectReport['outcome'] = outcome;
+  if (outcome?.ok && !opts.full) {
+    const cut = previewField(
+      stringifyCompact(outcome.result),
+      Math.min(maxFieldChars, compact ? 400 : 1_200),
+    );
+    if (cut.truncated) reportOutcome = { ok: true, result: cut.text, resultTruncated: true };
+  }
+
   return {
+    ...(firstFailureReplaySelector !== undefined ? { firstFailureReplaySelector } : {}),
     runId,
     ...(evMeta.name !== undefined ? { name: evMeta.name } : {}),
     status,
@@ -542,11 +586,11 @@ export async function inspectRun(
         ? { runner: evMeta.runner }
         : {}),
     ...(replayedFrom ? { replayedFrom } : {}),
-    ...(outcome !== undefined ? { outcome } : {}),
+    ...(reportOutcome !== undefined ? { outcome: reportOutcome } : {}),
     ...(argsPreview !== undefined ? { argsPreview } : {}),
     ...(argsTruncated ? { argsTruncated: true } : {}),
     stats: {
-      totalAgents: latestRows.length,
+      totalAgents: evMeta.lastStartIdx >= 0 ? evMeta.starts.size : latestRows.length,
       ok: okCount,
       null: nullCount,
       skipped: skippedCount,
@@ -595,11 +639,10 @@ export function formatInspectMarkdown(report: InspectReport): string {
 
   if (report.outcome) {
     if (report.outcome.ok) {
-      const cut = previewField(
-        stringifyCompact(report.outcome.result),
-        report.full ? Infinity : report.compact ? 400 : 1_200,
-      );
-      lines.push(`- outcome: \`ok\` — \`${cut.text}\``);
+      const preview = report.outcome.resultTruncated
+        ? String(report.outcome.result)
+        : stringifyCompact(report.outcome.result);
+      lines.push(`- outcome: \`ok\` — \`${preview}\``);
     } else {
       lines.push(`- outcome: \`failed\` — ${report.outcome.error}`);
     }
@@ -706,9 +749,9 @@ export function formatInspectMarkdown(report: InspectReport): string {
     }
   }
 
-  if (report.nodes.length > 0 && report.nodes.some((node) => node.status !== 'ok')) {
-    const firstFailed = report.nodes.find((node) => node.status !== 'ok')!;
-    const selector = firstFailed.label ?? `#${firstFailed.index}`;
+  if (report.firstFailureReplaySelector !== undefined) {
+    const value = report.firstFailureReplaySelector;
+    const selector = /^[\w.:-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
     lines.push('', `> Replay from first failure: \`maestro replay ${report.runId} --from ${selector}\``);
   }
 

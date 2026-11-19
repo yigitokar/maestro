@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -56,6 +56,11 @@ describe('eval helpers', () => {
     expect(bad.reason).toContain('found forbidden substring');
   });
 
+  it('documents how runner overrides affect the model used for pricing', async () => {
+    const cliGuide = await readFile(new URL('../docs/maestro/cli.md', import.meta.url), 'utf8');
+    expect(cliGuide).toMatch(/requested model[^.]*runner[^.]*override/i);
+  });
+
   it('estimates USD cost for known Claude and Gemini models and returns null for unknown models', () => {
     const usage = { input_tokens: 1_000_000, output_tokens: 100_000, cache_read_input_tokens: 500_000 };
     expect(estimateCostUsd(usage, 'claude-sonnet-5-5')).toBeCloseTo(3.05, 4);
@@ -103,6 +108,38 @@ return await Promise.all([agent('first', { model: args.model }), agent('second')
     expect(record.summary.estimatedCostUsd).toBe(cost);
   });
 
+  it('runs a replay case with null when its dataset args were removed', async () => {
+    const opts = {
+      cwd: await tmp(),
+      runner: new FakeRunner(),
+      script: "export const meta = { name: 'args', description: 'd' }; return args;",
+    };
+    const before = await runEval({ ...opts, cases: [{ id: 'a', args: 1 }] });
+    const after = await runEval({ ...opts, fromEvalId: before.evalId, cases: [{ id: 'a', expected: null }] });
+    expect(after.cases[0]?.status).toBe('pass');
+  });
+
+  it('classifies a failure as a regression across omitted and explicit null args', async () => {
+    const opts = {
+      cwd: await tmp(),
+      runner: new FakeRunner(),
+      script: "export const meta = { name: 'args', description: 'd' }; return 1;",
+    };
+    const before = await runEval({ ...opts, cases: [{ id: 'a', expected: 1 }] });
+    const after = await runEval({
+      ...opts,
+      script: opts.script.replace('return 1', 'return 2'),
+      cases: [{ id: 'a', args: null, expected: 1 }],
+    });
+    expect(diffEvalRecords(before, after).cases.regressions.map((c) => c.id)).toEqual(['a']);
+    expect(
+      await main(['eval', 'diff', before.evalId, after.evalId, '--fail-on-regression'], {
+        cwd: opts.cwd,
+        stdout: { write: () => {} },
+      }),
+    ).toBe(1);
+  });
+
   it('reports edits to args, expect or expected separately and compares legacy cases', async () => {
     const cwd = await tmp();
     const opts = {
@@ -133,6 +170,7 @@ return await Promise.all([agent('first', { model: args.model }), agent('second')
     expect(diff.cases.fixed).toEqual([]);
     expect(diff.cases.regressions).toEqual([]);
     expect(diff.cases.stillPassing).toBe(1);
+    expect(formatEvalDiff(diff)).toMatch(/Case Status Changes \([^\n]*3 changed/);
     expect(formatEvalDiff(diff)).toMatch(/### Changed[^\n]*[\s\S]*`expected`: pass → fail/);
     const exitCode = await main(['eval', 'diff', before.evalId, after.evalId, '--fail-on-regression'], {
       cwd,

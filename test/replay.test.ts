@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { main } from '../src/cli.js';
 import { inspectRun } from '../src/inspect.js';
 import { readEntries } from '../src/journal.js';
+import { resolveReplayTarget } from '../src/replay.js';
 import { FakeRunner } from '../src/testing/fake-runner.js';
 import { LIMITS, type WorkflowEvent } from '../src/types.js';
 import { replay, run } from '../src/workflow.js';
@@ -32,6 +33,13 @@ const report = await agent('summarize: ' + issues, { label: 'synth', phase: 'Syn
 return { docs, issues, report };`;
 
 describe('time-travel replay', () => {
+  it('reserves #digits for indices while bare digits prefer labels', () => {
+    const timeline = ['first', '#0', '0', '#9'].map((label, id) => ({ id, key: label, pos: id, label }));
+    expect(resolveReplayTarget(timeline, '#0')?.id).toBe(0);
+    expect(resolveReplayTarget(timeline, '0')?.id).toBe(2);
+    expect(resolveReplayTarget(timeline, '#9')).toBeUndefined();
+  });
+
   it('forks into a new runId, serves upstream nodes from cache, re-runs target & downstream live, and leaves source untouched', async () => {
     const cwd = await tmp();
     const r1 = new FakeRunner((req) => ({ result: `v1:${req.prompt}` }));

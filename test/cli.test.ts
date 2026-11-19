@@ -311,6 +311,7 @@ describe('maestro (no command / unknown command / help)', () => {
     expect(none.code).toBe(1);
     expect(none.stdout).toContain('usage:');
     const help = await cli(['--help'], dir);
+    expect(help.stdout).toMatch(/unique label.*unique key prefix/);
     expect(help.code).toBe(0);
     expect(help.stdout).toContain('maestro run <script.js>');
   });

@@ -383,7 +383,11 @@ export function evaluateExpectation(expect: EvalExpectation, output: unknown): E
   return { pass: false, score: 0, reason: failures.join('; ') };
 }
 
-/** Estimates USD cost from token usage and model price table; null if the model has no known price. */
+/**
+ * Estimates USD cost from token usage, returning null for an unpriced model.
+ * Eval prices the requested model from the event log using default routing. Runner-level
+ * overrides (including custom routes and Codex configuration defaults) are unrecorded.
+ */
 export function estimateCostUsd(
   usage: Usage,
   model: string,
@@ -620,9 +624,8 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalRecord> {
     while (nextIdx < cases.length) {
       const i = nextIdx++;
       const c = cases[i]!;
-      const argsHash = createHash('sha256')
-        .update(canonicalJSON({ args: c.args }))
-        .digest('hex');
+      const args = c.args ?? null;
+      const argsHash = createHash('sha256').update(canonicalJSON({ args })).digest('hex');
       const expectationHash = createHash('sha256')
         .update(canonicalJSON({ expect: c.expect, expected: c.expected }))
         .digest('hex');
@@ -631,7 +634,7 @@ export async function runEval(opts: RunEvalOptions): Promise<EvalRecord> {
       const handle = run({
         ...(opts.script !== undefined ? { script: opts.script } : {}),
         ...(opts.scriptPath !== undefined ? { scriptPath: path.resolve(cwd, opts.scriptPath) } : {}),
-        ...(c.args !== undefined ? { args: c.args } : {}),
+        args,
         ...(sourceRunId !== undefined
           ? {
               replayFrom: {
@@ -1018,7 +1021,7 @@ export function formatEvalDiff(diff: EvalDiffReport): string {
 
   lines.push(
     '',
-    `## Case Status Changes (${diff.cases.fixed.length} fixed, ${diff.cases.regressions.length} regressions, ${diff.cases.stillFailing.length} still failing, ${diff.cases.stillPassing} unchanged passing)`,
+    `## Case Status Changes (${diff.cases.fixed.length} fixed, ${diff.cases.regressions.length} regressions, ${diff.cases.changed.length} changed, ${diff.cases.stillFailing.length} still failing, ${diff.cases.stillPassing} unchanged passing)`,
   );
   if (diff.cases.changed.length > 0) {
     lines.push('', `### Changed Cases (${diff.cases.changed.length})`);
