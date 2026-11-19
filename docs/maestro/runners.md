@@ -60,7 +60,8 @@ How Codex agents differ from Claude agents:
 - **Commits.** A Codex agent does not commit: its sandbox keeps `.git` read-only. After a successful isolated agent, the runner commits the changes itself with your git identity and a message that starts with `maestro(codex): `. A failed agent is not committed, and its worktree is kept.
 - **Structured answers.** There is one attempt, with no second try.
 - **Limits.** The per-turn and per-request limits of the Claude runner do not apply. App-server cumulative token updates are reported as deltas; legacy exec reports usage on turn completion, which can cover several model calls.
-- **Configuration.** Your Codex configuration file is read. Pass `ignoreUserConfig: true` to the runner to skip it.
+- **Clean subagents ("dry mode").** By default, each Codex agent runs with `-c mcp_servers={}` (before attaching Maestro's own `maestro_tools` bridge, if any) and disables ambient Codex features (`plugins`, `apps`, `browser_use`, `computer_use`, `image_generation`, `in_app_browser`, `skill_search`, `multi_agent`, and related plugin/skill flags) via `-c features.<name>=false`. This keeps startup fast, avoids leaking user MCP servers or spawning hidden nested Codex agents outside Maestro's budget, and stays compatible across Codex CLI versions. Pass `minimal: false` to `new CodexRunner({ minimal: false })` to inherit your full Codex MCP and feature configuration.
+- **Configuration.** Your Codex configuration file is read for auth and default model. Pass `ignoreUserConfig: true` to the runner to skip it.
 
 An agent's result requires a completed turn and valid final output. App-server is closed deliberately after completion; legacy exec additionally requires a successful process exit and no subsequent failure. Public progress is not a final answer. Stopping a run also stops the processes Codex started.
 

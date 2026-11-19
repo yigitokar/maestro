@@ -4,7 +4,7 @@ export type { BudgetLease, BudgetOptions, BudgetTick } from './budget.js';
 export { Budget, parseBudgetDirective } from './budget.js';
 export type { CliIO } from './cli.js';
 export type { CodexRunnerOptions } from './codex-runner.js';
-export { CodexRunner } from './codex-runner.js';
+export { CODEX_DISABLED_FEATURES, CODEX_MINIMAL_CONFIG_ARGS, CodexRunner } from './codex-runner.js';
 export type { ToolRegistry } from './custom-tools.js';
 export { checkToolDef, loadCustomTools, loadToolsDir, makeToolRegistry } from './custom-tools.js';
 export type { EventLogExtra, EventLogLine } from './event-log.js';

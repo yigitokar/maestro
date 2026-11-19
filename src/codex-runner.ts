@@ -23,11 +23,48 @@ import {
 import { addUsage } from './usage.js';
 import { MAESTRO_VERSION } from './version.js';
 
+/**
+ * Codex CLI features disabled by default for clean-context Maestro subagents ("dry mode").
+ * Passed via `-c features.<name>=false` (never `--disable <name>`) so unknown or removed
+ * feature names never abort startup across Codex CLI versions.
+ */
+export const CODEX_DISABLED_FEATURES = [
+  'plugins',
+  'apps',
+  'plugin_discovery_prefetch',
+  'remote_plugin',
+  'plugin_sharing',
+  'browser_use',
+  'browser_use_external',
+  'browser_use_full_cdp_access',
+  'computer_use',
+  'image_generation',
+  'in_app_browser',
+  'skill_search',
+  'skill_mcp_dependency_install',
+  'multi_agent',
+] as const;
+
+/** Default `-c` overrides that strip inherited user MCP servers and extra CLI features from subagents. */
+export const CODEX_MINIMAL_CONFIG_ARGS: readonly string[] = [
+  '-c',
+  'mcp_servers={}',
+  ...CODEX_DISABLED_FEATURES.flatMap((feature) => ['-c', `features.${feature}=false`]),
+];
+
 export interface CodexRunnerOptions {
   bin?: string;
   /** Overrides the workflow model; otherwise Claude ids defer to the Codex config default. */
   model?: string;
   ignoreUserConfig?: boolean;
+  /**
+   * Run Codex subagents in minimal ("dry") mode: clears inherited user `mcp_servers` and disables
+   * plugins, apps, browser/computer use, image generation, skill search, and nested multi-agent
+   * spawning (default `true`). Maestro's own `maestro_tools` custom-tool bridge still works because
+   * its config overrides come after `mcp_servers={}`. Set `false` to inherit the user's full Codex
+   * MCP and feature configuration.
+   */
+  minimal?: boolean;
   /** Extra CLI arguments, inserted before the stdin prompt marker. */
   extraArgs?: string[];
   /** Time after SIGTERM before forcing termination with SIGKILL (default 1 second). */
@@ -247,6 +284,7 @@ export class CodexRunner implements AgentRunner {
       if (customTools.length > 0 && bridgeEnabled) {
         prompt += `\n\nCustom tools available via the maestro_tools MCP server: ${customTools.map((t) => t.name).join(', ')}.`;
       }
+      const minimalArgs = this.opts.minimal === false ? [] : [...CODEX_MINIMAL_CONFIG_ARGS];
       const viaExec = async () => {
         const args = [
           'exec',
@@ -264,7 +302,7 @@ export class CodexRunner implements AgentRunner {
           const effort = req.effort === 'max' ? 'xhigh' : req.effort;
           args.push('-c', `model_reasoning_effort="${effort}"`);
         }
-        args.push(...bridgeArgs);
+        args.push(...minimalArgs, ...bridgeArgs);
         if (schema) {
           const schemaPath = path.join(tempDir as string, 'schema.json');
           await writeFile(schemaPath, JSON.stringify(schema));
@@ -280,7 +318,7 @@ export class CodexRunner implements AgentRunner {
           exit = await executeCodexAppServer({
             bin: this.opts.bin ?? 'codex',
             // stdio is the app-server's default transport; older CLIs have no --stdio flag.
-            args: ['app-server', ...bridgeArgs],
+            args: ['app-server', ...minimalArgs, ...bridgeArgs],
             env,
             req,
             prompt,

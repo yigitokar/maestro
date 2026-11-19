@@ -4,7 +4,7 @@ import { access, chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CodexRunner } from '../src/codex-runner.js';
+import { CODEX_DISABLED_FEATURES, CODEX_MINIMAL_CONFIG_ARGS, CodexRunner } from '../src/codex-runner.js';
 import { WRITER_INSTRUCTION } from '../src/runner.js';
 import { buildTools } from '../src/tools.js';
 import { DEFAULT_MODEL, MaestroError, type RunRequest, type ToolDef, type Usage } from '../src/types.js';
@@ -85,6 +85,14 @@ function records(): RecordOfCall[] {
 function flag(argv: string[], name: string): string | undefined {
   const index = argv.indexOf(name);
   return index < 0 ? undefined : argv[index + 1];
+}
+
+function configValues(argv: string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < argv.length - 1; i++) {
+    if (argv[i] === '-c') out.push(argv[i + 1]!);
+  }
+  return out;
 }
 
 function makeReq(overrides: Partial<RunRequest> = {}) {
@@ -193,7 +201,10 @@ describe('CodexRunner: results and subprocess protocol', () => {
     expect(call!.argv).not.toContain('--ignore-user-config');
     expect(call!.argv).not.toContain('--output-schema');
     expect(call!.argv).not.toContain('-m');
-    expect(call!.argv).not.toContain('-c');
+    expect(configValues(call!.argv)).toEqual([
+      'mcp_servers={}',
+      ...CODEX_DISABLED_FEATURES.map((f) => `features.${f}=false`),
+    ]);
     const prompt = call!.stdin;
     expect(prompt).toContain('Return the result.');
     expect(prompt).toContain('do the thing');
@@ -460,9 +471,35 @@ describe('CodexRunner: usage and trace', () => {
 describe('CodexRunner: arguments, tools and isolation', () => {
   it.each(['low', 'medium', 'high', 'xhigh', 'max'] as const)('maps effort %s', async (effort) => {
     await new CodexRunner({ bin }).run(makeReq({ effort }).req);
-    expect(flag(records()[0]!.argv, '-c')).toBe(
+    expect(configValues(records()[0]!.argv)).toContain(
       `model_reasoning_effort="${effort === 'max' ? 'xhigh' : effort}"`,
     );
+  });
+
+  it('clears user MCP servers and disables ambient features by default, and allows opt-out via minimal: false', async () => {
+    await new CodexRunner({ bin, minimal: false }).run(makeReq().req);
+    expect(records()[0]!.argv).not.toContain('-c');
+
+    // When custom tools are attached in default minimal mode, `mcp_servers={}` must precede
+    // `mcp_servers.maestro_tools.*` so only Maestro's bridge remains registered.
+    const customTool: ToolDef = {
+      name: 'ping',
+      description: 'ping',
+      inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false },
+      write: false,
+      run: async () => 'pong',
+    };
+    await new CodexRunner({ bin }).run(makeReq({ tools: [customTool] }).req);
+    const configs = configValues(records()[1]!.argv);
+    const clearIdx = configs.indexOf('mcp_servers={}');
+    const bridgeIdx = configs.findIndex((c) => c.startsWith('mcp_servers.maestro_tools.'));
+    expect(clearIdx).toBeGreaterThanOrEqual(0);
+    expect(bridgeIdx).toBeGreaterThan(clearIdx);
+    expect(configs).toContain('features.multi_agent=false');
+    expect(configs).toContain('features.plugins=false');
+    // Never uses `--disable`, which aborts on unknown feature flags across Codex CLI versions.
+    expect(records()[1]!.argv).not.toContain('--disable');
+    expect(CODEX_MINIMAL_CONFIG_ARGS.length).toBeGreaterThan(0);
   });
 
   it.each([
