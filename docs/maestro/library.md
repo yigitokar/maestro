@@ -77,7 +77,7 @@ handle.events.on('agent_end', (e) => console.error(e.label, e.status, e.usage.ou
 | `agent_start` | An agent starts. Carries `id`, `key`, `label`, `phase`. |
 | `agent_status` | A live snapshot changes. Carries `agent`, including public activity and usage. |
 | `agent_message` | A message is queued, delivered or failed. Carries `agentId` and the receipt plus message text. |
-| `agent_end` | An agent ends. Adds `status`, `cached` and `usage`. |
+| `agent_end` | An agent ends. Adds `status`, `cached` and `usage`, and for a live call `model`: the model ID the runner reported sending, when it reported one. |
 | `phase` | The script calls `phase()`. |
 | `log` | The script calls `log()`, or Maestro reports something. |
 | `budget_tick` | Budget use changes. Carries `spent`, `total`, `remaining`. |
@@ -95,6 +95,8 @@ await run({ scriptPath: 'review.js', runner: new CodexRunner() }).promise;
 - `GatewayRunner({ apiKey?, maxTurns?, maxTokens?, structuredMode? })`: uses `AI_GATEWAY_API_KEY` unless `apiKey` is supplied; defaults to `submit-tool` for schema answers.
 - `RoutingRunner({ anthropic?, codex?, route? })`
 - `FakeRunner`, for tests and dry runs: it answers from the schema and never touches the network.
+
+A runner of your own is any object with `run(req): Promise<RunResult>`. If it can send a model other than `req.model` (its own setting, a default, a mapping), return the ID it really sent as `RunResult.model`. Maestro records it with the call, and `maestro eval` prices the call at it. Without it the call is priced at the requested model. The built-in runners report it; `CodexRunner` leaves it unset when your Codex configuration picks the model, because it does not learn which one that is.
 
 Gateway models use exact `provider/model` IDs. Set a workflow default; individual agents can override it with `opts.model`:
 

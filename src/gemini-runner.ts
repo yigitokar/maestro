@@ -229,6 +229,8 @@ class RunState {
   constructor(
     private readonly req: RunRequest,
     private readonly redact: (s: string) => string,
+    /** The model ID every request of this run carries; with an override it is not `req.model`. */
+    readonly model: string,
   ) {}
 
   turn(u: Interactions.Usage | undefined): void {
@@ -247,6 +249,7 @@ class RunState {
       usage: { ...this.usage },
       turns: this.turns,
       trace: { toolCalls: this.toolCalls.slice(), finalText: this.finalText.slice(0, TRACE_TEXT_CHARS) },
+      model: this.model,
     };
     if (extra.raw !== undefined) out.raw = extra.raw;
     if (extra.error !== undefined) out.error = this.redact(extra.error);
@@ -396,7 +399,8 @@ export class GeminiRunner implements AgentRunner {
     }
     const key = this.resolvedApiKey();
     const redact = (text: string) => (key ? text.replaceAll(key, '[REDACTED]') : text);
-    const st = new RunState(req, redact);
+    // Resolved before anything can fail, so a failed call also reports the model it was sent to.
+    const st = new RunState(req, redact, resolveGeminiModel(req.model, this.#modelOverride));
     let inbox: LiveMessages | undefined;
     try {
       if (req.signal.aborted) throw new Aborted();
@@ -412,7 +416,7 @@ export class GeminiRunner implements AgentRunner {
 
   async #run(req: RunRequest, st: RunState, hasWriters: boolean, inbox: LiveMessages): Promise<RunResult> {
     const client = this.client;
-    const model = resolveGeminiModel(req.model, this.#modelOverride);
+    const model = st.model;
     const ctx: ToolContext = { cwd: req.cwd, signal: req.signal };
     const mode: StructuredMode = req.schema ? this.structuredMode : 'two-stage';
     const thinkingLevel = toGeminiThinkingLevel(req.effort);

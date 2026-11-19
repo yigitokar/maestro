@@ -385,8 +385,9 @@ export function evaluateExpectation(expect: EvalExpectation, output: unknown): E
 
 /**
  * Estimates USD cost from token usage, returning null for an unpriced model.
- * Eval prices the requested model from the event log using default routing. Runner-level
- * overrides (including custom routes and Codex configuration defaults) are unrecorded.
+ * Eval calls it per live call with the model the runner reported sending (`RunResult.model`, recorded
+ * on the call's `agent_end` event), so a runner-level override or a custom route is priced as what ran.
+ * A call with no recorded model is priced from the requested model through default routing.
  */
 export function estimateCostUsd(
   usage: Usage,
@@ -415,6 +416,11 @@ function usageCost(usage: Usage, model: string, prices: Record<string, ModelPric
   );
 }
 
+/**
+ * A guess at the model a call ran on, from the requested model and the run's runner class. Only for a
+ * call whose `agent_end` carries no model: an event log written before runners reported theirs, or a
+ * runner that reports none. It cannot see a runner-level override or a custom route.
+ */
 function effectiveModel(runner: string | undefined, model: string | undefined): string | undefined {
   const route = runner === 'RoutingRunner' && model ? defaultModelRoute(model) : undefined;
   if (runner === 'GeminiRunner' || route === 'gemini') return resolveGeminiModel(model ?? '');
@@ -472,7 +478,7 @@ async function collectRunMetrics(runDir: string, prices: Record<string, ModelPri
       else {
         addUsage(liveUsage, ev.usage);
         if (estimatedCostUsd !== null && (totalInput(ev.usage) > 0 || ev.usage.output_tokens > 0)) {
-          const model = effectiveModel(runner, promptModels.get(ev.id) ?? defaultModel);
+          const model = ev.model || effectiveModel(runner, promptModels.get(ev.id) ?? defaultModel);
           const cost = model ? usageCost(ev.usage, model, prices) : null;
           estimatedCostUsd = cost === null ? null : estimatedCostUsd + cost;
         }

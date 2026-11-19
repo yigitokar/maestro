@@ -75,6 +75,13 @@ describe('GatewayRunner', () => {
     expect(runner.client.logLevel).toBe('off');
   });
 
+  it('reports the provider/model ID it sent', async () => {
+    const { requests } = mockGateway(textReply());
+    const res = await new GatewayRunner().run(request({ model: 'google/gemini-3.1-pro-preview' }).req);
+    expect(requests[0]!.body.model).toBe('google/gemini-3.1-pro-preview');
+    expect(res).toMatchObject({ status: 'ok', model: 'google/gemini-3.1-pro-preview' });
+  });
+
   it('uses only AI_GATEWAY_API_KEY as its environment fallback and constructs the client lazily', async () => {
     const { fetch, requests } = mockGateway(textReply());
     const runner = new GatewayRunner();

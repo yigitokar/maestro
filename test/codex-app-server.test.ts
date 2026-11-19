@@ -103,7 +103,7 @@ describe('Codex app-server live transport', () => {
     });
     scenario({ finalText: '{"value":"ok"}' });
     const result = await runner().run(req);
-    expect(result).toMatchObject({ status: 'ok', result: { value: 'ok' }, turns: 1 });
+    expect(result).toMatchObject({ status: 'ok', result: { value: 'ok' }, turns: 1, model: 'gpt-test' });
     expect(records()[0].argv).toEqual(['app-server']);
     expect(calls('initialize')).toHaveLength(1);
     expect(calls('initialized')).toHaveLength(1);
@@ -128,8 +128,10 @@ describe('Codex app-server live transport', () => {
     const result = runner().run(req);
     const send = await ready;
     await Promise.all([send('check edge cases'), send('include regression tests')]);
-    expect(await result).toMatchObject({ status: 'ok' });
+    const settled = await result;
+    expect(settled).toMatchObject({ status: 'ok' });
     expect(calls('thread/start')[0].params).not.toHaveProperty('model');
+    expect(settled).not.toHaveProperty('model');
     expect(calls('turn/steer').map((call) => call.params)).toEqual([
       { threadId: 'thread-1', expectedTurnId: 'turn-1', input: [{ type: 'text', text: 'check edge cases' }] },
       {

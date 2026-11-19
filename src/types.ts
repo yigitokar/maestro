@@ -84,6 +84,8 @@ export interface Entry {
   /** True when `result` is a `{ blob: key }` reference (disambiguates from a real `{ blob }` result). */
   blob?: true;
   usage: Usage;
+  /** The model the runner reported sending for this call (`RunResult.model`); absent when it reported none. */
+  model?: string;
   status: EntryStatus;
   /** Raw final text when schema parsing failed twice (spec 3.2). */
   raw?: string;
@@ -93,6 +95,7 @@ export interface Entry {
   failureInput?: {
     prompt: string;
     options: AgentOpts;
+    /** The model the runner reported sending; the requested model when it reported none. */
     model: string;
     tools: string[];
   };
@@ -174,6 +177,13 @@ export interface RunResult {
   error?: string;
   /** Tool calls and final text of this run, journaled as audit (absent from runners that do not trace). */
   trace?: Trace;
+  /**
+   * The model ID this runner sent to its provider. It can differ from `RunRequest.model`: a runner-level
+   * override, a default put in place of another provider's ID. The run records it with the call and
+   * `maestro eval` prices the call at it. Leave it unset when the runner cannot tell; the call is then
+   * priced from the requested model.
+   */
+  model?: string;
 }
 
 /**
@@ -224,6 +234,11 @@ export type WorkflowEvent =
       status: EntryStatus;
       cached: boolean;
       usage: Usage;
+      /**
+       * The model the runner reported sending (`RunResult.model`). Absent on a cache hit, which sends
+       * nothing, and when the runner reported none.
+       */
+      model?: string;
     }
   | { type: 'phase'; runId: string; title: string; group?: string }
   | { type: 'log'; runId: string; message: string; group?: string }

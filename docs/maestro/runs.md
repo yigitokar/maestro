@@ -13,9 +13,9 @@ Every run gets an id such as `20261025-150301-a1b2c3` and a directory `.maestro/
 | `script.js` | The script as it ran. |
 | `args.json` | The arguments. |
 | `run.json` | The run's model and runner. |
-| `journal.jsonl` | One line per `agent()` call: its key, status, result, token usage, trace and live message audit. Failed and skipped calls also store `failureInput` with the full prompt, options, resolved model and tool names. |
+| `journal.jsonl` | One line per `agent()` call: its key, status, result, token usage, trace and live message audit. `model` is the model ID the runner reported sending, which differs from the requested one when the runner has its own model setting; it is absent when the runner reported none. Failed and skipped calls also store `failureInput` with the full prompt, options, tool names and the model: the reported one, else the requested one. |
 | `blobs/` | Results, traces and failure inputs larger than 64 KB, one file each. A row with `failureInputBlob: true` stores its input in `blobs/<key>.input.json`. |
-| `events.jsonl` | Every event with a wall-clock time. Used only for display. |
+| `events.jsonl` | Every event with a wall-clock time. The `agent_end` line of a live call carries the same `model`, and `maestro eval` prices the call at it. Otherwise used only for display. |
 | `outcome.json` | The final result or error, written when the run ends. |
 
 Add `.maestro/` to your `.gitignore`.
