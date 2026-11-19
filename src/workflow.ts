@@ -393,8 +393,14 @@ export function run(opts: RunOptions): RunHandle {
     const usage = res?.usage ?? turnUsage;
     // What the runner says it sent; a runner-level override makes it differ from the requested model.
     // Recorded for audit and pricing only: it never enters the key, so a resume still finds the row.
-    // A custom runner's value is unchecked, hence the type test before it is persisted.
-    const sentModel = typeof res?.model === 'string' && res.model.trim() !== '' ? res.model : undefined;
+    // Null ("a model I cannot name") is kept apart from undefined ("no report"): only the second may be
+    // priced as the requested model. A custom runner's value is unchecked, hence the type test.
+    const sentModel =
+      res?.model === null
+        ? null
+        : typeof res?.model === 'string' && res.model.trim() !== ''
+          ? res.model
+          : undefined;
     const entry: Entry = withDefined({
       index: id,
       hash: a.hash,

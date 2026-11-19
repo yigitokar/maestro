@@ -472,9 +472,10 @@ describe('CodexRunner: arguments, tools and isolation', () => {
   ])('selects model for $request', async ({ request, expected }) => {
     const res = await new CodexRunner({ bin }).run(makeReq({ model: request }).req);
     expect(flag(records()[0]!.argv, '-m')).toBe(expected);
-    // Without -m the Codex configuration picks the model, which the runner does not learn: none is reported.
+    // Without -m the Codex configuration picks the model, which the runner does not learn. It says so
+    // with null, so the call is not taken for one on the requested model.
     expect(res.status).toBe('ok');
-    expect(res.model).toBe(expected);
+    expect(res.model).toBe(expected ?? null);
   });
 
   it('gives the option model precedence and places extra args before the prompt', async () => {

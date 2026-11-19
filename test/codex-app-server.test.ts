@@ -131,7 +131,7 @@ describe('Codex app-server live transport', () => {
     const settled = await result;
     expect(settled).toMatchObject({ status: 'ok' });
     expect(calls('thread/start')[0].params).not.toHaveProperty('model');
-    expect(settled).not.toHaveProperty('model');
+    expect(settled.model).toBeNull();
     expect(calls('turn/steer').map((call) => call.params)).toEqual([
       { threadId: 'thread-1', expectedTurnId: 'turn-1', input: [{ type: 'text', text: 'check edge cases' }] },
       {

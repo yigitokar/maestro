@@ -29,10 +29,22 @@ async function tmp(): Promise<string> {
   return d;
 }
 
-/** A runner that sends every call to `sent`, whatever model the workflow asked for. */
+/** Points the fake Codex binary at one turn that spends 1M input tokens. */
+function stubFakeCodex(cwd: string): void {
+  vi.stubEnv('FAKE_CODEX_RECORD', path.join(cwd, 'codex-calls.jsonl'));
+  vi.stubEnv(
+    'FAKE_CODEX_SCENARIO',
+    JSON.stringify({
+      finalText: 'done',
+      steps: [{ event: { type: 'turn.completed', usage: { input_tokens: 1_000_000, output_tokens: 0 } } }],
+    }),
+  );
+}
+
+/** A runner that sends every call to `sent`, whatever the workflow asked for; null: it cannot name the model. */
 class ReportingRunner extends FakeRunner {
   constructor(
-    private readonly sent: string,
+    private readonly sent: string | null,
     handler?: FakeHandler,
   ) {
     super(handler);
@@ -87,6 +99,29 @@ describe('a run records the model its runner reported', () => {
     await handle.promise;
     expect(ends[0]).not.toHaveProperty('model');
     expect((await readEntries(handle.runDir))[0]).not.toHaveProperty('model');
+  });
+
+  it('records null when the runner says it cannot name the model it sent to', async () => {
+    const cwd = await tmp();
+    const ends: AgentEnd[] = [];
+    const handle = run({
+      cwd,
+      runner: new ReportingRunner(null, () => ({ result: null, error: 'boom' })),
+      script: SCRIPT,
+    });
+    handle.events.on('agent_end', (e: AgentEnd) => ends.push(e));
+    await handle.promise;
+    expect(ends[0]?.model).toBeNull();
+    const [row] = await readEntries(handle.runDir);
+    expect(row?.model).toBeNull();
+    // The failed call's input keeps the model that was asked for: there is no better name for it.
+    expect(row?.failureInput?.model).toBe('asked-model');
+    const logged = (await readFile(path.join(handle.runDir, 'events.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .find((line) => line.type === 'agent_end');
+    expect(logged.model).toBeNull();
   });
 
   it('stores the reported model as failureInput.model, and the requested one when none was reported', async () => {
@@ -161,16 +196,44 @@ return await agent('go', { model: 'gemini-4-hydrogen' });`,
     expect(record.summary.estimatedCostUsd).toBe(2.5);
   });
 
+  it('gives no estimate for a call whose runner could not name the model, instead of guessing one', async () => {
+    const record = await runEval({
+      cwd: await tmp(),
+      runner: new ReportingRunner(null, () => MILLION_INPUT),
+      script: `export const meta = { name: 'unnamed', description: 'd' };
+return [await agent('known', { model: 'gemini-4-hydrogen' }), await agent('unknown')];`,
+      cases: [{ id: 'one' }],
+    });
+    // Both requested models are priced ($0.50 and $4.00), so a guess would have produced a number.
+    expect(record.summary.tokens.input).toBe(2_000_000);
+    expect(record.cases[0]?.estimatedCostUsd).toBeNull();
+    expect(record.summary.estimatedCostUsd).toBeNull();
+  });
+
+  it('gives no estimate for Codex on its configuration default, however the call reached Codex', async () => {
+    const cwd = await tmp();
+    stubFakeCodex(cwd);
+    const opts = {
+      cwd,
+      script: `export const meta = { name: 'codex-default', description: 'd' }; return await agent('go');`,
+      cases: [{ id: 'one' }],
+    };
+    const codex = { bin: fakeCodex, ignoreUserConfig: true };
+    // Neither run names CodexRunner as its runner, so only the runner's own report can say that the
+    // requested claude-opus-5-5 ($4.00 here) is not what ran.
+    const routed = await runEval({ ...opts, runner: new RoutingRunner({ codex, route: () => 'codex' }) });
+    expect(routed.summary.tokens.input).toBe(1_000_000);
+    expect(routed.summary.estimatedCostUsd).toBeNull();
+
+    class WrappedCodex extends CodexRunner {}
+    const subclassed = await runEval({ ...opts, runner: new WrappedCodex(codex) });
+    expect(subclassed.summary.tokens.input).toBe(1_000_000);
+    expect(subclassed.summary.estimatedCostUsd).toBeNull();
+  });
+
   it('prices a CodexRunner at its own model, and gives no estimate on the Codex configuration default', async () => {
     const cwd = await tmp();
-    vi.stubEnv('FAKE_CODEX_RECORD', path.join(cwd, 'codex-calls.jsonl'));
-    vi.stubEnv(
-      'FAKE_CODEX_SCENARIO',
-      JSON.stringify({
-        finalText: 'done',
-        steps: [{ event: { type: 'turn.completed', usage: { input_tokens: 1_000_000, output_tokens: 0 } } }],
-      }),
-    );
+    stubFakeCodex(cwd);
     const opts = {
       cwd,
       script: `export const meta = { name: 'codex', description: 'd' }; return await agent('go');`,

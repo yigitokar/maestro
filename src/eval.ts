@@ -387,7 +387,8 @@ export function evaluateExpectation(expect: EvalExpectation, output: unknown): E
  * Estimates USD cost from token usage, returning null for an unpriced model.
  * Eval calls it per live call with the model the runner reported sending (`RunResult.model`, recorded
  * on the call's `agent_end` event), so a runner-level override or a custom route is priced as what ran.
- * A call with no recorded model is priced from the requested model through default routing.
+ * A call recorded with a null model, which its runner could not name, makes the estimate null. A call
+ * with no recorded model at all is priced from the requested model through default routing.
  */
 export function estimateCostUsd(
   usage: Usage,
@@ -418,8 +419,8 @@ function usageCost(usage: Usage, model: string, prices: Record<string, ModelPric
 
 /**
  * A guess at the model a call ran on, from the requested model and the run's runner class. Only for a
- * call whose `agent_end` carries no model: an event log written before runners reported theirs, or a
- * runner that reports none. It cannot see a runner-level override or a custom route.
+ * call whose `agent_end` has no model field: an event log written before runners reported theirs, or a
+ * runner that reports nothing. It cannot see a runner-level override or a custom route.
  */
 function effectiveModel(runner: string | undefined, model: string | undefined): string | undefined {
   const route = runner === 'RoutingRunner' && model ? defaultModelRoute(model) : undefined;
@@ -478,7 +479,11 @@ async function collectRunMetrics(runDir: string, prices: Record<string, ModelPri
       else {
         addUsage(liveUsage, ev.usage);
         if (estimatedCostUsd !== null && (totalInput(ev.usage) > 0 || ev.usage.output_tokens > 0)) {
-          const model = ev.model || effectiveModel(runner, promptModels.get(ev.id) ?? defaultModel);
+          // A null model is the runner's own word that it ran on a model it cannot name: no guess then.
+          const model =
+            ev.model === null
+              ? undefined
+              : ev.model || effectiveModel(runner, promptModels.get(ev.id) ?? defaultModel);
           const cost = model ? usageCost(ev.usage, model, prices) : null;
           estimatedCostUsd = cost === null ? null : estimatedCostUsd + cost;
         }

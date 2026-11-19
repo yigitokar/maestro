@@ -180,8 +180,9 @@ class RunState {
       turns: this.turns,
       trace: this.trace,
       // Without a model argument the Codex configuration picks the model and this runner does not
-      // learn which, so none is reported: a guessed ID would be priced as if it had run.
-      ...(this.model ? { model: this.model } : {}),
+      // learn which. Null says so; leaving the field out would let the call pass for one on the
+      // requested model and be priced as that.
+      model: this.model || null,
       ...extra,
     };
   }
