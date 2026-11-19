@@ -75,6 +75,8 @@ export interface Entry {
   hash: string;
   n: number;
   key: string;
+  /** Source run ID for a replayed upstream call. Its original usage was charged in that run. */
+  cachedFrom?: string;
   label?: string;
   phase?: string;
   /** Inline result, or `{ blob: key }` when `blob` is true (result > 64 KB lives in blobs/<key>.json). */
@@ -87,6 +89,16 @@ export interface Entry {
   raw?: string;
   /** Error message / reason for a null or skipped row, for audit. */
   error?: string;
+  /** Full workflow call captured for a failed/skipped agent. Older journals have only the event preview. */
+  failureInput?: {
+    prompt: string;
+    options: AgentOpts;
+    model: string;
+    tools: string[];
+    pipeline?: PipelineInput;
+  };
+  /** Large failure inputs live in blobs/<key>.input.json. */
+  failureInputBlob?: true;
   /** Dirty worktree left behind by a writer (spec 3.6), for audit and `maestro gc`. */
   worktree?: { path: string; diffStat: string };
   /** Audit-only trace of the live run; `{ blob: key }` when `traceBlob` (over 64 KB, blobs/<key>.trace.json). */
@@ -98,6 +110,8 @@ export interface Entry {
 
 /** Options accepted by the script-facing `agent()` (spec Level 1). */
 export interface AgentOpts {
+  /** Ordered inline PDF documents for Gemini, encoded as base64 without a data URI prefix. */
+  pdfs?: string[];
   label?: string;
   phase?: string;
   schema?: JSONSchema;
@@ -105,6 +119,18 @@ export interface AgentOpts {
   effort?: Effort;
   isolation?: 'worktree';
   tools?: string[];
+  /** Optional JSON state to include in a failure report. Audit only, excluded from the cache key. */
+  upstream?: unknown;
+}
+
+export interface PipelineInput {
+  /** Zero-based item index and one-based stage number. */
+  index: number;
+  stage: number;
+  previous?: unknown;
+  /** Original item, when different from previous. */
+  item?: unknown;
+  unavailable?: string;
 }
 
 /** Context handed to a tool implementation. */
@@ -132,6 +158,7 @@ export interface ToolDef {
 
 export interface RunRequest {
   prompt: string;
+  pdfs?: AgentOpts['pdfs'];
   /** Return contract + project CLAUDE.md (+ commit instruction for writers). */
   system: string;
   tools: ToolDef[];

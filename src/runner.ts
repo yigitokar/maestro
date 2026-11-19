@@ -12,6 +12,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { betaJSONSchemaOutputFormat } from '@anthropic-ai/sdk/helpers/beta/json-schema';
 import type { BetaRunnableTool } from '@anthropic-ai/sdk/lib/tools/BetaRunnableTool';
 import { childGitEnv } from './git-env.js';
+import { checkPdfInputs } from './pdf-input.js';
 import {
   type AgentRunner,
   type EntryStatus,
@@ -117,7 +118,7 @@ const TRACE_INPUT_CHARS = 200;
 const TRACE_TEXT_CHARS = 2_000;
 
 /** Per-run bookkeeping: summed usage, turn count, onUsage per turn (spec 3.2 invariant), trace. */
-class RunState {
+export class RunState {
   usage: Usage = { input_tokens: 0, output_tokens: 0 };
   turns = 0;
   readonly toolCalls: TraceToolCall[] = [];
@@ -598,6 +599,7 @@ export class AnthropicRunner implements AgentRunner {
     let messages: LiveMessages | undefined;
     try {
       if (req.signal.aborted) throw new Aborted();
+      checkPdfInputs(req.pdfs, false);
       messages = new LiveMessages(req);
       return await this.#run(req, st, writers.length > 0, messages);
     } catch (e) {

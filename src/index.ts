@@ -7,10 +7,14 @@ export type { CodexRunnerOptions } from './codex-runner.js';
 export { CodexRunner } from './codex-runner.js';
 export type { ToolRegistry } from './custom-tools.js';
 export { checkToolDef, loadCustomTools, loadToolsDir, makeToolRegistry } from './custom-tools.js';
+export type { EvalOptions, EvalReport } from './eval.js';
+export { diffEvals, formatEval, formatEvalDiff, readEval, runEval } from './eval.js';
 export type { EventLogExtra, EventLogLine } from './event-log.js';
 export { EVENT_LOG_FILE } from './event-log.js';
 export type { GatewayRunnerOptions } from './gateway-runner.js';
 export { GatewayRunner } from './gateway-runner.js';
+export type { GeminiRunnerOptions } from './gemini-runner.js';
+export { GeminiRunner } from './gemini-runner.js';
 export type {
   CloseResult,
   GcOptions,
@@ -44,6 +48,7 @@ export {
 } from './mcp.js';
 export type { ProgressStream, ProgressTreeOptions } from './progress.js';
 export { attachTerminalProgress, formatEventLine, GLYPHS, ProgressTree } from './progress.js';
+export type { ReplayFrom } from './replay.js';
 export type { RouteTarget, RoutingRunnerOptions } from './routing-runner.js';
 export { defaultModelRoute, RoutingRunner } from './routing-runner.js';
 export type { AnthropicRunnerOptions, StructuredMode } from './runner.js';

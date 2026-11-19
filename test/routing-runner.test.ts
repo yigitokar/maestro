@@ -13,11 +13,14 @@ afterEach(async () => {
 });
 
 describe('RoutingRunner & defaultModelRoute', () => {
-  it('defaultModelRoute maps Claude/Anthropic ids to anthropic and everything else to codex', () => {
+  it('defaultModelRoute maps Claude and Gemini to their native runners and other ids to codex', () => {
     expect(defaultModelRoute('claude-opus-4-7')).toBe('anthropic');
     expect(defaultModelRoute('claude-sonnet-4-6')).toBe('anthropic');
     expect(defaultModelRoute('anthropic/claude-haiku-4-5')).toBe('anthropic');
     expect(defaultModelRoute('gpt-5.4')).toBe('codex');
+    expect(defaultModelRoute('gemini-2.5-flash')).toBe('gemini');
+    expect(defaultModelRoute('google/gemini-2.5-pro')).toBe('gemini');
+    expect(defaultModelRoute('models/gemini-2.5-pro')).toBe('gemini');
     expect(defaultModelRoute('o3')).toBe('codex');
     expect(defaultModelRoute('codex-mini-latest')).toBe('codex');
   });
@@ -27,7 +30,8 @@ describe('RoutingRunner & defaultModelRoute', () => {
     dirs.push(dir);
     const anthropicFake = new FakeRunner((req) => ({ result: `claude:${req.model}:${req.prompt}` }));
     const codexFake = new FakeRunner((req) => ({ result: `codex:${req.model}:${req.prompt}` }));
-    const router = new RoutingRunner({ anthropic: anthropicFake, codex: codexFake });
+    const geminiFake = new FakeRunner((req) => ({ result: `gemini:${req.model}:${req.prompt}` }));
+    const router = new RoutingRunner({ anthropic: anthropicFake, codex: codexFake, gemini: geminiFake });
 
     const handle = run({
       cwd: dir,
@@ -36,7 +40,7 @@ describe('RoutingRunner & defaultModelRoute', () => {
       script: `export const meta = { name: 'hybrid', description: 'mixed models' };
 const findings = await parallel([
   () => agent('scan-a', { model: 'gpt-5.4', label: 'finder-gpt' }),
-  () => agent('scan-b', { model: 'o3', label: 'finder-o3' }),
+  () => agent('scan-b', { model: 'gemini-2.5-flash', label: 'finder-gemini' }),
 ]);
 const verdict = await agent('judge ' + JSON.stringify(findings), { model: 'claude-opus-4-7', label: 'judge' });
 return { findings, verdict };`,
@@ -44,10 +48,11 @@ return { findings, verdict };`,
 
     const out = await handle.promise;
     expect(out).toEqual({
-      findings: ['codex:gpt-5.4:scan-a', 'codex:o3:scan-b'],
-      verdict: 'claude:claude-opus-4-7:judge ["codex:gpt-5.4:scan-a","codex:o3:scan-b"]',
+      findings: ['codex:gpt-5.4:scan-a', 'gemini:gemini-2.5-flash:scan-b'],
+      verdict: 'claude:claude-opus-4-7:judge ["codex:gpt-5.4:scan-a","gemini:gemini-2.5-flash:scan-b"]',
     });
-    expect(codexFake.liveCalls).toBe(2);
+    expect(codexFake.liveCalls).toBe(1);
+    expect(geminiFake.liveCalls).toBe(1);
     expect(anthropicFake.liveCalls).toBe(1);
   });
 

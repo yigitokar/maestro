@@ -11,8 +11,11 @@ import { pathToFileURL } from 'node:url';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { parseBudgetDirective } from './budget.js';
 import { CodexRunner } from './codex-runner.js';
+import { diffEvals, formatEval, formatEvalDiff, readEval, runEval } from './eval.js';
 import { EVENT_LOG_FILE } from './event-log.js';
 import { GatewayRunner } from './gateway-runner.js';
+import { GeminiRunner } from './gemini-runner.js';
+import { inspectFailures } from './inspect.js';
 import { gc } from './isolation.js';
 import { readEntries, readResultBlob, readTrace } from './journal.js';
 import { serveMcp } from './mcp.js';
@@ -29,9 +32,15 @@ import { readOutcome, run, SAFE_ID } from './workflow.js';
 export const USAGE = `usage:
   maestro run <script.js> [--args <json>] [--args-file <file>] [--resume <runId>] [--budget <500k>]
                           [--dry-run] [--cwd <dir>] [--state-dir <dir>] [--tools-dir <dir>] [--concurrency <n>]
-                          [--model <model>] [--runner <anthropic|codex|auto|gateway>]
+                          [--model <model>] [--runner <anthropic|codex|gemini|auto|gateway>]
                           [--structured-mode <two-stage|submit-tool|single-stage>]
   maestro run --resume <runId> [options]     resume with the stored script.js and args.json
+  maestro replay <runId> --from <node> [--script <edited.js>] [run options]
+                                             reuse earlier calls in a new run; select a node by ID, label, or key
+  maestro eval <script.js> --cases <suite.json> [run options] [--baseline <evalId> --from <node>] [--json]
+  maestro eval diff <evalId-a> <evalId-b> [--cwd <dir>] [--state-dir <dir>] [--json]
+  maestro inspect [runId] --compact [--cwd <dir>] [--state-dir <dir>]
+                                             print the latest attempt's failed nodes and inputs as JSON
   maestro runs [--cwd <dir>] [--state-dir <dir>] [--limit <n>]
                                              list runs newest-first with status, agents and token usage (alias: ls)
   maestro gc [--delete] [--force] [--cwd <dir>]
@@ -43,15 +52,16 @@ export const USAGE = `usage:
                                              (--out writes the page as one self-contained HTML file instead;
                                              --widget prints a snapshot fragment for a chat's inline widget tool)
   maestro mcp [--cwd <dir>] [--state-dir <dir>] [--tools-dir <dir>] [--budget <500k>] [--concurrency <n>]
-              [--model <model>] [--runner <anthropic|codex|auto|gateway>]
+              [--model <model>] [--runner <anthropic|codex|gemini|auto|gateway>]
               [--structured-mode <two-stage|submit-tool|single-stage>] [--dry-run]
                                              serve the Workflow tool over stdio as an MCP server
                                              (--budget is one pool for the whole session; exits 0 when stdin ends)
 
   --dry-run          run every agent with an in-memory fake runner (schema stubs, no network)
-  --runner           agent runner: anthropic (default), codex, auto (routes by model), or gateway; --dry-run takes precedence
+  --runner           agent runner: anthropic (default), codex, gemini, auto (routes by model), or gateway; --dry-run takes precedence
   --structured-mode  schema output mode: two-stage, submit-tool, or single-stage
                      defaults: anthropic/auto two-stage; gateway submit-tool
+  gemini             requires GEMINI_API_KEY and a gemini-* model via --model or agent opts.model
   gateway            requires AI_GATEWAY_API_KEY and provider/model IDs via --model or agent opts.model
   --tools-dir        custom tools agents may name in opts.tools: *.js files that default-export a tool
                      (default <state-dir>/tools)
@@ -82,6 +92,8 @@ const VALUE_FLAGS = new Set([
   'args',
   'args-file',
   'resume',
+  'script',
+  'from',
   'budget',
   'cwd',
   'state-dir',
@@ -90,11 +102,13 @@ const VALUE_FLAGS = new Set([
   'model',
   'runner',
   'structured-mode',
+  'cases',
+  'baseline',
   'limit',
   'out',
   'port',
 ]);
-const BOOL_FLAGS = new Set(['dry-run', 'delete', 'force', 'help', 'no-open', 'widget']);
+const BOOL_FLAGS = new Set(['dry-run', 'delete', 'force', 'help', 'no-open', 'widget', 'compact', 'json']);
 
 function parseArgv(argv: string[]): Parsed {
   const positionals: string[] = [];
@@ -130,10 +144,22 @@ function str(p: Parsed, name: string): string | undefined {
   return typeof v === 'string' ? v : undefined;
 }
 
-function runnerName(p: Parsed): 'anthropic' | 'codex' | 'auto' | 'gateway' {
+function statePaths(p: Parsed, io: CliIO): { cwd: string; stateDir: string } {
+  const cwd = path.resolve(io.cwd, str(p, 'cwd') ?? '.');
+  const arg = str(p, 'state-dir');
+  return { cwd, stateDir: arg === undefined ? path.join(cwd, '.maestro') : path.resolve(io.cwd, arg) };
+}
+
+function runnerName(p: Parsed): 'anthropic' | 'codex' | 'gemini' | 'auto' | 'gateway' {
   const name = str(p, 'runner') ?? 'anthropic';
-  if (name !== 'anthropic' && name !== 'codex' && name !== 'auto' && name !== 'gateway') {
-    throw new UsageError(`invalid --runner "${name}" (expected anthropic, codex, auto or gateway)`);
+  if (
+    name !== 'anthropic' &&
+    name !== 'codex' &&
+    name !== 'gemini' &&
+    name !== 'auto' &&
+    name !== 'gateway'
+  ) {
+    throw new UsageError(`invalid --runner "${name}" (expected anthropic, codex, gemini, auto or gateway)`);
   }
   return name;
 }
@@ -147,6 +173,30 @@ function structuredModeFlag(p: Parsed): StructuredMode | undefined {
     );
   }
   return mode;
+}
+
+function selectRunner(p: Parsed, io: CliIO, mcp = false): AgentRunner {
+  const name = runnerName(p);
+  const structuredMode = structuredModeFlag(p);
+  if (p.flags.has('dry-run')) return new FakeRunner();
+
+  const gemini = { apiKey: io.env.GEMINI_API_KEY ?? '' };
+  if (name === 'auto') return new RoutingRunner({ anthropic: { structuredMode }, gemini });
+  if (name === 'codex') return new CodexRunner();
+
+  let missing: string | undefined;
+  if (name === 'gemini' && !gemini.apiKey.trim()) missing = 'GEMINI_API_KEY is missing or blank';
+  if (name === 'gateway' && !io.env.AI_GATEWAY_API_KEY?.trim())
+    missing = 'AI_GATEWAY_API_KEY is missing or blank';
+  if (name === 'anthropic' && !io.env.ANTHROPIC_API_KEY) missing = 'ANTHROPIC_API_KEY is not set';
+  if (missing) {
+    if (!mcp) throw new Error(`${missing}. Export the key first, or use --dry-run for offline runs.`);
+    io.stderr.write(`maestro mcp: ${missing}; Workflow runs will fail until it is set.\n`);
+  }
+  if (name === 'gemini') return new GeminiRunner(gemini);
+  if (name === 'gateway')
+    return new GatewayRunner({ apiKey: io.env.AI_GATEWAY_API_KEY ?? '', structuredMode });
+  return new AnthropicRunner({ structuredMode });
 }
 
 export async function main(argv: string[], ioOverrides: Partial<CliIO> = {}): Promise<number> {
@@ -171,8 +221,11 @@ export async function main(argv: string[], ioOverrides: Partial<CliIO> = {}): Pr
       return 0;
     }
     if (command === 'run') return await runCommand(parsed, io);
+    if (command === 'replay') return await replayCommand(parsed, io);
     if (command === 'runs' || command === 'ls') return await runsCommand(parsed, io);
     if (command === 'gc') return await gcCommand(parsed, io);
+    if (command === 'eval') return await evalCommand(parsed, io);
+    if (command === 'inspect') return await inspectCommand(parsed, io);
     if (command === 'show') return await showCommand(parsed, io);
     if (command === 'viz') return await vizCommand(parsed, io);
     if (command === 'mcp') return await mcpCommand(parsed, io);
@@ -187,28 +240,39 @@ export async function main(argv: string[], ioOverrides: Partial<CliIO> = {}): Pr
   }
 }
 
-async function runCommand(p: Parsed, io: CliIO): Promise<number> {
-  if (p.positionals.length > 1)
-    throw new UsageError(`unexpected arguments: ${p.positionals.slice(1).join(' ')}`);
-  const scriptArg = p.positionals[0];
-  const resume = str(p, 'resume');
-  if (scriptArg === undefined && resume === undefined)
-    throw new UsageError('run needs a script file or --resume');
-  const cwd = path.resolve(io.cwd, str(p, 'cwd') ?? '.');
-
-  let args: unknown;
-  const argsJson = str(p, 'args');
-  const argsFile = str(p, 'args-file');
-  if (argsJson !== undefined && argsFile !== undefined)
-    throw new UsageError('use either --args or --args-file');
-  try {
-    if (argsJson !== undefined) args = JSON.parse(argsJson);
-    if (argsFile !== undefined) args = JSON.parse(await readFile(path.resolve(io.cwd, argsFile), 'utf8'));
-  } catch (e) {
-    throw new UsageError(`invalid args JSON: ${errorText(e)}`);
+async function replayCommand(p: Parsed, io: CliIO): Promise<number> {
+  const [runId, ...extra] = p.positionals;
+  const from = str(p, 'from');
+  if (!runId || !from || extra.length) throw new UsageError('replay needs a runId and --from <node>');
+  if (!SAFE_ID.test(runId)) throw new UsageError(`invalid runId "${runId}"`);
+  if (p.flags.has('resume')) throw new UsageError('replay always creates a new run; remove --resume');
+  const { stateDir } = statePaths(p, io);
+  const sourceDir = path.join(stateDir, 'runs', runId);
+  if (!existsSync(sourceDir)) throw new Error(`no source run ${runId} under ${path.dirname(sourceDir)}`);
+  const config = await readFile(path.join(sourceDir, 'run.json'), 'utf8').then(JSON.parse, (e) => {
+    if (e.code === 'ENOENT') return {};
+    throw e;
+  });
+  const flags = new Map(p.flags);
+  if (!flags.has('runner') && !flags.has('dry-run')) {
+    const names: Record<string, string> = {
+      AnthropicRunner: 'anthropic',
+      CodexRunner: 'codex',
+      RoutingRunner: 'auto',
+      GatewayRunner: 'gateway',
+      GeminiRunner: 'gemini',
+    };
+    if (config?.runner === 'FakeRunner') flags.set('dry-run', true);
+    else if (Object.hasOwn(names, config?.runner)) flags.set('runner', names[config.runner]!);
+    else throw new UsageError('source runner unavailable on the CLI; choose --runner or --dry-run');
   }
+  if (!flags.has('model') && typeof config?.model === 'string') flags.set('model', config.model);
+  const edited = str(p, 'script');
+  return runCommand({ positionals: edited === undefined ? [] : [edited], flags }, io, { runId, from });
+}
 
-  let budget: number | null = null;
+function runOptions(p: Parsed, io: CliIO) {
+  let budget: number | null | undefined;
   const budgetArg = str(p, 'budget');
   if (budgetArg !== undefined) {
     budget = parseBudgetDirective(budgetArg);
@@ -224,45 +288,124 @@ async function runCommand(p: Parsed, io: CliIO): Promise<number> {
     }
   }
 
-  const dryRun = p.flags.has('dry-run');
-  const selectedRunner = runnerName(p);
-  const structuredMode = structuredModeFlag(p);
-  let runner: AgentRunner;
-  if (dryRun) runner = new FakeRunner();
-  else if (selectedRunner === 'codex') runner = new CodexRunner();
-  else if (selectedRunner === 'auto') runner = new RoutingRunner({ anthropic: { structuredMode } });
-  else if (selectedRunner === 'gateway') {
-    if (!io.env.AI_GATEWAY_API_KEY?.trim()) {
-      io.stderr.write(
-        'maestro: AI_GATEWAY_API_KEY is missing or blank. Export the key first, or use --dry-run for offline runs.\n',
-      );
-      return 1;
-    }
-    runner = new GatewayRunner({ apiKey: io.env.AI_GATEWAY_API_KEY, structuredMode });
-  } else {
-    if (!io.env.ANTHROPIC_API_KEY) {
-      io.stderr.write(
-        'maestro: ANTHROPIC_API_KEY is not set. Agents call the Anthropic API; export the key first, ' +
-          'or use --dry-run to run the script against an in-memory fake runner.\n',
-      );
-      return 1;
-    }
-    runner = new AnthropicRunner({ structuredMode });
-  }
+  const runner = selectRunner(p, io);
 
-  const stateDir = str(p, 'state-dir');
   const toolsDir = str(p, 'tools-dir');
-  const handle = run({
-    ...(scriptArg !== undefined ? { scriptPath: path.resolve(io.cwd, scriptArg) } : {}),
-    ...(args !== undefined ? { args } : {}),
-    ...(resume !== undefined ? { resumeFromRunId: resume } : {}),
-    ...(stateDir !== undefined ? { stateDir: path.resolve(io.cwd, stateDir) } : {}),
+  return {
+    ...statePaths(p, io),
     ...(toolsDir !== undefined ? { toolsDir: path.resolve(io.cwd, toolsDir) } : {}),
     ...(concurrency !== undefined ? { concurrency } : {}),
     ...(str(p, 'model') !== undefined ? { model: str(p, 'model') } : {}),
     runner,
-    cwd,
     budget,
+  };
+}
+
+async function inspectCommand(p: Parsed, io: CliIO): Promise<number> {
+  const [requested, ...rest] = p.positionals;
+  if (rest.length || (requested !== undefined && !SAFE_ID.test(requested)))
+    throw new UsageError('inspect accepts one optional runId');
+  const runsDir = path.join(statePaths(p, io).stateDir, 'runs');
+  const id = requested ?? (await listRunIds(runsDir, 1))[0];
+  if (id === undefined) throw new Error(`no runs in ${runsDir}`);
+  if (!p.flags.has('compact')) return showCommand({ ...p, positionals: [id] }, io);
+  const report = await inspectFailures(path.join(runsDir, id), id);
+  io.stdout.write(`${JSON.stringify(report)}\n`);
+  return 0;
+}
+
+async function evalCommand(p: Parsed, io: CliIO): Promise<number> {
+  const [first, ...rest] = p.positionals;
+  const json = p.flags.has('json');
+  const allowed = new Set(['cwd', 'state-dir', 'json']);
+  if (first !== 'diff') {
+    for (const name of [
+      'cases',
+      'baseline',
+      'from',
+      'runner',
+      'model',
+      'structured-mode',
+      'budget',
+      'concurrency',
+      'tools-dir',
+      'dry-run',
+    ])
+      allowed.add(name);
+  }
+  for (const name of p.flags.keys()) {
+    if (!allowed.has(name))
+      throw new UsageError(`--${name} is not an eval${first === 'diff' ? ' diff' : ''} option`);
+  }
+  if (first === 'diff') {
+    const [a, b] = rest;
+    if (!a || !b || rest.length !== 2) throw new UsageError('eval diff needs two eval IDs');
+    const { stateDir } = statePaths(p, io);
+    const [before, after] = await Promise.all([readEval(stateDir, a), readEval(stateDir, b)]);
+    const diff = diffEvals(before, after);
+    io.stdout.write(`${json ? JSON.stringify(diff) : formatEvalDiff(diff)}\n`);
+    return 0;
+  }
+  const cases = str(p, 'cases');
+  if (!first || rest.length || !cases)
+    throw new UsageError('eval needs a workflow script and --cases <suite.json>');
+  const baseline = str(p, 'baseline');
+  const from = str(p, 'from');
+  if ((baseline === undefined) !== (from === undefined))
+    throw new UsageError('use --baseline <evalId> and --from <node> together');
+  const controller = new AbortController();
+  const onSigint = () => controller.abort();
+  if (io.handleSignals) process.once('SIGINT', onSigint);
+  try {
+    const report = await runEval({
+      ...runOptions(p, io),
+      scriptPath: path.resolve(io.cwd, first),
+      casesPath: path.resolve(io.cwd, cases),
+      baseline,
+      from,
+      signal: controller.signal,
+      onCaseStart: (id, runId) => io.stderr.write(`maestro: case ${JSON.stringify(id)} run ${runId}\n`),
+    });
+    io.stdout.write(`${json ? JSON.stringify(report) : formatEval(report)}\n`);
+    return report.passed === report.cases.length ? 0 : 1;
+  } finally {
+    if (io.handleSignals) process.off('SIGINT', onSigint);
+  }
+}
+
+async function runCommand(
+  p: Parsed,
+  io: CliIO,
+  replayFrom?: { runId: string; from: string },
+): Promise<number> {
+  if (p.positionals.length > 1)
+    throw new UsageError(`unexpected arguments: ${p.positionals.slice(1).join(' ')}`);
+  const scriptArg = p.positionals[0];
+  const resume = str(p, 'resume');
+  if (!replayFrom && (p.flags.has('from') || p.flags.has('script')))
+    throw new UsageError('--from and --script are replay options');
+  if (scriptArg === undefined && resume === undefined && !replayFrom)
+    throw new UsageError('run needs a script file or --resume');
+  const dryRun = p.flags.has('dry-run');
+
+  let args: unknown;
+  const argsJson = str(p, 'args');
+  const argsFile = str(p, 'args-file');
+  if (argsJson !== undefined && argsFile !== undefined)
+    throw new UsageError('use either --args or --args-file');
+  try {
+    if (argsJson !== undefined) args = JSON.parse(argsJson);
+    if (argsFile !== undefined) args = JSON.parse(await readFile(path.resolve(io.cwd, argsFile), 'utf8'));
+  } catch (e) {
+    throw new UsageError(`invalid args JSON: ${errorText(e)}`);
+  }
+
+  const handle = run({
+    ...(scriptArg !== undefined ? { scriptPath: path.resolve(io.cwd, scriptArg) } : {}),
+    ...(args !== undefined ? { args } : {}),
+    ...(resume !== undefined ? { resumeFromRunId: resume } : {}),
+    ...(replayFrom ? { replayFrom } : {}),
+    ...runOptions(p, io),
   });
   io.stderr.write(`maestro: run ${handle.runId}${dryRun ? ' (dry run)' : ''} in ${handle.runDir}\n`);
   const detach = attachTerminalProgress(handle, io.stderr);
@@ -274,7 +417,7 @@ async function runCommand(p: Parsed, io: CliIO): Promise<number> {
     return 0;
   } catch (e) {
     io.stderr.write(`maestro: run ${handle.runId} failed: ${errorText(e)}\n`);
-    io.stderr.write(`maestro: resume with: maestro run --resume ${handle.runId}\n`);
+    if (!replayFrom) io.stderr.write(`maestro: resume with: maestro run --resume ${handle.runId}\n`);
     return 1;
   } finally {
     detach();
@@ -319,33 +462,14 @@ async function mcpCommand(p: Parsed, io: CliIO): Promise<number> {
   if (concurrency !== undefined && (!Number.isInteger(concurrency) || concurrency < 1)) {
     throw new UsageError(`--concurrency must be a positive integer, got "${concArg}"`);
   }
-  const dryRun = p.flags.has('dry-run');
-  const selectedRunner = runnerName(p);
-  const structuredMode = structuredModeFlag(p);
-  // stdout is the MCP channel: diagnostics go to stderr only.
-  if (!dryRun && selectedRunner === 'anthropic' && !io.env.ANTHROPIC_API_KEY) {
-    io.stderr.write('maestro mcp: ANTHROPIC_API_KEY is not set; Workflow runs will fail until it is.\n');
-  }
-  if (!dryRun && selectedRunner === 'gateway' && !io.env.AI_GATEWAY_API_KEY?.trim()) {
-    io.stderr.write(
-      'maestro mcp: AI_GATEWAY_API_KEY is missing or blank; Workflow runs will fail until it is set.\n',
-    );
-  }
+  const runner = selectRunner(p, io, true);
   const cwd = path.resolve(io.cwd, str(p, 'cwd') ?? '.');
   const stateDir = str(p, 'state-dir');
   const toolsDir = str(p, 'tools-dir');
   // A numeric budget becomes one Budget shared by every run of this server (createMcpServer).
   const server = await serveMcp(
     {
-      runner: dryRun
-        ? new FakeRunner()
-        : selectedRunner === 'codex'
-          ? new CodexRunner()
-          : selectedRunner === 'auto'
-            ? new RoutingRunner({ anthropic: { structuredMode } })
-            : selectedRunner === 'gateway'
-              ? new GatewayRunner({ apiKey: io.env.AI_GATEWAY_API_KEY ?? '', structuredMode })
-              : new AnthropicRunner({ structuredMode }),
+      runner,
       cwd,
       budget,
       ...(stateDir !== undefined ? { stateDir: path.resolve(io.cwd, stateDir) } : {}),
@@ -415,16 +539,8 @@ async function runsCommand(p: Parsed, io: CliIO): Promise<number> {
       throw new UsageError(`--limit must be a positive integer, got "${limitArg}"`);
     }
   }
-  const cwd = path.resolve(io.cwd, str(p, 'cwd') ?? '.');
-  const stateDirArg = str(p, 'state-dir');
-  const stateDir = stateDirArg !== undefined ? path.resolve(io.cwd, stateDirArg) : path.join(cwd, '.maestro');
-  const runsDir = path.join(stateDir, 'runs');
-  if (!existsSync(runsDir)) {
-    io.stdout.write(`(no runs in ${runsDir})\n`);
-    return 0;
-  }
-  const dirEntries = await readdir(runsDir, { withFileTypes: true });
-  const runIds = dirEntries.filter((d) => d.isDirectory() && SAFE_ID.test(d.name)).map((d) => d.name);
+  const runsDir = path.join(statePaths(p, io).stateDir, 'runs');
+  const runIds = await listRunIds(runsDir, limit);
   if (runIds.length === 0) {
     io.stdout.write(`(no runs in ${runsDir})\n`);
     return 0;
@@ -436,19 +552,8 @@ async function runsCommand(p: Parsed, io: CliIO): Promise<number> {
     line: string;
   }
 
-  // With --limit, order the runs by a cheap start hint first, so only the listed runs' event logs and
-  // journals are read in full.
-  let listed = runIds;
-  if (limit !== undefined && runIds.length > limit) {
-    const hints = await Promise.all(
-      runIds.map(async (runId) => ({ runId, t: await runStartHint(path.join(runsDir, runId)) })),
-    );
-    hints.sort((a, b) => b.t - a.t || b.runId.localeCompare(a.runId));
-    listed = hints.slice(0, limit).map((h) => h.runId);
-  }
-
   const summaries: RunSummaryRow[] = await Promise.all(
-    listed.map(async (runId): Promise<RunSummaryRow> => {
+    runIds.map(async (runId): Promise<RunSummaryRow> => {
       const runDir = path.join(runsDir, runId);
       const [{ lines: events }, outcome, rows, st] = await Promise.all([
         readEventLines(runDir),
@@ -510,7 +615,7 @@ async function runsCommand(p: Parsed, io: CliIO): Promise<number> {
       let nullCount = 0;
       let skippedCount = 0;
       for (const r of rows) {
-        addUsage(usage, r.usage);
+        if (!r.cachedFrom) addUsage(usage, r.usage);
         if (r.status === 'ok') okCount++;
         else if (r.status === 'null') nullCount++;
         else if (r.status === 'skipped') skippedCount++;
@@ -535,6 +640,19 @@ async function runsCommand(p: Parsed, io: CliIO): Promise<number> {
   const selected = limit !== undefined ? summaries.slice(0, limit) : summaries;
   for (const s of selected) io.stdout.write(`${s.line}\n`);
   return 0;
+}
+
+/** Order by a cheap start hint when only a few runs will be inspected. */
+async function listRunIds(runsDir: string, limit?: number): Promise<string[]> {
+  if (!existsSync(runsDir)) return [];
+  const entries = await readdir(runsDir, { withFileTypes: true });
+  const ids = entries.filter((d) => d.isDirectory() && SAFE_ID.test(d.name)).map((d) => d.name);
+  if (limit === undefined || ids.length <= limit) return ids;
+  const hints = await Promise.all(
+    ids.map(async (runId) => ({ runId, t: await runStartHint(path.join(runsDir, runId)) })),
+  );
+  hints.sort((a, b) => b.t - a.t || b.runId.localeCompare(a.runId));
+  return hints.slice(0, limit).map((h) => h.runId);
 }
 
 /**

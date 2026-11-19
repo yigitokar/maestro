@@ -25,7 +25,8 @@
           "maestro/workflows",
           "maestro/agents-and-tools",
           "maestro/runners",
-          "maestro/runs"
+          "maestro/runs",
+          "maestro/evals"
         ]
       },
       {

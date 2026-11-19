@@ -1,4 +1,5 @@
 // One fresh Codex CLI process per agent; JSONL events supply live usage and the journal trace.
+
 import { execFile, spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -8,6 +9,7 @@ import { promisify } from 'node:util';
 import { CodexAppServerUnavailable, executeCodexAppServer } from './codex-app-server.js';
 import { type CodexToolBridge, startCodexToolBridge } from './codex-tool-mcp.js';
 import { childGitEnv } from './git-env.js';
+import { checkPdfInputs } from './pdf-input.js';
 import { toStructuredOutputSchema, validateValue, WRITER_COMMIT_INSTRUCTION } from './runner.js';
 import { READ_TOOL_NAMES, WRITE_TOOL_NAMES } from './tools.js';
 import {
@@ -192,6 +194,7 @@ export class CodexRunner implements AgentRunner {
     let tempDir: string | undefined;
     let bridge: CodexToolBridge | undefined;
     try {
+      checkPdfInputs(req.pdfs, false);
       const customByName = new Map<string, ToolDef>();
       for (const tool of req.tools) {
         if (!BUILTIN_TOOLS.has(tool.name) && !customByName.has(tool.name)) {

@@ -3,16 +3,18 @@
 // process (an MCP server, a terminal `maestro run`) is executing; exportVizHtml() writes the same page
 // as one self-contained file with the data embedded. The server binds to 127.0.0.1 only.
 
-import { type FileHandle, open, stat } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { join } from 'node:path';
-import { EVENT_LOG_FILE, type EventLogLine } from './event-log.js';
+import { type EventLogLine, readEventLines } from './event-log.js';
 import { readEntries, readResultBlob, readTrace } from './journal.js';
 import type { Entry, EntryStatus, Trace, Usage } from './types.js';
 import { vizPage } from './viz-page.js';
 import { vizWidget, widgetModel } from './viz-widget.js';
 import { OUTCOME_FILE, type PersistedOutcome, readOutcome } from './workflow.js';
+
+export { readEventLines } from './event-log.js';
 
 /** A journal row without its result, for the timeline (sent on every poll, so kept small). */
 export interface VizEntrySummary {
@@ -52,46 +54,6 @@ export interface VizSnapshot {
 
 /** Result text kept per agent in the detail panel and in an exported file. */
 export const VIZ_RESULT_CHARS = 20_000;
-
-/** Complete lines of events.jsonl from byte `from`; a torn last line is left for the next read. */
-export async function readEventLines(
-  runDir: string,
-  from = 0,
-): Promise<{ lines: EventLogLine[]; offset: number }> {
-  // Only the bytes after `from` are read: a live page polls every second and the file only grows.
-  let fh: FileHandle;
-  try {
-    fh = await open(join(runDir, EVENT_LOG_FILE), 'r');
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { lines: [], offset: 0 };
-    throw err;
-  }
-  let data: Buffer;
-  let start: number;
-  try {
-    const { size } = await fh.stat();
-    start = from > 0 && from <= size ? from : 0;
-    data = Buffer.alloc(size - start);
-    const { bytesRead } = await fh.read(data, 0, data.length, start);
-    data = data.subarray(0, bytesRead);
-  } finally {
-    await fh.close();
-  }
-  const lines: EventLogLine[] = [];
-  let pos = 0;
-  while (pos < data.length) {
-    const nl = data.indexOf(0x0a, pos);
-    if (nl === -1) break;
-    try {
-      const parsed = JSON.parse(data.toString('utf8', pos, nl)) as EventLogLine;
-      if (parsed && typeof parsed === 'object' && typeof parsed.t === 'number') lines.push(parsed);
-    } catch {
-      // A malformed line is skipped; the log is audit-only.
-    }
-    pos = nl + 1;
-  }
-  return { lines, offset: start + pos };
-}
 
 function summary(row: Entry): VizEntrySummary {
   const s: VizEntrySummary = { index: row.index, key: row.key, status: row.status, usage: row.usage };

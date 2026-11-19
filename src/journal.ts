@@ -4,7 +4,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { access, constants, type FileHandle, mkdir, open, readFile, truncate } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import type { AgentOpts, Entry, Trace } from './types.js';
 import { LIMITS, MaestroError } from './types.js';
 
@@ -86,9 +86,9 @@ function hasSlot(thisValueOf: () => unknown, obj: object): boolean {
 /** Matches an unpaired surrogate (with the u flag a valid pair is one code point, not \p{Cs}). */
 const LONE_SURROGATE = /\p{Cs}/u;
 
-/** sha256(prompt + "\n" + canonicalJSON(opts without label/phase)); label/phase never affect the key (spec 3.1). */
+/** sha256(prompt + "\n" + canonicalJSON(opts without label/phase/upstream)); audit options never affect the key (spec 3.1). */
 export function hashCall(prompt: string, opts?: AgentOpts): string {
-  const { label: _label, phase: _phase, ...rest } = opts ?? {};
+  const { label: _label, phase: _phase, upstream: _upstream, ...rest } = opts ?? {};
   const text = `${prompt}\n${canonicalJSON(rest)}`;
   const h = createHash('sha256');
   if (LONE_SURROGATE.test(text)) {
@@ -187,12 +187,15 @@ export class Journal {
     for (const row of rows) this.index(row);
   }
 
-  static async open(runDir: string, opts?: { log?: (m: string) => void }): Promise<Journal> {
+  static async open(runDir: string, opts?: { log?: (m: string) => void; fresh?: boolean }): Promise<Journal> {
     const log = opts?.log ?? (() => {});
     const path = join(runDir, 'journal.jsonl');
     const blobDir = join(runDir, 'blobs');
     try {
-      await mkdir(runDir, { recursive: true });
+      if (opts?.fresh) {
+        await mkdir(dirname(runDir), { recursive: true });
+        await mkdir(runDir);
+      } else await mkdir(runDir, { recursive: true });
       await mkdir(blobDir, { recursive: true });
       await access(blobDir, constants.W_OK);
 
@@ -254,6 +257,10 @@ export class Journal {
     return this.rows.map((row) => structuredClone(row));
   }
 
+  get length(): number {
+    return this.rows.length;
+  }
+
   async close(): Promise<void> {
     await this.chain;
     const fh = this.fh;
@@ -279,6 +286,11 @@ export class Journal {
       if (traceJson !== undefined && Buffer.byteLength(traceJson) > LIMITS.blobThresholdBytes) {
         await writeDurable(traceBlobPath(this.blobDir, entry.key), traceJson);
         row = { ...row, trace: { blob: entry.key }, traceBlob: true };
+      }
+      const inputJson = row.failureInput === undefined ? undefined : JSON.stringify(row.failureInput);
+      if (inputJson !== undefined && Buffer.byteLength(inputJson) > LIMITS.blobThresholdBytes) {
+        await writeDurable(join(this.blobDir, blobFileName(entry.key, '.input.json')), inputJson);
+        row = { ...row, failureInput: undefined, failureInputBlob: true };
       }
       const line = JSON.stringify(row);
       buf = Buffer.from(`${line}\n`);
@@ -321,6 +333,16 @@ export async function readEntries(runDir: string): Promise<Entry[]> {
 /** Reads a >64 KB result blob for `key` (resolving POSIX/Windows filename conventions). */
 export async function readResultBlob(runDir: string, key: string): Promise<unknown> {
   return JSON.parse(await readFile(resolveBlobFile(join(runDir, 'blobs'), key, '.json'), 'utf8'));
+}
+
+export async function readFailureInput(runDir: string, row: Entry): Promise<Entry['failureInput']> {
+  if (!row.failureInputBlob) return row.failureInput;
+  if (!/^[a-f0-9]{64}:\d+$/.test(row.key)) return undefined;
+  try {
+    return JSON.parse(await readFile(resolveBlobFile(join(runDir, 'blobs'), row.key, '.input.json'), 'utf8'));
+  } catch {
+    return undefined;
+  }
 }
 
 /** The row's trace with its blob resolved; undefined when the row has none or the blob is unreadable. */

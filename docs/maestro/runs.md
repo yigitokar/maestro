@@ -12,10 +12,10 @@ Every run gets an id such as `20261025-150301-a1b2c3` and a directory `.maestro/
 |---|---|
 | `script.js` | The script as it ran. |
 | `args.json` | The arguments. |
-| `run.json` | The run's model and runner. |
+| `run.json` | The run's model and runner, plus the source run and boundary for replays. |
 | `journal.jsonl` | One line per `agent()` call: its key, status, result, token usage, trace and live message audit. |
-| `blobs/` | Results larger than 64 KB, one file each. |
-| `events.jsonl` | Every event with a wall-clock time. Used only for display. |
+| `blobs/` | Large results, traces and failed-call inputs referenced by journal rows. |
+| `events.jsonl` | Invocation order, cache hits and progress for each run attempt. |
 | `outcome.json` | The final result or error, written when the run ends. |
 
 Add `.maestro/` to your `.gitignore`.
@@ -26,7 +26,7 @@ Add `.maestro/` to your `.gitignore`.
 maestro run review.js --resume <runId>
 ```
 
-Resume runs the script again from the top. Each `agent()` call is looked up in the journal by a key made from its prompt, its options (without `label` and `phase`) and how many times the same call has occurred. A call found with status `ok` returns its stored answer without running.
+Resume runs the script again from the top. Each `agent()` call is looked up in the journal by a key made from its prompt, its execution options and how many times the same call has occurred. Display fields (`label`, `phase`) and inspection metadata (`upstream`) are excluded. A call found with status `ok` returns its stored answer without running.
 
 This gives resume three uses:
 
@@ -41,6 +41,19 @@ The key includes an agent's own `model` option, but not the run's model (`--mode
 Successful results produced after live messages are also reused, with an explicit log that steering was involved. Messages and delivery receipts stay in the journal and event log. Edit the workflow prompt when changing a durable instruction; sending a live message does not rewrite the script.
 
 Answers are matched by content, so a script must be deterministic. See [Writing workflows](/maestro/workflows).
+
+## Replay from a node
+
+```bash
+maestro replay <runId> --from classify
+maestro replay <runId> --from '#2' --script edited-review.js
+```
+
+Replay creates a new run with its own journal. Use a unique agent label, a zero-based invocation ID such as `2` or `'#2'`, or the full journal key. The boundary follows the order the script called `agent()` in the source run's latest attempt, including parallel and nested calls. Earlier calls return their recorded results. The selected call and everything issued after it execute live, even when their prompts are identical to the originals.
+
+The command uses the stored script, arguments, runner and model, and inherits the recorded budget and concurrency. Pass `--script` to run your edited workflow. Supply `--structured-mode` or `--tools-dir` again if you used a custom value. A label lets you edit the target prompt. A numeric ID lets you replace the target entirely. If any earlier call has changed inputs or has no successful cached result, replay fails and identifies the earlier node to select.
+
+The new run ID appears on stderr. Its copied upstream results and traces can be inspected and reused on future runs. Token totals for the new run count only live calls.
 
 ## Agent statuses
 

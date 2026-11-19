@@ -1,6 +1,6 @@
 ---
 title: "Runners"
-description: "Run agents on Claude, Codex, or models through Vercel AI Gateway."
+description: "Run agents on Claude, Codex, Gemini, or models through Vercel AI Gateway."
 icon: "server"
 ---
 
@@ -10,8 +10,9 @@ A runner is what executes one agent. Choose one with `--runner` or the `runner` 
 |---|---|---|
 | `anthropic` (default) | The Claude API | `ANTHROPIC_API_KEY` |
 | `codex` | The Codex CLI, one process per agent | Codex CLI installed and signed in |
+| `gemini` | The Gemini Developer API | `GEMINI_API_KEY` and a `gemini-*` model ID |
 | `gateway` | Models through Vercel AI Gateway | `AI_GATEWAY_API_KEY` and a `provider/model` ID |
-| `auto` | Direct Claude or Codex, chosen per agent by its model | Whatever the models in the script need |
+| `auto` | Claude, Codex or Gemini, chosen per agent by its model | Whatever the models in the script need |
 
 `--dry-run` overrides every runner with a fake that answers from the schema and needs no API key.
 
@@ -64,6 +65,40 @@ How Codex agents differ from Claude agents:
 
 An agent's result requires a completed turn and valid final output. App-server is closed deliberately after completion; legacy exec additionally requires a successful process exit and no subsequent failure. Public progress is not a final answer. Stopping a run also stops the processes Codex started.
 
+## Gemini
+
+Set `GEMINI_API_KEY` and choose a model your Google account can use.
+
+```bash
+maestro run review.js --runner gemini --model gemini-3.6-flash
+maestro mcp --runner gemini --model gemini-3.6-flash
+```
+
+Each agent inherits the run's model or selects its own with `opts.model`. The direct runner accepts a bare Gemini model ID, a Google API resource name such as `models/gemini-3.6-flash`, or `google/gemini-3.6-flash`. Library callers can set `new GeminiRunner({ apiKey, maxTurns, maxTokens })`.
+
+Gemini calls Maestro's built-in and custom tools in the node's working directory. It accepts repository paths through read tools and inline PDF documents through the node's `pdfs` option. Each document goes to Google's `generateContent` API as a separate `application/pdf` part in the order supplied. [API reference](https://ai.google.dev/api/generate-content)
+
+To compare two PDFs, encode their bytes as standard base64 strings in a JSON argument file. The file can hold documents too large for a shell argument.
+
+```bash
+node --input-type=module -e 'import { readFileSync } from "node:fs";
+  console.log(JSON.stringify({ pdfs: process.argv.slice(1).map(p => readFileSync(p).toString("base64")) }))' \
+  original.pdf revised.pdf > reports.json
+maestro run compare.js --runner auto --args-file reports.json
+```
+
+```js
+export const meta = { name: 'compare', description: 'Compare two editions of a report' }
+
+return agent('List the material changes from the first report to the second.', {
+  label: 'compare-pdfs', model: 'gemini-3.6-flash', pdfs: args.pdfs, tools: [],
+})
+```
+
+Document contents and order are part of the cache key. Replacing a PDF causes a cache miss on resume. As with other workflow arguments, `args.json` in the run directory contains the submitted data. Choose a Gemini model that supports PDF input.
+
+When a node requests a schema, Gemini returns JSON that Maestro validates locally. Nodes that use tools get a separate formatting request after the tools finish. For a classifier with its input already in the prompt, set `tools: []` to request structured JSON on the first turn. The runner counts cached input separately and includes thinking tokens in output usage. Gemini uses the model's default thinking configuration and reports `canMessage: false`.
+
 ## Vercel AI Gateway
 
 Set `AI_GATEWAY_API_KEY` in the process environment, then select a model:
@@ -96,9 +131,9 @@ When using the MCP server from Codex, make `AI_GATEWAY_API_KEY` available in Cod
 codex mcp add maestro -- npx -y maestro-workflows mcp --runner gateway --model openai/gpt-5.4
 ```
 
-The host remains Codex, while workflow agents are billed through Gateway. Gateway mode sends every agent to Gateway; `auto` continues to route only between direct Anthropic and Codex.
+The host remains Codex, while every workflow agent in Gateway mode is billed through Gateway.
 
-## Claude and Codex in one run
+## Routing each node by model
 
 ```bash
 maestro run review.js --runner auto
@@ -107,14 +142,22 @@ maestro run review.js --runner auto
 With `auto`, each agent goes to a runner by its model name:
 
 - `claude-*` and `anthropic/*` go to Claude.
+- `gemini-*`, `models/gemini-*` and `google/gemini-*` go to the Gemini Developer API.
 - Everything else goes to Codex. Use a model name your Codex account accepts.
 
 ```js
-const findings = await agent('Find bugs in src/journal.ts.', { model: '<a-codex-model>', schema: FINDINGS })
-const verdict = await agent(`Judge these findings: ${JSON.stringify(findings)}`, { model: 'claude-opus-5-5' })
+const context = await agent('Read src/ and list the modules involved in budgeting.', {
+  label: 'ingest', model: 'gemini-3.6-flash',
+})
+const review = await agent(`Check these modules for accounting errors: ${context}`, {
+  label: 'review', model: 'gpt-5.4',
+})
+return agent(`Classify the review as actionable or clean: ${review}`, {
+  label: 'classify', model: 'gemini-3.5-flash-lite', tools: [],
+})
 ```
 
-Both kinds of agent share one journal, one concurrency limit, one budget and one worktree pool.
+The agents share a journal, concurrency limit, budget and worktree pool.
 
 In a library you can supply your own rule:
 

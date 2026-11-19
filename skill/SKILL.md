@@ -41,7 +41,7 @@ The script body is async: `await` and a top-level `return` are allowed. The retu
 | `budget` | `{ total, spent(), remaining() }`. Without a total, `total` is null and `remaining()` is Infinity. The pool is shared and the limit is hard. |
 | `workflow(nameOrRef, args?)` | Runs another workflow as a sub-step, with the same semaphore, counter and budget. One level only: `workflow()` inside the child throws. |
 
-`opts`: `label` (display name), `phase`, `schema`, `model`, `effort` (`low` … `max`), `isolation: 'worktree'`, `tools` (the allowed tools). When the server runs with `--runner auto`, `opts.model` routes each agent to a provider (`claude-*` → Anthropic, `gpt-*` / `o3` → Codex). The default tools are read-only: `read_file`, `grep`, `glob`, `bash` (ls, cat, git log/diff/status/show, rg, find). Write tools (`write_file`, `edit_file`, `shell`, `git_commit`) are given only with `isolation: 'worktree'`. Custom tools defined outside the script (`.maestro/tools/*.js`, for example `arxiv_search`) are selected by name too; the end of the Workflow tool's description lists the ones that exist. `tools` replaces the default set, it does not extend it: next to a custom tool, list the read tools the agent needs as well.
+`opts`: `label` (display name), `phase`, `schema`, `model`, `effort` (`low` … `max`), `isolation: 'worktree'`, `tools` (the allowed tools). When the server runs with `--runner auto`, `opts.model` routes each agent to a provider (`claude-*` → Anthropic, `gemini-*` / `google/gemini-*` → Gemini with `GEMINI_API_KEY`, `gpt-*` / `o3` → Codex). The default tools are read-only: `read_file`, `grep`, `glob`, `bash` (ls, cat, git log/diff/status/show, rg, find). Write tools (`write_file`, `edit_file`, `shell`, `git_commit`) are given only with `isolation: 'worktree'`. Custom tools defined outside the script (`.maestro/tools/*.js`, for example `arxiv_search`) are selected by name too; the end of the Workflow tool's description lists the ones that exist. `tools` replaces the default set, it does not extend it: next to a custom tool, list the read tools the agent needs as well.
 
 With `--runner gateway`, every agent uses Vercel AI Gateway. Set `opts.model` to an exact `provider/model` ID, or inherit the server's `--model`; the direct Claude default is not a Gateway ID. The server needs `AI_GATEWAY_API_KEY` in its environment. Keep credentials out of workflow scripts and `args`. Choose models that support tool calling; structured output and effort support depend on the model.
 
@@ -61,7 +61,7 @@ Anthropic receives feedback before the next safe model request; running tools ar
 
 - If you need a timestamp, pass it in `args`: `new Date(args.ts)` works.
 - Instead of randomness, vary the prompt by index.
-- `label` and `phase` are not part of the key; changing them does not break the cache.
+- Changes to `label`, `phase` and the audit-only `upstream` field preserve the cache key.
 
 ## Pipeline is the default
 
@@ -148,7 +148,9 @@ The full versions, with the `FINDINGS`, `VERDICT` and `BUGS` schemas, are in the
 
 Every run keeps `script.js`, `args.json`, `journal.jsonl` and `blobs/` under `.maestro/runs/<runId>/`. When you edit the script and run it again with `resumeFromRunId`, every call that did not change comes from the cache. A hit is decided per call: if one prompt in the middle changes, only that call and the calls that take its result into their prompt run live, and independent siblings come from the cache. The same script with the same args means zero live calls. Only `ok` records are cache hits: null records (an API error) and skipped records (budget or a skip) run again on resume. This is how raising the budget and resuming revives the agents that were cut off.
 
-Before you diagnose an unexpected or empty result, read `journal.jsonl` (or run `npx -y maestro-workflows runs --cwd <cwd>` and `npx -y maestro-workflows show <runId> --cwd <cwd>`). Each line holds the real return value and status of one call. Do not assume a cached result is non-empty.
+For a failed agent, run `maestro inspect <runId> --compact --cwd <cwd>` for its invocation ID, reason, input, output and relevant state. A pipeline stage supplies its item and prior value automatically. In other control flow, include selected JSON values in `agent(prompt, { label, upstream: { ... } })` for inspection. Use `maestro show <runId> <label>` when you need the full trace for a successful call.
+
+For a refinement loop, save a JSON array of cases with `id`, `args` and `expected`, then run `maestro eval workflow.js --cases cases.json --json`. Each case has its own workflow run ID. After an edit, try `maestro replay <case-run-id> --from <label> --script workflow.js`. Replay creates a fresh run, restores successful calls before the selected invocation, and runs the selected invocation and subsequent calls live. Rerun the suite with `--baseline <first-eval-id> --from <label>`, then compare scores, tokens and cache hits with `maestro eval diff <first-eval-id> <second-eval-id>`.
 
 If the user wants to watch the run, give them this command:
 

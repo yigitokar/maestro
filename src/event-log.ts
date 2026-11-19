@@ -6,7 +6,7 @@
 
 import { type FileHandle, open } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { WorkflowEvent } from './types.js';
+import type { PipelineInput, WorkflowEvent } from './types.js';
 
 export const EVENT_LOG_FILE = 'events.jsonl';
 
@@ -18,6 +18,8 @@ export type EventLogExtra =
   | {
       type: 'run_start';
       resume: boolean;
+      /** Number of previously journaled rows, for matching this attempt without relying on completion events. */
+      journalStart?: number;
       name: string;
       description: string;
       phases: string[];
@@ -40,6 +42,25 @@ export type EventLogExtra =
     }
   /** The agent got a concurrency slot and its runner call starts; agent_start → here is queue time. */
   | { type: 'agent_running'; id: number }
+  | {
+      type: 'agent_rejected';
+      /** Separate from invocation IDs because the call never reached the runner. */
+      id: string;
+      reason: string;
+      input: { prompt?: unknown; options?: unknown; unavailable?: string[] };
+      pipeline?: PipelineInput;
+      group?: string;
+      phase?: string;
+    }
+  | {
+      type: 'step_failure';
+      kind: 'pipeline' | 'parallel';
+      index: number;
+      error: string;
+      input?: PipelineInput;
+      group?: string;
+      phase?: string;
+    }
   | { type: 'run_end'; ok: boolean; error?: string };
 
 /** WorkflowEvents lose their runId in the file: the file belongs to one run. */
@@ -126,4 +147,44 @@ export class EventLog {
       // Reporting must not break the run either.
     }
   }
+}
+
+/** Complete lines of events.jsonl from byte `from`; a torn last line is left for the next read. */
+export async function readEventLines(
+  runDir: string,
+  from = 0,
+): Promise<{ lines: EventLogLine[]; offset: number }> {
+  // Only the bytes after `from` are read: a live page polls every second and the file only grows.
+  let fh: FileHandle;
+  try {
+    fh = await open(join(runDir, EVENT_LOG_FILE), 'r');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { lines: [], offset: 0 };
+    throw err;
+  }
+  let data: Buffer;
+  let start: number;
+  try {
+    const { size } = await fh.stat();
+    start = from > 0 && from <= size ? from : 0;
+    data = Buffer.alloc(size - start);
+    const { bytesRead } = await fh.read(data, 0, data.length, start);
+    data = data.subarray(0, bytesRead);
+  } finally {
+    await fh.close();
+  }
+  const lines: EventLogLine[] = [];
+  let pos = 0;
+  while (pos < data.length) {
+    const nl = data.indexOf(0x0a, pos);
+    if (nl === -1) break;
+    try {
+      const parsed = JSON.parse(data.toString('utf8', pos, nl)) as EventLogLine;
+      if (parsed && typeof parsed === 'object' && typeof parsed.t === 'number') lines.push(parsed);
+    } catch {
+      // A malformed line is skipped; the log is audit-only.
+    }
+    pos = nl + 1;
+  }
+  return { lines, offset: start + pos };
 }

@@ -30,9 +30,43 @@ The terminal progress tree updates live agent activity and token usage when atta
 | `--state-dir <dir>` | Where runs are stored. Default: `<cwd>/.maestro`. |
 | `--tools-dir <dir>` | Where custom tools are loaded from. Default: `<state-dir>/tools`. |
 | `--concurrency <n>` | How many agents may run at once. |
-| `--model <model>` | The run's model, overridden by `agent(..., { model })`. Default: `claude-opus-5-5`; Gateway requires an explicit `provider/model` here or on each agent. |
-| `--runner <name>` | `anthropic` (default), `codex`, `gateway` or `auto`. See [Runners](/maestro/runners). |
+| `--model <model>` | The run's model, overridden by `agent(..., { model })`. Default: `claude-opus-5-5`; Gemini takes a Gemini model ID. Gateway requires an explicit `provider/model` here or on each agent. |
+| `--runner <name>` | `anthropic` (default), `codex`, `gemini`, `gateway` or `auto`. See [Runners](/maestro/runners). |
 | `--structured-mode <mode>` | `two-stage`, `submit-tool` or `single-stage`. Defaults to `two-stage` for Anthropic and `submit-tool` for Gateway. See [Runners](/maestro/runners). |
+
+## `maestro eval`
+
+```sh
+maestro eval triage.js --cases cases.json --runner auto
+maestro eval triage.js --cases cases.json --baseline <eval-id> --from classify --runner auto
+maestro eval diff <first-eval-id> <second-eval-id>
+```
+
+The suite is a JSON array of cases with a unique `id`, optional `args`, and an `expected` return value. The report gives each case a workflow run ID for inspection. Both commands accept `--json`, `--cwd`, and `--state-dir`. See [Evaluating workflows](/maestro/evals) for a runnable example and the cache metric definitions.
+
+## `maestro inspect`
+
+```sh
+maestro inspect [runId] --compact [--cwd <dir>] [--state-dir <dir>]
+```
+
+Omit the run ID to inspect the newest run from `maestro runs`. Compact mode prints a JSON object for the latest attempt. Each failed or skipped agent includes its numeric ID, label, reason, prompt, agent options, effective model and tools, returned value, and any raw invalid answer. Delivered live instructions appear with the input. A top-level error appears in `runError`. Calls that fail validation or budget admission appear in `rejectedCalls` with the submitted inputs and reason. Their diagnostic IDs are separate from the numeric IDs assigned when agents start. Errors caught by `parallel()` or `pipeline()` appear in `stepErrors`, even if the workflow itself returned successfully.
+
+For pipeline calls, `upstream.pipeline` contains the item index, stage number, previous stage’s value, and the original item when it differs. Non-JSON stage inputs are marked unavailable. For ordinary JavaScript control flow, include selected upstream values with the audit-only `upstream` option. For example:
+
+```js
+await agent(prompt, { label: 'judge', upstream: { sourceId, acceptedFindings } })
+```
+
+This state is saved when the call fails. Existing journals can supply their recorded prompt preview. The report marks incomplete or unavailable input explicitly. Without `--compact`, inspect shows the usual run overview.
+
+## `maestro replay`
+
+```sh
+maestro replay <runId> --from <node> [--script <edited.js>] [run options]
+```
+
+Creates a new run, reuses successful earlier calls, and runs the selected call and its suffix live. Select the node by invocation ID, unique label, or full journal key. Use `--script` to try an edit against the stored arguments. See [Replaying a run](/maestro/runs#replay-from-a-node).
 
 ## `maestro runs`
 

@@ -12,13 +12,15 @@ icon: "wrench"
 |---|---|
 | `label` | The agent's name in the progress view, in `maestro show` and in branch names. |
 | `phase` | The phase this agent belongs to. Use it in parallel code instead of `phase()`. |
+| `upstream` | JSON state to include in `maestro inspect --compact` if this call fails. Use it for intermediate values that explain how the script built the prompt. |
 | `schema` | A JSON Schema. The agent's answer is returned as an object validated against it. |
 | `model` | The model for this agent. Default: the run's model. |
+| `pdfs` | Ordered base64-encoded PDF documents for a Gemini node. See [Runners](/maestro/runners#gemini). |
 | `effort` | `'low'`, `'medium'`, `'high'`, `'xhigh'` or `'max'`. |
 | `tools` | The names of the tools this agent may use. Default: the four read-only tools. |
 | `isolation` | `'worktree'` gives the agent its own git worktree and branch, and allows write tools. |
 
-`label` and `phase` are for display only. They are not part of the cache key, so renaming an agent does not make it run again on resume.
+You can change `label`, `phase` and `upstream` while reusing the same cached answer. To give the model information from an earlier step, put that information in its prompt.
 
 ### Schemas
 

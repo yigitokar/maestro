@@ -3,10 +3,13 @@
 // `vm` is a narrow global, not a security boundary (spec 3.3). Values thrown inside the context are
 // context-realm objects, so nothing here relies on host `instanceof` for them.
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import vm from 'node:vm';
 import { parse } from 'acorn';
+import { checkPdfInputs } from './pdf-input.js';
+import { capturePipelineInput } from './pipeline-input.js';
 import { assertSatisfiableSchema } from './schema.js';
-import type { AgentOpts, BudgetView, WorkflowMeta } from './types.js';
+import type { AgentOpts, BudgetView, PipelineInput, WorkflowMeta } from './types.js';
 import { LIMITS, MaestroError } from './types.js';
 
 export interface ParsedScript {
@@ -18,6 +21,8 @@ export interface ParsedScript {
 
 export interface HostHooks {
   agent(prompt: string, opts?: AgentOpts): Promise<unknown>;
+  /** A synchronous validation or admission error, before agent() returned a live promise. */
+  onAgentRejected?(prompt: unknown, options: unknown, error: unknown): void;
   log(message: string): void;
   /** Called after the title passed validation. */
   onPhase?(title: string): void;
@@ -50,6 +55,13 @@ function reportSwallowed(
   }
 }
 type Stage = (prev: unknown, item: unknown, index: number) => unknown;
+
+const pipelineInput = new AsyncLocalStorage<PipelineInput>();
+
+/** Snapshot taken when the stage began, associated with its async chain through fan-out. */
+export function currentPipelineInput(): PipelineInput | undefined {
+  return pipelineInput.getStore();
+}
 
 const ACORN_OPTS = {
   ecmaVersion: 'latest',
@@ -292,14 +304,17 @@ export function makePipeline(checkItems: CheckItems = defaultCheckItems, onSwall
       runs.push(
         (async () => {
           let prev: unknown = item;
+          let input: PipelineInput | undefined;
           try {
             for (const [s, stage] of stages.entries()) {
+              input = capturePipelineInput(index, s + 1, prev, item);
               if (typeof stage !== 'function') throw new TypeError(`pipeline() stage ${s} is not a function`);
-              prev = await stage(prev, item, index);
+              prev = await pipelineInput.run(input, stage, prev, item, index);
             }
           } catch (e) {
             if (isFatalScriptError(e)) throw e;
-            reportSwallowed(onSwallowed, 'pipeline', index, e);
+            if (input) pipelineInput.run(input, reportSwallowed, onSwallowed, 'pipeline', index, e);
+            else reportSwallowed(onSwallowed, 'pipeline', index, e);
             return null;
           }
           return prev;
@@ -378,13 +393,23 @@ export async function runScript(
 
   // Plain (non-async) so schema/phase violations throw at the call site (null/throw table).
   function agent(prompt: string, agentOpts?: AgentOpts): Promise<unknown> {
-    if (typeof prompt !== 'string') throw new TypeError('agent(prompt): prompt must be a string');
-    if (agentOpts !== undefined && (typeof agentOpts !== 'object' || agentOpts === null)) {
-      throw new TypeError('agent(prompt, opts): opts must be an object');
+    try {
+      if (typeof prompt !== 'string') throw new TypeError('agent(prompt): prompt must be a string');
+      if (agentOpts !== undefined && (typeof agentOpts !== 'object' || agentOpts === null)) {
+        throw new TypeError('agent(prompt, opts): opts must be an object');
+      }
+      if (agentOpts?.schema !== undefined) assertSatisfiableSchema(agentOpts.schema);
+      checkPdfInputs(agentOpts?.pdfs, true);
+      if (agentOpts?.phase !== undefined) checkPhase(agentOpts.phase, 'agent opts.phase');
+      return hooks.agent(prompt, agentOpts);
+    } catch (error) {
+      try {
+        hooks.onAgentRejected?.(prompt, agentOpts, error);
+      } catch {
+        // An audit failure must not replace the original synchronous exception.
+      }
+      throw error;
     }
-    if (agentOpts?.schema !== undefined) assertSatisfiableSchema(agentOpts.schema);
-    if (agentOpts?.phase !== undefined) checkPhase(agentOpts.phase, 'agent opts.phase');
-    return hooks.agent(prompt, agentOpts);
   }
   function phase(title: string): void {
     if (typeof title !== 'string') throw new TypeError('phase(title): title must be a string');

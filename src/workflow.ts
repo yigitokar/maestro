@@ -7,14 +7,18 @@ import { EventEmitter } from 'node:events';
 import { existsSync } from 'node:fs';
 import { readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { isProxy } from 'node:util/types';
 import { AgentControl } from './agent-control.js';
 import { Budget, type BudgetLease } from './budget.js';
 import { EMPTY_TOOL_REGISTRY, loadCustomTools, type ToolRegistry } from './custom-tools.js';
 import { EVENT_LOG_PROMPT_CHARS, EventLog } from './event-log.js';
 import { Isolation, type WorktreeLease } from './isolation.js';
 import { hashCall, Journal, makeKey, Occurrences } from './journal.js';
+import { snapshotJson } from './pipeline-input.js';
+import { loadReplay, materializeReplayEntry, type ReplayFrom } from './replay.js';
 import { AnthropicRunner, systemPrompt } from './runner.js';
 import {
+  currentPipelineInput,
   type HostHooks,
   KNOWN_META_KEYS,
   type ParsedScript,
@@ -47,6 +51,8 @@ export interface RunOptions {
   name?: string;
   args?: unknown;
   resumeFromRunId?: string;
+  /** Fork a fresh run. Reuse successful upstream calls, then run the selected node and suffix live. */
+  replayFrom?: ReplayFrom;
   /** Default: new AnthropicRunner(). */
   runner?: AgentRunner;
   /** Agents' working dir / git repo. Default process.cwd(). */
@@ -142,7 +148,7 @@ export function run(opts: RunOptions): RunHandle {
   let stopped = false;
   let stopReason: string | undefined;
   let finished = false;
-  /** First journal append failure: the run fails with it (spec 3.1, a half-recorded run is unacceptable). */
+  /** A journal or replay invariant failure rejects the run even if the script catches it. */
   let fatal: unknown;
   /** Aborted by stop() and when the script settles with agents still in flight. */
   const runController = new AbortController();
@@ -150,10 +156,14 @@ export function run(opts: RunOptions): RunHandle {
   const skipControllers = new Map<number, AbortController>();
   const controls = new Map<number, AgentControl>();
   let nextId = 0;
+  let nextRejectedId = 0;
   /** Usage of every live model turn of this run (journal hits excluded), for the run-end cache line. */
   const liveUsage: Usage = { input_tokens: 0, output_tokens: 0 };
 
   let journal: Journal | undefined;
+  const replayDir = opts.replayFrom && path.join(stateDir, 'runs', opts.replayFrom.runId);
+  let replay: Awaited<ReturnType<typeof loadReplay>> | undefined;
+  let replayPrefixSettled: Promise<void> | undefined;
   let runOpened = false;
   let budget: Budget | undefined;
   let scheduler: Scheduler | undefined;
@@ -161,7 +171,7 @@ export function run(opts: RunOptions): RunHandle {
   let customTools: ToolRegistry = EMPTY_TOOL_REGISTRY;
   const occurrences = new Occurrences();
   let runner: AgentRunner | undefined;
-  const model = opts.model ?? DEFAULT_MODEL;
+  let model = opts.model ?? DEFAULT_MODEL;
   const startedAt = Date.now();
   // Timestamps for `maestro viz`; audit-only, so a write failure is a log line, never a failed run.
   const eventLog = new EventLog((m) => emitLog(m));
@@ -195,6 +205,21 @@ export function run(opts: RunOptions): RunHandle {
     while (inflight.size > 0) await Promise.allSettled([...inflight]);
   }
 
+  function track(p: Promise<unknown>): Promise<unknown> {
+    inflight.add(p);
+    const forget = () => inflight.delete(p);
+    p.then(forget, forget);
+    return p;
+  }
+
+  function failRun(error: unknown): never {
+    if (fatal === undefined) {
+      fatal = error;
+      runController.abort(error);
+    }
+    throw error;
+  }
+
   // ---------------------------------------------------------------------------------------------------
   // agent(): data flow steps 1-7
 
@@ -216,7 +241,12 @@ export function run(opts: RunOptions): RunHandle {
     const n = occurrences.next(hash);
     const key = makeKey(hash, n);
 
-    const hit = journal!.get(key);
+    let hit: Entry | undefined;
+    try {
+      hit = replay ? replay.lookup(nextId, key, o.label) : journal!.get(key);
+    } catch (e) {
+      return failRun(e);
+    }
     if (hit) {
       if (hit.messages?.some((message) => message.status === 'delivered')) {
         emitLog(
@@ -231,6 +261,22 @@ export function run(opts: RunOptions): RunHandle {
       const base = eventBase(frame, id, key, o);
       emit({ type: 'agent_start', ...base });
       recordPrompt(id, prompt, o, tools);
+      if (replay && replayDir) {
+        const sourceRow = hit;
+        const restored = replay.restore(sourceRow, async () => {
+          const row = await materializeReplayEntry(replayDir, sourceRow);
+          await journal!.append({
+            ...row,
+            index: id,
+            label: o.label,
+            phase: base.phase,
+            cachedFrom: opts.replayFrom!.runId,
+          });
+          emit({ type: 'agent_end', ...base, status: 'ok', cached: true, usage: row.usage });
+          return copyValue(row.result);
+        });
+        return track(restored.catch(failRun));
+      }
       emit({ type: 'agent_end', ...base, status: 'ok', cached: true, usage: hit.usage });
       return Promise.resolve(copyValue(hit.result));
     }
@@ -241,15 +287,15 @@ export function run(opts: RunOptions): RunHandle {
     const lease = budget!.enter();
     scheduler!.admit();
     const id = nextId++;
-    const p = liveAgent({ frame, prompt, opts: o, tools, hash, n, key, id, lease });
-    inflight.add(p);
-    const forget = () => inflight.delete(p);
-    p.then(forget, forget);
-    return p;
+    // At the first live call, inflight contains only cache imports. Parallel suffix calls must
+    // wait for these to reach disk before opening worktrees or sending any provider requests.
+    if (replay) replayPrefixSettled ??= Promise.allSettled([...inflight]).then(() => {});
+    return track(liveAgent({ frame, prompt, opts: o, tools, hash, n, key, id, lease }));
   }
 
   async function liveAgent(a: LiveAgent): Promise<unknown> {
     const { frame, opts: o, lease, id, key } = a;
+    const pipeline = currentPipelineInput();
     const writer = a.tools.some((t) => t.write);
     const isolated = o.isolation === 'worktree';
     const skipController = new AbortController();
@@ -286,22 +332,21 @@ export function run(opts: RunOptions): RunHandle {
     let raw: string | undefined;
     let worktree: Entry['worktree'];
     let wt: WorktreeLease | undefined;
+    let setupFailure: { cause: unknown } | undefined;
     try {
+      if (replayPrefixSettled) await replayPrefixSettled;
       // Step 4: worktree under the isolation mutex; no slot is held meanwhile (spec 3.4).
       if (isolated && !signal.aborted) {
         try {
           wt = await getIsolation().open({ key, label: o.label, hash: a.hash, n: a.n, writer });
         } catch (e) {
-          lease.release(false);
-          skipControllers.delete(id);
-          await control.finish();
-          controls.delete(id);
-          emit({ type: 'agent_end', ...base, status: 'null', cached: false, usage: turnUsage });
-          throw e;
+          setupFailure = { cause: e };
         }
       }
       const agentCwd = wt?.path ?? cwd;
-      if (signal.aborted) {
+      if (setupFailure) {
+        error = errorText(setupFailure.cause);
+      } else if (signal.aborted) {
         status = 'skipped';
         error = abortText();
       } else {
@@ -312,6 +357,7 @@ export function run(opts: RunOptions): RunHandle {
             control.running();
             return getRunner().run({
               prompt: a.prompt,
+              ...(o.pdfs?.length ? { pdfs: o.pdfs } : {}),
               system: systemPrompt({ cwd: agentCwd, writer }),
               tools: a.tools,
               schema: o.schema,
@@ -384,6 +430,16 @@ export function run(opts: RunOptions): RunHandle {
       status,
       raw,
       error,
+      failureInput:
+        status === 'ok'
+          ? undefined
+          : {
+              prompt: a.prompt,
+              options: o,
+              model: o.model ?? model,
+              tools: a.tools.map((t) => t.name),
+              pipeline,
+            },
       worktree,
       trace: res?.trace,
       messages: control.messages(),
@@ -395,13 +451,10 @@ export function run(opts: RunOptions): RunHandle {
       // Not an agent-level failure: the run fails loudly instead of continuing half-recorded.
       emitLog(`agent ${o.label ?? key} not journaled, the run fails: ${errorText(e)}`, frame.group);
       emit({ type: 'agent_end', ...base, status: 'null', cached: false, usage });
-      if (fatal === undefined) {
-        fatal = e;
-        if (!runController.signal.aborted) runController.abort(e);
-      }
-      throw e;
+      return failRun(e);
     }
     emit({ type: 'agent_end', ...base, status, cached: false, usage });
+    if (setupFailure) throw setupFailure.cause;
     if (stopped) throw stopError();
     return status === 'ok' ? copyValue(entry.result) : null;
   }
@@ -450,6 +503,17 @@ export function run(opts: RunOptions): RunHandle {
   function hooksFor(frame: Frame): HostHooks {
     return {
       agent: (prompt, agentOpts) => agentHook(frame, prompt, agentOpts),
+      onAgentRejected: (prompt, options, error) => {
+        eventLog.record({
+          type: 'agent_rejected',
+          id: `rejected-${nextRejectedId++}`,
+          input: rejectedCallInput(prompt, options),
+          reason: rejectionReason(error),
+          pipeline: currentPipelineInput(),
+          group: frame.group,
+          phase: frame.phase,
+        });
+      },
       log: (message) => emitLog(message, frame.group),
       onPhase: (title) => {
         frame.phase = title;
@@ -459,11 +523,19 @@ export function run(opts: RunOptions): RunHandle {
       budget: budget!.view(),
       checkItems: (count, where) => scheduler!.checkItems(count, where),
       // spec Seviye 1: the script hears how many items dropped; Seviye 4 "No silent caps".
-      onSwallowed: (where, index, err) =>
-        emitLog(
-          `${where} ${where === 'parallel' ? 'slot' : 'item'} ${index} null: ${errorText(err)}`,
-          frame.group,
-        ),
+      onSwallowed: (where, index, err) => {
+        const error = errorText(err);
+        eventLog.record({
+          type: 'step_failure',
+          kind: where,
+          index,
+          error,
+          input: currentPipelineInput(),
+          group: frame.group,
+          phase: frame.phase,
+        });
+        emitLog(`${where} ${where === 'parallel' ? 'slot' : 'item'} ${index} null: ${error}`, frame.group);
+      },
     };
   }
 
@@ -524,9 +596,20 @@ export function run(opts: RunOptions): RunHandle {
       throw new Error(`runId ${opts.runId} conflicts with resumeFromRunId ${opts.resumeFromRunId}`);
     }
     const resume = opts.resumeFromRunId !== undefined;
+    if (opts.replayFrom) {
+      if (resume) throw new Error('replayFrom and resumeFromRunId cannot be combined');
+      if (!SAFE_ID.test(opts.replayFrom.runId))
+        throw new Error(`invalid source runId "${opts.replayFrom.runId}"`);
+      if (!existsSync(replayDir!))
+        throw new Error(`no source run ${opts.replayFrom.runId} under ${path.dirname(runDir)}`);
+      replay = await loadReplay(replayDir!, opts.replayFrom.from);
+      model = opts.model ?? replay.settings?.model ?? DEFAULT_MODEL;
+    }
+    const concurrency = opts.concurrency ?? replay?.settings?.concurrency ?? defaultConcurrency();
+    const requestedBudget = opts.budget === undefined ? replay?.settings?.budget : opts.budget;
     const given = [opts.script, opts.scriptPath, opts.name].filter((v) => v !== undefined).length;
     if (given > 1) throw new Error('pass exactly one of script, scriptPath or name');
-    if (given === 0 && !resume) throw new Error('pass one of script, scriptPath or name');
+    if (given === 0 && !resume && !replay) throw new Error('pass one of script, scriptPath or name');
     if (resume && !existsSync(runDir)) throw new Error(`no run ${runId} under ${path.dirname(runDir)}`);
     if (!resume && existsSync(runDir)) {
       throw new Error(`run ${runId} already exists at ${runDir}; pass resumeFromRunId to resume it`);
@@ -540,19 +623,20 @@ export function run(opts: RunOptions): RunHandle {
     else if (opts.scriptPath !== undefined)
       source = await readFile(path.resolve(cwd, opts.scriptPath), 'utf8');
     else if (opts.name !== undefined) source = (await resolveRef(opts.name)).source;
-    else source = await readFile(scriptFile, 'utf8');
+    else source = await readFile(path.join(replayDir ?? runDir, 'script.js'), 'utf8');
     const parsed: ParsedScript = parseScript(source);
 
     let args: unknown = opts.args;
-    if (args === undefined && resume && existsSync(argsFile))
-      args = JSON.parse(await readFile(argsFile, 'utf8'));
+    const storedArgsFile = path.join(replayDir ?? runDir, 'args.json');
+    if (args === undefined && (replay || (resume && existsSync(storedArgsFile))))
+      args = JSON.parse(await readFile(storedArgsFile, 'utf8'));
     args = normalizeArgs(args);
     // Before the run dir too: agent() picks tools synchronously, and a bad tool file fails the start.
     customTools = await loadCustomTools({ tools: opts.tools, toolsDir });
     if (customTools.size > 0) emitLog(`custom tools: ${[...customTools.keys()].join(', ')}`);
 
     // spec 3.1: if the journal cannot be written the run does not start.
-    journal = await Journal.open(runDir, { log: (m) => emitLog(m) });
+    journal = await Journal.open(runDir, { log: (m) => emitLog(m), fresh: !resume });
     runOpened = true;
     if (resume) await rm(path.join(runDir, OUTCOME_FILE), { force: true }).catch(() => {});
     await eventLog.open(runDir, {
@@ -560,13 +644,14 @@ export function run(opts: RunOptions): RunHandle {
       line: {
         type: 'run_start',
         resume,
+        journalStart: journal.length,
         name: parsed.meta.name,
         description: parsed.meta.description,
         phases: (parsed.meta.phases ?? []).map((ph) => ph.title),
         runner: getRunner().constructor.name,
         model,
-        concurrency: opts.concurrency ?? defaultConcurrency(),
-        budget: opts.budget instanceof Budget ? opts.budget.total : (opts.budget ?? null),
+        concurrency,
+        budget: requestedBudget instanceof Budget ? requestedBudget.total : (requestedBudget ?? null),
       },
     });
     warnUnknownMetaKeys(parsed.meta);
@@ -577,9 +662,14 @@ export function run(opts: RunOptions): RunHandle {
       // runner (changing the key would orphan every existing journal). So a resume that changes either
       // says so: its cache hits were produced by the earlier configuration.
       const configFile = path.join(runDir, 'run.json');
-      const config = { model, runner: getRunner().constructor.name };
+      const config = withDefined({
+        model,
+        runner: getRunner().constructor.name,
+        replayFrom: opts.replayFrom,
+      });
       if (resume) {
         const before = await readFile(configFile, 'utf8').then(JSON.parse, () => null);
+        if (before?.replayFrom) config.replayFrom = before.replayFrom;
         for (const k of ['model', 'runner'] as const) {
           if (typeof before?.[k] === 'string' && before[k] !== config[k]) {
             emitLog(
@@ -592,17 +682,17 @@ export function run(opts: RunOptions): RunHandle {
       await writeFile(configFile, `${JSON.stringify(config)}\n`);
 
       scheduler = new Scheduler({
-        concurrency: opts.concurrency ?? defaultConcurrency(),
+        concurrency,
         maxAgents: parsed.meta.maxAgents,
       });
       // spec 3.5 aşım payı: max_tokens_per_turn is the largest max_tokens the runner actually sends.
       const r = getRunner();
       const maxReq = (r as { maxRequestTokens?: unknown }).maxRequestTokens;
       budget =
-        opts.budget instanceof Budget
-          ? opts.budget
+        requestedBudget instanceof Budget
+          ? requestedBudget
           : new Budget({
-              total: opts.budget ?? null,
+              total: requestedBudget ?? null,
               concurrency: scheduler.concurrency,
               maxTokensPerTurn: typeof maxReq === 'number' ? maxReq : undefined,
             });
@@ -615,7 +705,9 @@ export function run(opts: RunOptions): RunHandle {
         if (stopped) throw stopError();
         const top: Frame = { depth: 0 };
         try {
-          return await runScript(parsed, args, hooksFor(top), { filename: scriptFile });
+          const result = await runScript(parsed, args, hooksFor(top), { filename: scriptFile });
+          replay?.assertReached();
+          return result;
         } finally {
           finished = true;
           // Agents the script left behind are aborted and journaled before the run settles.
@@ -759,6 +851,31 @@ function cacheLine(u: Usage): string {
 
 function finite(n: unknown): number {
   return typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+// Invalid inputs and thrown values may be arbitrary VM objects. Diagnostics must never execute
+// workflow code a second time (including toJSON, accessors and proxy traps).
+function rejectedCallInput(prompt: unknown, options: unknown = {}) {
+  const submitted = { prompt, options };
+  const input: { prompt?: unknown; options?: unknown; unavailable?: string[] } = {};
+  for (const field of ['prompt', 'options'] as const) {
+    try {
+      input[field] = snapshotJson(submitted[field]);
+    } catch {
+      input.unavailable ??= [];
+      input.unavailable.push(field);
+    }
+  }
+  return input;
+}
+
+function rejectionReason(error: unknown): string {
+  if (error === null || (typeof error !== 'object' && typeof error !== 'function')) return String(error);
+  if (!isProxy(error)) {
+    const message = Object.getOwnPropertyDescriptor(error, 'message')?.value;
+    if (typeof message === 'string') return message;
+  }
+  return 'agent call threw before admission';
 }
 
 function errorText(e: unknown): string {

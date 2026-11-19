@@ -53,6 +53,7 @@ Each agent accepts at most 32 messages of up to 16,000 characters. Messages are 
 | `script`, `scriptPath`, `name` | Exactly one: the script text, a file, or a workflow saved in `workflowsDir`. | |
 | `args` | The script's `args`. | |
 | `resumeFromRunId` | Resume this run. The script may then be left out. | |
+| `replayFrom` | `{ runId, from }` creates a new run from a source invocation ID, label or journal key. By default it uses the stored script, args, model, concurrency and budget. Supply the runner instance for live calls. | |
 | `runner` | The runner. | `new AnthropicRunner()` |
 | `cwd` | The agents' working directory and git repository. | `process.cwd()` |
 | `stateDir` | Where runs are stored. | `<cwd>/.maestro` |
@@ -85,15 +86,16 @@ handle.events.on('agent_end', (e) => console.error(e.label, e.status, e.usage.ou
 ## Runners
 
 ```ts
-import { AnthropicRunner, CodexRunner, GatewayRunner, FakeRunner, RoutingRunner, run } from 'maestro-workflows';
+import { AnthropicRunner, CodexRunner, GeminiRunner, GatewayRunner, FakeRunner, RoutingRunner, run } from 'maestro-workflows';
 
 await run({ scriptPath: 'review.js', runner: new CodexRunner() }).promise;
 ```
 
 - `AnthropicRunner({ client?, maxTurns?, maxTokens?, structuredMode? })`
 - `CodexRunner({ model?, ignoreUserConfig?, customToolsMcp? })`
+- `GeminiRunner({ apiKey?, maxTurns?, maxTokens? })` calls the Gemini Developer API using `GEMINI_API_KEY` or the supplied key.
 - `GatewayRunner({ apiKey?, maxTurns?, maxTokens?, structuredMode? })`: uses `AI_GATEWAY_API_KEY` unless `apiKey` is supplied; defaults to `submit-tool` for schema answers.
-- `RoutingRunner({ anthropic?, codex?, route? })`
+- `RoutingRunner({ anthropic?, codex?, gemini?, route? })`
 - `FakeRunner`, for tests and dry runs: it answers from the schema and never touches the network.
 
 Gateway models use exact `provider/model` IDs. Set a workflow default; individual agents can override it with `opts.model`:
