@@ -115,6 +115,8 @@ export interface Entry {
 
 /** Options accepted by the script-facing `agent()` (spec Level 1). */
 export interface AgentOpts {
+  /** Ordered inline PDF documents for Gemini, encoded as base64 without a data URI prefix. */
+  pdfs?: string[];
   label?: string;
   phase?: string;
   schema?: JSONSchema;
@@ -149,6 +151,8 @@ export interface ToolDef {
 
 export interface RunRequest {
   prompt: string;
+  /** Ordered base64 PDF documents sent before the prompt. Only the Gemini runner accepts them. */
+  pdfs?: AgentOpts['pdfs'];
   /** Return contract + project CLAUDE.md (+ commit instruction for writers). */
   system: string;
   tools: ToolDef[];

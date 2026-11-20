@@ -12,6 +12,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { betaJSONSchemaOutputFormat } from '@anthropic-ai/sdk/helpers/beta/json-schema';
 import type { BetaRunnableTool } from '@anthropic-ai/sdk/lib/tools/BetaRunnableTool';
 import { childGitEnv } from './git-env.js';
+import { checkPdfInputs } from './pdf-input.js';
 import {
   type AgentRunner,
   type EntryStatus,
@@ -600,6 +601,7 @@ export class AnthropicRunner implements AgentRunner {
     let messages: LiveMessages | undefined;
     try {
       if (req.signal.aborted) throw new Aborted();
+      checkPdfInputs(req.pdfs, false);
       messages = new LiveMessages(req);
       return await this.#run(req, st, writers.length > 0, messages);
     } catch (e) {

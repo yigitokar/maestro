@@ -114,7 +114,34 @@ maestro mcp --runner gemini --model gemini-4-carbon
 - **Model.** Defaults to `gemini-4-hydrogen` when `--model` is omitted (Maestro's Claude default is ignored, like Codex). Supports `gemini-4-carbon`, `gemini-4-argon`, `gemini-4-hydrogen`, `gemini-3.5-flash-lite`, `gemma-4-31b-it`, and strips an optional `google/` prefix.
 - **Effort.** `low`, `medium` and `high` map directly to Gemini `thinking_level`; `xhigh` and `max` map to `high`.
 - **Structured answers.** Supports `two-stage` (default), `submit-tool`, and `single-stage` via `--structured-mode` or `new GeminiRunner({ structuredMode })`.
+- **PDF input.** A node's `pdfs` option sends PDF documents inline. See [PDF documents](#pdf-documents).
 - **Tools, isolation, live messages, usage.** Built-in read/write tools, custom `.maestro/tools/*.js`, worktree commit reminders, live follow-up instructions (`canMessage: true`), and per-turn cached input and thought token accounting all follow the Claude runner.
+
+### PDF documents
+
+A Gemini node can read PDF documents directly through its `pdfs` option: an array of base64-encoded PDF files, without a `data:` prefix. Each one goes to Gemini as its own `application/pdf` document block, in the order given, before the prompt text.
+
+To compare two PDFs, encode their bytes into a JSON argument file. The file can hold documents too large for a shell argument.
+
+```bash
+node --input-type=module -e 'import { readFileSync } from "node:fs";
+  console.log(JSON.stringify({ pdfs: process.argv.slice(1).map(p => readFileSync(p).toString("base64")) }))' \
+  original.pdf revised.pdf > reports.json
+maestro run compare.js --runner auto --args-file reports.json
+```
+
+```js
+export const meta = { name: 'compare', description: 'Compare two editions of a report' }
+
+return agent('List the material changes from the first report to the second.', {
+  label: 'compare-pdfs', model: 'gemini-4-hydrogen', pdfs: args.pdfs, tools: [],
+})
+```
+
+- **Cache.** The documents' contents and order are part of the cache key, so replacing a PDF makes that node run again on resume.
+- **Storage.** Like any workflow argument, the documents are saved in the run directory's `args.json`. The journal keys on a hash of them, and a failed node keeps its full call, documents included, for `maestro inspect`.
+- **Other runners.** Claude, Codex and Vercel AI Gateway nodes fail with `PDF inputs require the Gemini runner`. With `--runner auto`, give the node a `gemini-*` model.
+- **Validation.** `agent()` throws at the call site when `pdfs` is not an array of base64 strings, for example when it is given a file path.
 
 ## Claude, Gemini and Codex in one run
 

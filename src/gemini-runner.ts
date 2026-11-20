@@ -8,6 +8,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { ApiError, GoogleGenAI, type GoogleGenAIRequestOptions, type Interactions } from '@google/genai';
 import { childGitEnv } from './git-env.js';
+import { checkPdfInputs } from './pdf-input.js';
 import {
   COMMIT_REMINDER_MESSAGE,
   type StructuredMode,
@@ -323,6 +324,16 @@ function userStep(text: string): Interactions.UserInputStep {
   return { type: 'user_input', content: [{ type: 'text', text }] };
 }
 
+/** The opening turn: each PDF as its own document block, in the order given, then the prompt. */
+function firstUserStep(prompt: string, pdfs: readonly string[] | undefined): Interactions.UserInputStep {
+  const documents: Interactions.DocumentContent[] = (pdfs ?? []).map((data) => ({
+    type: 'document',
+    mime_type: 'application/pdf',
+    data,
+  }));
+  return { type: 'user_input', content: [...documents, { type: 'text', text: prompt }] };
+}
+
 /** Strips dangling function_call steps from an incomplete turn before requesting continuation. */
 function withoutDanglingFunctionCalls(steps: Interactions.Step[]): Interactions.Step[] {
   let end = steps.length;
@@ -404,6 +415,7 @@ export class GeminiRunner implements AgentRunner {
     let inbox: LiveMessages | undefined;
     try {
       if (req.signal.aborted) throw new Aborted();
+      checkPdfInputs(req.pdfs, true);
       inbox = new LiveMessages(req);
       return await this.#run(req, st, writers.length > 0, inbox);
     } catch (e) {
@@ -443,7 +455,7 @@ export class GeminiRunner implements AgentRunner {
     }
 
     const systemText = mode === 'submit-tool' ? `${req.system}\n\n${SUBMIT_SYSTEM_INSTRUCTION}` : req.system;
-    const history: Interactions.Step[] = [userStep(req.prompt)];
+    const history: Interactions.Step[] = [firstUserStep(req.prompt, req.pdfs)];
 
     let loopTurns = 0;
     let continued = false;
