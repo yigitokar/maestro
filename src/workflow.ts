@@ -331,6 +331,7 @@ export function run(opts: RunOptions): RunHandle {
             control.running();
             return getRunner().run({
               prompt: a.prompt,
+              ...(o.pdfs?.length ? { pdfs: o.pdfs } : {}),
               system: systemPrompt({ cwd: agentCwd, writer }),
               tools: a.tools,
               schema: o.schema,

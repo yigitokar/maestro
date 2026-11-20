@@ -5,6 +5,7 @@
 
 import vm from 'node:vm';
 import { parse } from 'acorn';
+import { checkPdfInputs } from './pdf-input.js';
 import { assertSatisfiableSchema } from './schema.js';
 import type { AgentOpts, BudgetView, WorkflowMeta } from './types.js';
 import { LIMITS, MaestroError } from './types.js';
@@ -383,6 +384,7 @@ export async function runScript(
       throw new TypeError('agent(prompt, opts): opts must be an object');
     }
     if (agentOpts?.schema !== undefined) assertSatisfiableSchema(agentOpts.schema);
+    checkPdfInputs(agentOpts?.pdfs, true);
     if (agentOpts?.phase !== undefined) checkPhase(agentOpts.phase, 'agent opts.phase');
     return hooks.agent(prompt, agentOpts);
   }

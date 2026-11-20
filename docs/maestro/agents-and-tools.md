@@ -14,6 +14,7 @@ icon: "wrench"
 | `phase` | The phase this agent belongs to. Use it in parallel code instead of `phase()`. |
 | `schema` | A JSON Schema. The agent's answer is returned as an object validated against it. |
 | `model` | The model for this agent. Default: the run's model. |
+| `pdfs` | Base64-encoded PDF documents for a Gemini node, in order. See [PDF documents](/maestro/runners#pdf-documents). |
 | `effort` | `'low'`, `'medium'`, `'high'`, `'xhigh'` or `'max'`. |
 | `tools` | The names of the tools this agent may use. Default: the four read-only tools. |
 | `isolation` | `'worktree'` gives the agent its own git worktree and branch, and allows write tools. |
