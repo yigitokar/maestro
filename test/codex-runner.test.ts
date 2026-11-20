@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { access, chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -94,6 +94,26 @@ function configValues(argv: string[]): string[] {
   }
   return out;
 }
+
+const FEATURES_OFF = CODEX_DISABLED_FEATURES.map((feature) => `features.${feature}=false`);
+
+/** What the double answers to `codex mcp list --json`; returns the file that records those calls. */
+function mcpList(listing: unknown): string {
+  const record = path.join(cwd, 'mcp-list.jsonl');
+  vi.stubEnv('FAKE_CODEX_MCP_RECORD', record);
+  vi.stubEnv('FAKE_CODEX_MCP_LIST', typeof listing === 'string' ? listing : JSON.stringify(listing));
+  return record;
+}
+
+function mcpListCalls(record: string): string[][] {
+  if (!existsSync(record)) return [];
+  return readFileSync(record, 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line));
+}
+
+const mcpServer = (name: string, type = 'stdio', enabled = true) => ({ name, enabled, transport: { type } });
 
 function makeReq(overrides: Partial<RunRequest> = {}) {
   const controller = new AbortController();
@@ -201,10 +221,7 @@ describe('CodexRunner: results and subprocess protocol', () => {
     expect(call!.argv).not.toContain('--ignore-user-config');
     expect(call!.argv).not.toContain('--output-schema');
     expect(call!.argv).not.toContain('-m');
-    expect(configValues(call!.argv)).toEqual([
-      'mcp_servers={}',
-      ...CODEX_DISABLED_FEATURES.map((f) => `features.${f}=false`),
-    ]);
+    expect(configValues(call!.argv)).toEqual(FEATURES_OFF);
     const prompt = call!.stdin;
     expect(prompt).toContain('Return the result.');
     expect(prompt).toContain('do the thing');
@@ -476,12 +493,44 @@ describe('CodexRunner: arguments, tools and isolation', () => {
     );
   });
 
-  it('clears user MCP servers and disables ambient features by default, and allows opt-out via minimal: false', async () => {
-    await new CodexRunner({ bin, minimal: false }).run(makeReq().req);
-    expect(records()[0]!.argv).not.toContain('-c');
+  it('switches off each enabled user MCP server by name, and lists them once for several agents', async () => {
+    const record = mcpList([
+      mcpServer('supabase'),
+      mcpServer('Odyssey Documentation', 'streamable_http'),
+      mcpServer('future', 'carrier_pigeon'),
+      mcpServer('already_off', 'stdio', false),
+      mcpServer('maestro_tools'),
+      mcpServer('dotted.name'),
+    ]);
+    const runner = new CodexRunner({ bin });
+    const first = makeReq();
+    const second = makeReq();
+    await runner.run(first.req);
+    await runner.run(second.req);
+    const configs = configValues(records()[0]!.argv);
+    // `enabled=false` alone would make Codex refuse to start if the server had left the
+    // configuration by then, so the key the transport requires is restated with a stand-in.
+    expect(configs).toEqual([
+      ...FEATURES_OFF,
+      'mcp_servers.supabase.command="maestro-disabled"',
+      'mcp_servers.supabase.enabled=false',
+      'mcp_servers.Odyssey Documentation.url="http://maestro-disabled.invalid"',
+      'mcp_servers.Odyssey Documentation.enabled=false',
+      'mcp_servers.future.enabled=false',
+    ]);
+    expect(configValues(records()[1]!.argv)).toEqual(configs);
+    // `mcp_servers={}` removes nothing in Codex, and `--disable` aborts on a feature it does not know.
+    expect(configs).not.toContain('mcp_servers={}');
+    expect(records()[0]!.argv).not.toContain('--disable');
+    // Listed with the same features off as the agents.
+    expect(mcpListCalls(record)).toEqual([['mcp', 'list', '--json', ...CODEX_MINIMAL_CONFIG_ARGS]]);
+    // A config override cannot spell a name with a dot in it, and the run log says which server stays on.
+    expect(first.logs).toEqual([expect.stringContaining('dotted.name')]);
+    expect(second.logs).toEqual([]);
+  });
 
-    // When custom tools are attached in default minimal mode, `mcp_servers={}` must precede
-    // `mcp_servers.maestro_tools.*` so only Maestro's bridge remains registered.
+  it('leaves the maestro_tools bridge on, after the overrides that switch the user servers off', async () => {
+    mcpList([mcpServer('supabase')]);
     const customTool: ToolDef = {
       name: 'ping',
       description: 'ping',
@@ -490,16 +539,74 @@ describe('CodexRunner: arguments, tools and isolation', () => {
       run: async () => 'pong',
     };
     await new CodexRunner({ bin }).run(makeReq({ tools: [customTool] }).req);
-    const configs = configValues(records()[1]!.argv);
-    const clearIdx = configs.indexOf('mcp_servers={}');
-    const bridgeIdx = configs.findIndex((c) => c.startsWith('mcp_servers.maestro_tools.'));
-    expect(clearIdx).toBeGreaterThanOrEqual(0);
-    expect(bridgeIdx).toBeGreaterThan(clearIdx);
-    expect(configs).toContain('features.multi_agent=false');
-    expect(configs).toContain('features.plugins=false');
-    // Never uses `--disable`, which aborts on unknown feature flags across Codex CLI versions.
-    expect(records()[1]!.argv).not.toContain('--disable');
-    expect(CODEX_MINIMAL_CONFIG_ARGS.length).toBeGreaterThan(0);
+    const configs = configValues(records()[0]!.argv);
+    const offIdx = configs.indexOf('mcp_servers.supabase.enabled=false');
+    const bridge = configs.filter((c) => c.startsWith('mcp_servers.maestro_tools.'));
+    expect(offIdx).toBeGreaterThanOrEqual(0);
+    expect(configs.indexOf(bridge[0]!)).toBeGreaterThan(offIdx);
+    expect(bridge.map((c) => c.split('=')[0])).toEqual([
+      'mcp_servers.maestro_tools.command',
+      'mcp_servers.maestro_tools.args',
+      'mcp_servers.maestro_tools.default_tools_approval_mode',
+    ]);
+  });
+
+  it('does not list MCP servers with minimal: false, or when the user configuration is ignored', async () => {
+    const record = mcpList([mcpServer('supabase')]);
+    await new CodexRunner({ bin, minimal: false }).run(makeReq().req);
+    expect(records()[0]!.argv).not.toContain('-c');
+    await new CodexRunner({ bin, ignoreUserConfig: true }).run(makeReq().req);
+    expect(configValues(records()[1]!.argv)).toEqual(FEATURES_OFF);
+    expect(mcpListCalls(record)).toEqual([]);
+  });
+
+  it.each([
+    ['the CLI has no mcp list', 'fail', "unrecognized subcommand 'mcp'"],
+    ['the answer is not JSON', 'oops', 'Could not list Codex MCP servers'],
+    ['the answer is not a list', '{"servers":[]}', 'did not return a list'],
+  ])('runs the agent with the user MCP servers when %s, and says so once', async (_, listing, detail) => {
+    const record = mcpList(listing);
+    const runner = new CodexRunner({ bin });
+    const first = makeReq();
+    const second = makeReq();
+    expect(await runner.run(first.req)).toMatchObject({ status: 'ok', result: 'done' });
+    expect(await runner.run(second.req)).toMatchObject({ status: 'ok', result: 'done' });
+    expect(configValues(records()[0]!.argv)).toEqual(FEATURES_OFF);
+    expect(configValues(records()[1]!.argv)).toEqual(FEATURES_OFF);
+    expect(first.logs).toHaveLength(1);
+    expect(first.logs[0]).toContain('Could not list Codex MCP servers');
+    expect(first.logs[0]).toContain(detail);
+    expect(second.logs).toEqual([]);
+    expect(mcpListCalls(record)).toHaveLength(1);
+  });
+
+  it('lists the servers again once a listing is five minutes old', async () => {
+    const record = mcpList([]);
+    const runner = new CodexRunner({ bin });
+    await runner.run(makeReq().req);
+    expect(configValues(records()[0]!.argv)).toEqual(FEATURES_OFF);
+    mcpList([mcpServer('added_later')]);
+    const now = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 5 * 60_000);
+    try {
+      await runner.run(makeReq().req);
+    } finally {
+      now.mockRestore();
+    }
+    expect(configValues(records()[1]!.argv)).toContain('mcp_servers.added_later.enabled=false');
+    expect(mcpListCalls(record)).toHaveLength(2);
+  });
+
+  it('stops waiting for a slow listing when the agent is aborted', async () => {
+    mcpList([]);
+    vi.stubEnv('FAKE_CODEX_MCP_LIST_DELAY_MS', '4000');
+    const { req, controller } = makeReq();
+    const started = Date.now();
+    const result = new CodexRunner({ bin }).run(req);
+    setTimeout(() => controller.abort(), 150);
+    expect(await result).toMatchObject({ status: 'skipped', error: 'aborted' });
+    expect(Date.now() - started).toBeLessThan(2_500);
+    // The agent itself never started.
+    expect(existsSync(recordPath)).toBe(false);
   });
 
   it.each([

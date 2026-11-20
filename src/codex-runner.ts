@@ -45,12 +45,15 @@ export const CODEX_DISABLED_FEATURES = [
   'multi_agent',
 ] as const;
 
-/** Default `-c` overrides that strip inherited user MCP servers and extra CLI features from subagents. */
-export const CODEX_MINIMAL_CONFIG_ARGS: readonly string[] = [
+/**
+ * The fixed `-c` overrides of minimal mode: the features above, switched off. The overrides that
+ * switch off the user's MCP servers are not part of this list; they name each server, so the runner
+ * reads the names from the installed CLI (`codex mcp list --json`) when an agent starts.
+ */
+export const CODEX_MINIMAL_CONFIG_ARGS: readonly string[] = CODEX_DISABLED_FEATURES.flatMap((feature) => [
   '-c',
-  'mcp_servers={}',
-  ...CODEX_DISABLED_FEATURES.flatMap((feature) => ['-c', `features.${feature}=false`]),
-];
+  `features.${feature}=false`,
+]);
 
 export interface CodexRunnerOptions {
   bin?: string;
@@ -58,11 +61,12 @@ export interface CodexRunnerOptions {
   model?: string;
   ignoreUserConfig?: boolean;
   /**
-   * Run Codex subagents in minimal ("dry") mode: clears inherited user `mcp_servers` and disables
-   * plugins, apps, browser/computer use, image generation, skill search, and nested multi-agent
-   * spawning (default `true`). Maestro's own `maestro_tools` custom-tool bridge still works because
-   * its config overrides come after `mcp_servers={}`. Set `false` to inherit the user's full Codex
-   * MCP and feature configuration.
+   * Run Codex subagents in minimal ("dry") mode: switches off the MCP servers of the user's Codex
+   * configuration and disables plugins, apps, browser/computer use, image generation, skill search,
+   * and nested multi-agent spawning (default `true`). Maestro's own `maestro_tools` custom-tool
+   * bridge is left on. The servers are listed with `codex mcp list --json`, at most once every few
+   * minutes per runner; if that fails the agents still run, with the user's servers, and the run log
+   * says so. Set `false` to inherit the user's full Codex MCP and feature configuration.
    */
   minimal?: boolean;
   /** Extra CLI arguments, inserted before the stdin prompt marker. */
@@ -84,6 +88,13 @@ const PIPE_CLOSE_GRACE_MS = 100;
 const CODEX_COMMIT_INSTRUCTION =
   'Do not run git commit or git_commit: the Codex sandbox makes .git read-only. ' +
   'Leave your changes in the working tree; Maestro commits them when you finish successfully.';
+const BRIDGE_MCP_SERVER = 'maestro_tools';
+const MCP_LIST_TIMEOUT_MS = 15_000;
+/** How long one listing of the user's MCP servers is reused; a long-lived runner then notices changes. */
+const MCP_LIST_TTL_MS = 5 * 60_000;
+// Stand-ins for a switched-off server's transport. Codex never starts or contacts a disabled server.
+const DISABLED_MCP_COMMAND = 'maestro-disabled';
+const DISABLED_MCP_URL = 'http://maestro-disabled.invalid';
 
 function object(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -107,6 +118,57 @@ function usageOf(value: unknown): Usage {
   if (typeof u?.cache_write_input_tokens === 'number')
     usage.cache_creation_input_tokens = tokens(u.cache_write_input_tokens);
   return usage;
+}
+
+/**
+ * The `-c` overrides that switch off every enabled server in a `codex mcp list --json` listing.
+ *
+ * Codex merges a `-c` value into the tables of its configuration file, so `-c mcp_servers={}` removes
+ * nothing: a server is switched off by name. Each override also restates the key its transport
+ * requires. `enabled=false` alone, for a server that has left the configuration since it was
+ * listed, would leave an entry with no transport, and Codex then refuses to start ("invalid
+ * transport"); with the key restated that entry is just a disabled server.
+ *
+ * `unaddressable` holds the names no `-c` key can spell: Codex splits a key on every dot and at the
+ * first `=`, and has no quoting.
+ */
+function mcpDisableArgs(listing: unknown): { args: string[]; unaddressable: string[] } {
+  if (!Array.isArray(listing)) throw new Error('codex mcp list --json did not return a list');
+  const args: string[] = [];
+  const unaddressable: string[] = [];
+  for (const entry of listing) {
+    const server = object(entry);
+    const name = server?.name;
+    if (typeof name !== 'string' || name === '' || name === BRIDGE_MCP_SERVER) continue;
+    if (server?.enabled === false) continue;
+    if (name !== name.trim() || /[.=]/.test(name)) {
+      unaddressable.push(name);
+      continue;
+    }
+    const transport = object(server?.transport)?.type;
+    if (transport === 'stdio') {
+      args.push('-c', `mcp_servers.${name}.command=${JSON.stringify(DISABLED_MCP_COMMAND)}`);
+    } else if (transport === 'streamable_http') {
+      args.push('-c', `mcp_servers.${name}.url=${JSON.stringify(DISABLED_MCP_URL)}`);
+    }
+    args.push('-c', `mcp_servers.${name}.enabled=false`);
+  }
+  return { args, unaddressable };
+}
+
+/** Resolves with the promise, or rejects as soon as the signal aborts; the promise itself is left running. */
+async function orAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([promise, aborted]);
+  } finally {
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+  }
 }
 
 /** Complete OpenAI's required-property rule locally, without changing Anthropic's schema behavior. */
@@ -228,8 +290,58 @@ class RunState {
 export class CodexRunner implements AgentRunner {
   /** Set once the CLI proved to have no usable `app-server`; later agents go straight to `codex exec`. */
   private appServerUnavailable = false;
+  /** The latest listing of the user's MCP servers, shared by every agent that starts within its lifetime. */
+  private mcpDisable: { at: number; args: Promise<string[]> } | undefined;
+  private mcpListFailureLogged = false;
 
   constructor(private readonly opts: CodexRunnerOptions = {}) {}
+
+  /** `-c` overrides that switch off the user's MCP servers. Never rejects: on failure the servers stay on. */
+  private userMcpDisableArgs(req: RunRequest, env: NodeJS.ProcessEnv): Promise<string[]> {
+    const now = Date.now();
+    if (!this.mcpDisable || now - this.mcpDisable.at >= MCP_LIST_TTL_MS) {
+      this.mcpDisable = { at: now, args: this.listUserMcpDisableArgs(req, env) };
+    }
+    return this.mcpDisable.args;
+  }
+
+  private async listUserMcpDisableArgs(req: RunRequest, env: NodeJS.ProcessEnv): Promise<string[]> {
+    try {
+      // Listed with the same features off as the agents, so a server that only a disabled feature
+      // provides is not in the list. No abort signal: other agents share this listing.
+      const { stdout } = await execFileAsync(
+        this.opts.bin ?? 'codex',
+        ['mcp', 'list', '--json', ...CODEX_MINIMAL_CONFIG_ARGS],
+        { cwd: req.cwd, env, encoding: 'utf8', timeout: MCP_LIST_TIMEOUT_MS },
+      );
+      const { args, unaddressable } = mcpDisableArgs(JSON.parse(stdout));
+      if (unaddressable.length > 0) {
+        req.log(
+          `Codex agents keep these MCP servers, whose names a config override cannot spell: ${unaddressable.join(', ')}.`,
+        );
+      }
+      return args;
+    } catch (error) {
+      if (!this.mcpListFailureLogged) {
+        this.mcpListFailureLogged = true;
+        const failure = object(error);
+        const stderr = typeof failure?.stderr === 'string' ? failure.stderr.trim() : '';
+        const detail =
+          stderr ||
+          (failure?.killed === true
+            ? 'timed out'
+            : typeof failure?.code === 'string'
+              ? failure.code
+              : error instanceof Error
+                ? error.message
+                : String(error));
+        req.log(
+          `Could not list Codex MCP servers (${detail.slice(0, STDERR_CHARS)}); Codex agents keep the servers of your Codex configuration.`,
+        );
+      }
+      return [];
+    }
+  }
 
   async run(req: RunRequest): Promise<RunResult> {
     const writers = req.tools.filter((t) => t.write).map((t) => t.name);
@@ -276,6 +388,11 @@ export class CodexRunner implements AgentRunner {
         });
       }
       const env = childGitEnv();
+      const minimal = this.opts.minimal !== false;
+      // Started now so that it overlaps the bridge's startup. Without the user's configuration file
+      // there are no servers of theirs to switch off.
+      const mcpDisable =
+        minimal && !this.opts.ignoreUserConfig ? this.userMcpDisableArgs(req, env) : undefined;
       let bridgeArgs: string[] = [];
       if (customTools.length > 0 && bridgeEnabled) {
         bridge = await startCodexToolBridge({
@@ -299,7 +416,9 @@ export class CodexRunner implements AgentRunner {
       if (customTools.length > 0 && bridgeEnabled) {
         prompt += `\n\nCustom tools available via the maestro_tools MCP server: ${customTools.map((t) => t.name).join(', ')}.`;
       }
-      const minimalArgs = this.opts.minimal === false ? [] : [...CODEX_MINIMAL_CONFIG_ARGS];
+      const minimalArgs = minimal
+        ? [...CODEX_MINIMAL_CONFIG_ARGS, ...(mcpDisable ? await orAborted(mcpDisable, req.signal) : [])]
+        : [];
       const viaExec = async () => {
         const args = [
           'exec',

@@ -130,7 +130,11 @@ describe('Codex app-server live transport', () => {
     expect(records()[0].argv).toEqual(['app-server']);
   });
 
-  it('places mcp_servers={} before maestro_tools on app-server when custom tools are attached', async () => {
+  it('switches off user MCP servers on app-server and leaves the maestro_tools bridge on', async () => {
+    vi.stubEnv(
+      'FAKE_CODEX_MCP_LIST',
+      JSON.stringify([{ name: 'supabase', enabled: true, transport: { type: 'stdio' } }]),
+    );
     const custom: ToolDef = {
       name: 'lookup',
       description: 'lookup',
@@ -143,10 +147,16 @@ describe('Codex app-server live transport', () => {
     const result = await runner().run(req);
     expect(result).toMatchObject({ status: 'ok', result: 'ok' });
     const argv: string[] = records()[0].argv;
-    const clearIdx = argv.indexOf('mcp_servers={}');
     const bridgeIdx = argv.findIndex((a) => a.startsWith('mcp_servers.maestro_tools.'));
-    expect(clearIdx).toBeGreaterThan(0);
-    expect(bridgeIdx).toBeGreaterThan(clearIdx);
+    expect(argv.slice(0, bridgeIdx - 1)).toEqual([
+      'app-server',
+      ...CODEX_MINIMAL_CONFIG_ARGS,
+      '-c',
+      'mcp_servers.supabase.command="maestro-disabled"',
+      '-c',
+      'mcp_servers.supabase.enabled=false',
+    ]);
+    expect(argv.slice(bridgeIdx).filter((a) => a.includes('enabled=false'))).toEqual([]);
   });
 
   it('queues early messages and acknowledges them in order on the same active turn', async () => {
