@@ -4,9 +4,11 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { appendFile, writeFile } from 'node:fs/promises';
 import { createInterface } from 'node:readline';
+import { answerMcpList } from './fake-codex-mcp-list.mjs';
 
 const scenario = JSON.parse(process.env.FAKE_APP_SERVER_SCENARIO ?? '{}');
 const argv = process.argv.slice(2);
+await answerMcpList(argv);
 const record = (value) => appendFile(process.env.FAKE_APP_SERVER_RECORD, `${JSON.stringify(value)}\n`);
 const send = (value) => process.stdout.write(`${JSON.stringify(value)}\n`);
 const notice = (method, params) =>

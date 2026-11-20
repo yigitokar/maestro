@@ -3,7 +3,10 @@
 import { appendFileSync } from 'node:fs';
 
 const argv = process.argv.slice(2);
-if (process.env.FAKE_CODEX_OLD_RECORD) appendFileSync(process.env.FAKE_CODEX_OLD_RECORD, `${argv[0]}\n`);
+// The record is of the transports agents ran on, so the runner's `mcp list` question is left out of it.
+if (process.env.FAKE_CODEX_OLD_RECORD && argv[0] !== 'mcp') {
+  appendFileSync(process.env.FAKE_CODEX_OLD_RECORD, `${argv[0]}\n`);
+}
 if (argv[0] === 'app-server') {
   process.stderr.write("error: unrecognized subcommand 'app-server'\n");
   process.exit(2);

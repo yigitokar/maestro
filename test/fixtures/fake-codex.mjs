@@ -3,9 +3,11 @@
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { access, appendFile, readFile, writeFile } from 'node:fs/promises';
+import { answerMcpList } from './fake-codex-mcp-list.mjs';
 
 const scenario = JSON.parse(process.env.FAKE_CODEX_SCENARIO ?? '{}');
 const argv = process.argv.slice(2);
+await answerMcpList(argv);
 if (scenario.exitBeforeStdin) {
   process.stderr.write('closed before reading stdin');
   process.exit(2);
