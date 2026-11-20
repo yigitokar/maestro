@@ -4,8 +4,8 @@ import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { CodexRunner } from '../src/codex-runner.js';
-import { DEFAULT_MODEL, type RunRequest, type Usage } from '../src/types.js';
+import { CODEX_MINIMAL_CONFIG_ARGS, CodexRunner, type CodexRunnerOptions } from '../src/codex-runner.js';
+import { DEFAULT_MODEL, type RunRequest, type ToolDef, type Usage } from '../src/types.js';
 
 const bin = path.join(import.meta.dirname, 'fixtures', 'fake-codex-app-server.mjs');
 let cwd: string;
@@ -47,8 +47,8 @@ function calls(method: string): any[] {
     .filter((row) => row.request?.method === method)
     .map((row) => row.request);
 }
-function runner() {
-  return new CodexRunner({ bin, killGraceMs: 15 });
+function runner(overrides: Partial<CodexRunnerOptions> = {}) {
+  return new CodexRunner({ bin, killGraceMs: 15, ...overrides });
 }
 function request(overrides: Partial<RunRequest> = {}) {
   const controller = new AbortController();
@@ -104,7 +104,7 @@ describe('Codex app-server live transport', () => {
     scenario({ finalText: '{"value":"ok"}' });
     const result = await runner().run(req);
     expect(result).toMatchObject({ status: 'ok', result: { value: 'ok' }, turns: 1, model: 'gpt-test' });
-    expect(records()[0].argv).toEqual(['app-server']);
+    expect(records()[0].argv).toEqual(['app-server', ...CODEX_MINIMAL_CONFIG_ARGS]);
     expect(calls('initialize')).toHaveLength(1);
     expect(calls('initialized')).toHaveLength(1);
     expect(calls('thread/start')[0].params).toMatchObject({
@@ -120,6 +120,33 @@ describe('Codex app-server live transport', () => {
     });
     expect(calls('turn/start')[0].params.input[0].text).toContain(req.prompt);
     expect(unregister).toHaveBeenCalledOnce();
+  });
+
+  it('allows opting out of minimal mode on app-server without losing live steering', async () => {
+    const { req } = request({ model: 'gpt-test' });
+    scenario({ finalText: 'ok' });
+    const result = await runner({ minimal: false }).run(req);
+    expect(result).toMatchObject({ status: 'ok', result: 'ok', turns: 1 });
+    expect(records()[0].argv).toEqual(['app-server']);
+  });
+
+  it('places mcp_servers={} before maestro_tools on app-server when custom tools are attached', async () => {
+    const custom: ToolDef = {
+      name: 'lookup',
+      description: 'lookup',
+      inputSchema: { type: 'object', properties: {}, required: [], additionalProperties: false },
+      write: false,
+      run: async () => 'found',
+    };
+    const { req } = request({ tools: [custom] });
+    scenario({ finalText: 'ok', mcpCalls: [{ name: 'lookup', arguments: {} }] });
+    const result = await runner().run(req);
+    expect(result).toMatchObject({ status: 'ok', result: 'ok' });
+    const argv: string[] = records()[0].argv;
+    const clearIdx = argv.indexOf('mcp_servers={}');
+    const bridgeIdx = argv.findIndex((a) => a.startsWith('mcp_servers.maestro_tools.'));
+    expect(clearIdx).toBeGreaterThan(0);
+    expect(bridgeIdx).toBeGreaterThan(clearIdx);
   });
 
   it('queues early messages and acknowledges them in order on the same active turn', async () => {
