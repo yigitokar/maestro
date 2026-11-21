@@ -4,6 +4,7 @@
 // Requests are stateless (store: false): the transcript stays local, and reasoning items are passed back
 // in their encrypted form so a reasoning model keeps its chain across tool calls.
 
+import { checkPdfInputs } from './pdf-input.js';
 import {
   Aborted,
   COMMIT_REMINDER_MESSAGE,
@@ -206,6 +207,7 @@ export class OpenAIRunner implements AgentRunner {
     let result: RunResult;
     try {
       if (req.signal.aborted) throw new Aborted();
+      checkPdfInputs(req.pdfs, false);
       if (!this.#apiKey) {
         throw new Error(
           'OPENAI_API_KEY is missing or blank. Set it or pass apiKey to OpenAIRunner; use --dry-run for offline runs.',

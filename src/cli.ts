@@ -509,7 +509,7 @@ async function mcpCommand(p: Parsed, io: CliIO): Promise<number> {
                 ? new GatewayRunner({ apiKey: io.env.AI_GATEWAY_API_KEY ?? '', structuredMode })
                 : selectedRunner === 'openai'
                   ? new OpenAIRunner({ apiKey: io.env.OPENAI_API_KEY ?? '', structuredMode })
-                : new AnthropicRunner({ structuredMode }),
+                  : new AnthropicRunner({ structuredMode }),
       cwd,
       budget,
       ...(stateDir !== undefined ? { stateDir: path.resolve(io.cwd, stateDir) } : {}),
