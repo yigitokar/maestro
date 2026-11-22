@@ -1,0 +1,138 @@
+---
+title: "Develop your first photo with Latent"
+sidebarTitle: "Quickstart"
+description: "Build a small page that loads a photo, develops it on a film stock you pick from the library, shows it on a canvas and exports a PNG."
+icon: "bolt"
+keywords: ["quickstart", "FilmPipeline", "canvas", "export", "PNG"]
+---
+
+This guide builds a small page with Latent: a file input, a canvas, a film stock picker and an export button. It takes about fifty lines of TypeScript and no framework.
+
+## Before you start
+
+You need:
+
+- A web project that bundles ES modules. The code here is TypeScript in a Vite project, but nothing in it is specific to Vite.
+- The three engine packages, installed from their tarballs. See [Installation](/latent/installation).
+- A browser with WebGPU. Open the page from `localhost` or over `https`.
+
+## Build the page
+
+<Steps>
+  <Step title="Add the controls">
+    Put a file input, a stock picker, an export button and a canvas on the page.
+
+    ```html index.html
+    <input id="photo" type="file" accept="image/*" />
+    <select id="stock"></select>
+    <button id="export" type="button">Export PNG</button>
+    <canvas id="view"></canvas>
+    <script type="module" src="/src/main.ts"></script>
+    ```
+  </Step>
+
+  <Step title="Fill the picker from the library">
+    `STOCKS` is the list of every film stock, in a stable order. Each stock has an `id` and a display `name`.
+
+    ```ts src/main.ts
+    import { DEFAULT_PARAMS } from "@filmsim/core-types";
+    import { FilmPipeline } from "@filmsim/gpu-pipeline";
+    import { DEFAULT_SCANNER_ID, DEFAULT_STOCK_ID, STOCKS, getScanner, getStock } from "@filmsim/spectral-data";
+
+    const canvas = document.querySelector<HTMLCanvasElement>("#view")!;
+    const photo = document.querySelector<HTMLInputElement>("#photo")!;
+    const picker = document.querySelector<HTMLSelectElement>("#stock")!;
+    const exportButton = document.querySelector<HTMLButtonElement>("#export")!;
+
+    for (const stock of STOCKS) {
+      picker.add(new Option(stock.name, stock.id, false, stock.id === DEFAULT_STOCK_ID));
+    }
+    ```
+  </Step>
+
+  <Step title="Start the pipeline">
+    `FilmPipeline.create()` asks the browser for a GPU device and compiles the shaders. It rejects when the browser has no WebGPU, so check first.
+
+    ```ts src/main.ts
+    if (!FilmPipeline.isSupported()) throw new Error("This browser has no WebGPU");
+    const pipeline = await FilmPipeline.create();
+    const scanner = getScanner(DEFAULT_SCANNER_ID);
+    ```
+  </Step>
+
+  <Step title="Develop the photo">
+    A look is a stock, a scanner and a set of parameters. `render()` draws the preview. Call it again after any change: only the stages the change touches run again.
+
+    ```ts src/main.ts
+    function develop() {
+      const stock = getStock(picker.value);
+      pipeline.setProfiles(stock, scanner);
+      pipeline.setParams({ ...DEFAULT_PARAMS, stockId: stock.id, scannerId: scanner.id });
+      pipeline.render();
+    }
+
+    photo.addEventListener("change", async () => {
+      const file = photo.files?.[0];
+      if (!file) return;
+      await pipeline.setSource(await createImageBitmap(file));
+      // One canvas pixel per preview pixel. Attach the canvas again after you change its size.
+      const preview = pipeline.previewSize!;
+      canvas.width = preview.width;
+      canvas.height = preview.height;
+      pipeline.attachCanvas(canvas);
+      develop();
+    });
+
+    picker.addEventListener("change", develop);
+    ```
+
+    Choose a photo. It appears on the canvas, developed on Kodak Gold 200 and scanned on a Fujifilm Frontier SP-3000, which are the defaults. Pick another stock and the picture follows.
+  </Step>
+
+  <Step title="Export a file">
+    `export()` renders the photo at full resolution and returns pixels, not a file. Encoding is up to you. A 2D canvas turns 8-bit pixels into a PNG.
+
+    ```ts src/main.ts
+    exportButton.addEventListener("click", async () => {
+      const result = await pipeline.export({ format: "rgba8" });
+      const sheet = new OffscreenCanvas(result.width, result.height);
+      const pixels = new ImageData(new Uint8ClampedArray(result.data), result.width, result.height);
+      sheet.getContext("2d")!.putImageData(pixels, 0, 0);
+      const blob = await sheet.convertToBlob({ type: "image/png" });
+
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `${picker.value}.png`;
+      link.click();
+    });
+    ```
+  </Step>
+</Steps>
+
+## What you built
+
+The page keeps the photo on the visitor's device: decoding, developing and encoding all happen in the browser.
+
+The canvas shows a preview whose long edge is at most 2048 pixels. The exported file has the resolution of the photo you loaded.
+
+The Latent repository has this page as a tested project in `examples/embed-vite`, with error handling and a status line.
+
+## Next steps
+
+<Columns cols={2}>
+  <Card title="Develop a photo" icon="image" href="/latent/develop-a-photo">
+    Parameters, the before and after view, the negative, zoom and the histogram.
+  </Card>
+
+  <Card title="Export" icon="file-export" href="/latent/export">
+    16-bit pixels, a smaller size, progress and cancelling.
+  </Card>
+
+  <Card title="Stocks, scanners and looks" icon="film" href="/latent/library">
+    The library and how to use a ready-made look.
+  </Card>
+
+  <Card title="How it works" icon="layer-group" href="/latent/how-it-works">
+    What happens between the photo and the finished scan.
+  </Card>
+</Columns>

@@ -1,0 +1,178 @@
+---
+title: "Develop a photo and control the preview"
+sidebarTitle: "Develop a photo"
+description: "Create a Latent pipeline, load a photo, choose a stock and a scanner, change parameters, and switch the canvas between the scan, the negative and the original."
+icon: "image"
+keywords: ["FilmPipeline", "setSource", "setParams", "setView", "preview", "histogram"]
+---
+
+A `FilmPipeline` holds one photo and one look, and draws a preview of the result on a canvas. This page covers the whole life of a pipeline, from creating it to releasing the GPU. For every signature, see the [FilmPipeline reference](/latent/film-pipeline).
+
+## Create the pipeline
+
+```ts
+import { FilmPipeline } from "@filmsim/gpu-pipeline";
+
+if (!FilmPipeline.isSupported()) {
+  // Show your own message or fall back to something else: the packages have no software renderer.
+}
+
+const pipeline = await FilmPipeline.create({
+  onDeviceLost: (info) => console.warn(`GPU device lost: ${info.reason}`, info.message),
+});
+```
+
+`create()` requests a GPU device, compiles the shaders and resolves when the pipeline can render. It rejects when it cannot, for example with `WebGPU is not available in this browser` or `No WebGPU adapter is available`.
+
+Create one pipeline and keep it. A pipeline owns a GPU device, so creating one per photo wastes time and memory.
+
+## Attach a canvas
+
+```ts
+canvas.width = 1200;
+canvas.height = 800;
+pipeline.attachCanvas(canvas);
+```
+
+The pipeline draws the photo fitted inside the canvas, on a neutral dark surround. The canvas `width` and `height` are the size of the drawing in pixels. Size the element on the page with CSS.
+
+Call `attachCanvas()` again every time you change the canvas `width` or `height`. An `OffscreenCanvas` works too.
+
+## Load a photo
+
+`setSource()` takes an `ImageBitmap` or raw pixels.
+
+<CodeGroup>
+
+```ts From a file
+const bitmap = await createImageBitmap(file);
+await pipeline.setSource(bitmap);
+bitmap.close();
+```
+
+```ts From raw pixels
+await pipeline.setSource({
+  data, // Uint8Array or Uint8ClampedArray, 4 bytes per pixel, row by row from the top left
+  width,
+  height,
+  colorSpace: "display-p3", // or "srgb", the default
+});
+```
+
+</CodeGroup>
+
+- An `ImageBitmap` is read as sRGB. Raw pixels are encoded sRGB or Display P3 values, not linear light. Alpha is ignored.
+- The photo is kept at full resolution for export. When its long edge is more than 2048 pixels, the pipeline also builds a smaller copy for the preview. Change that size with the `previewLongEdge` option of `create()`.
+- After `setSource()` resolves, `pipeline.sourceSize` is the size of the photo and `pipeline.previewSize` the size of the preview.
+- A photo wider or taller than the GPU's largest texture is rejected with `setSource: <width>x<height> is not a valid image size (limit <n>)`. Scale it down first.
+
+Loading a new photo replaces the previous one and releases its textures.
+
+## Choose the look
+
+A look has three parts: a film stock, a scanner and the parameters.
+
+```ts
+import { DEFAULT_PARAMS, type PipelineParams } from "@filmsim/core-types";
+import { getScanner, getStock } from "@filmsim/spectral-data";
+
+const stock = getStock("kodak_portra_400");
+const scanner = getScanner("noritsu_hs1800");
+let params: PipelineParams = { ...DEFAULT_PARAMS, stockId: stock.id, scannerId: scanner.id };
+
+pipeline.setProfiles(stock, scanner);
+pipeline.setParams(params);
+```
+
+The profiles you pass to `setProfiles()` decide the picture. The pipeline does not look up `stockId` and `scannerId` from the parameters. Keep them equal to the profiles you set, so that saved parameters describe the picture they made.
+
+All the parameters and their ranges are in [Parameters](/latent/parameters). Values outside a range are clamped, not rejected.
+
+## Render
+
+```ts
+pipeline.render();
+```
+
+`render()` re-runs the stages that are out of date and draws the canvas. It returns at once: the GPU works in the background.
+
+Call it after every change. It costs almost nothing when nothing changed, so you can also call it from every animation frame.
+
+```ts
+slider.addEventListener("input", () => {
+  params = { ...params, exposureEV: Number(slider.value) };
+  pipeline.setParams(params);
+  const frame = pipeline.render();
+  console.log(frame.stages); // [1, 2, 3, 4, 5, 6] for exposure, [6] for print exposure
+});
+```
+
+A change re-runs the first stage it touches and every stage after it. Print exposure is the cheapest parameter and exposure the most expensive. [How it works](/latent/how-it-works#what-a-change-re-runs) lists which parameter starts at which stage.
+
+## Change what the canvas shows
+
+`setView()` changes how the preview is shown, without developing anything again. Pass only the fields you want to change, then call `render()`.
+
+```ts
+// Before and after: the original left of the divider, the scan right of it.
+pipeline.setView({ split: 0.5 });
+
+// The negative as it looks on a light table, orange mask and all.
+pipeline.setView({ split: null, stage: "negative" });
+
+// Back to the finished scan, magnified twice around a point of the image.
+pipeline.setView({ stage: "final", zoom: 2, centerX: 0.3, centerY: 0.4 });
+
+pipeline.render();
+```
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `stage` | `"final"` | What to show: `"final"` (the scan), `"original"` (your photo), `"negative"` (the film on a light table), or `1` to `6` for the raw output of one stage. |
+| `split` | `null` | A number from 0 to 1 draws the original left of that position and `stage` right of it. `null` shows only `stage`. |
+| `zoom` | `1` | `1` fits the whole image in the canvas. Larger values magnify. |
+| `centerX`, `centerY` | `0.5` | The image point at the center of the canvas, from 0 to 1 across the image. |
+| `dissolve` | `null` | `{ from, amount }` mixes from another stage to `stage`. `amount` runs from 0 to 1. The Latent app uses it once, to reveal a new photo from its negative. |
+| `surround` | `[0.086, 0.086, 0.086]` | The sRGB color around the image. It stays neutral: a tinted value is replaced by its gray average. |
+
+## Read the histogram
+
+```ts
+const histogram = await pipeline.readHistogram();
+// histogram.r, .g, .b and .luma are Uint32Array(256); histogram.pixelCount is the number of pixels counted
+```
+
+The histogram counts the sRGB-encoded values of the finished scan at preview resolution. `luma` is the Rec. 709 luma of those values.
+
+## Measure a frame
+
+```ts
+pipeline.render();
+const timing = await pipeline.finish();
+// timing.wallMs: from submit until the GPU finished
+// timing.gpuMs: time of the passes on the GPU, or null when the browser has no timestamp queries
+```
+
+`finish()` resolves when everything submitted so far is done on the GPU. Await it before you measure.
+
+## Release the pipeline
+
+```ts
+pipeline.destroy();
+```
+
+`destroy()` releases the textures and the GPU device, unless you passed your own device to `create()`. Do not use the pipeline after it.
+
+If the device is lost, for example when the GPU process restarts, `onDeviceLost` is called. The pipeline does not recover by itself: create a new one and load the photo again.
+
+## Related pages
+
+<Columns cols={2}>
+  <Card title="Export" icon="file-export" href="/latent/export">
+    Get the finished pixels at full resolution.
+  </Card>
+
+  <Card title="Stocks, scanners and looks" icon="film" href="/latent/library">
+    Pick from the library, or use a ready-made look.
+  </Card>
+</Columns>

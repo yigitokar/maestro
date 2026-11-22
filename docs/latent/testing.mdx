@@ -1,0 +1,133 @@
+---
+title: "Test a page that uses Latent in headless Chromium"
+sidebarTitle: "Testing"
+description: "Run Latent on real WebGPU in a Playwright test: the launch flags, a test that develops and exports a photo, and what to assert on."
+icon: "vial"
+keywords: ["Playwright", "headless", "WebGPU", "test", "Chromium", "CI"]
+---
+
+Latent needs WebGPU, and a headless browser does not expose a GPU adapter by default. With a few launch flags, Playwright's Chromium runs the real pipeline, so an end-to-end test can load a photo, develop it and check the exported pixels.
+
+This page uses the page from the [Quickstart](/latent/quickstart). The Latent repository tests its own example project the same way.
+
+<Note>
+  The flags below are the ones the Latent repository uses on macOS, where its tests run. `--use-angle=metal` selects the macOS graphics backend. Other operating systems need a different value, and none has been tested.
+</Note>
+
+## Configure Playwright
+
+```ts playwright.config.ts
+import { defineConfig } from "@playwright/test";
+
+const PORT = 4274;
+
+export default defineConfig({
+  testDir: "./tests",
+  // One worker: the tests share one GPU.
+  workers: 1,
+  use: {
+    baseURL: `http://localhost:${PORT}`,
+    channel: "chromium",
+    headless: true,
+    acceptDownloads: true,
+    launchOptions: {
+      args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan,WebGPU", "--use-angle=metal", "--enable-gpu", "--ignore-gpu-blocklist"],
+    },
+  },
+  webServer: {
+    command: "npm run build && npm run preview",
+    url: `http://localhost:${PORT}`,
+    reuseExistingServer: false,
+  },
+});
+```
+
+- `channel: "chromium"` runs the full Chromium build in its new headless mode. That is the build the flags are for.
+- The server is the production build, not the dev server. A wrong import or a missing dependency shows up in the build.
+- `reuseExistingServer: false` makes the test fail when the port is taken, so it never talks to some other server.
+
+With Vite, fix the preview port so that it matches:
+
+```ts vite.config.ts
+import { defineConfig } from "vite";
+
+export default defineConfig({
+  preview: { port: 4274, strictPort: true },
+});
+```
+
+## Write the test
+
+```ts tests/develop.spec.ts
+import { readFileSync } from "node:fs";
+import { type Page, expect, test } from "@playwright/test";
+
+/** Clicks the export button and returns the downloaded file. */
+async function exportFile(page: Page): Promise<Buffer> {
+  const [download] = await Promise.all([page.waitForEvent("download"), page.locator("#export").click()]);
+  return readFileSync(await download.path());
+}
+
+test("develops a photo and exports a different file for another stock", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") errors.push(message.text());
+  });
+  page.on("pageerror", (error) => errors.push(error.message));
+
+  await page.goto("/");
+  // A 300 x 200 picture. The canvas takes its size once the photo is loaded.
+  await page.locator("#photo").setInputFiles("tests/photo.png");
+  await expect(page.locator("canvas")).toHaveJSProperty("height", 200);
+
+  const colour = await exportFile(page);
+  await page.locator("#stock").selectOption("kodak_tri_x_400");
+  const mono = await exportFile(page);
+
+  // A PNG at the size of the photo, not of the preview.
+  expect(colour.subarray(1, 4).toString("latin1")).toBe("PNG");
+  expect([colour.readUInt32BE(16), colour.readUInt32BE(20)]).toEqual([300, 200]);
+  // Two stocks give two different pictures.
+  expect(colour.equals(mono)).toBe(false);
+  // WebGPU errors are reported on the console.
+  expect(errors).toEqual([]);
+});
+```
+
+## What to assert on
+
+- **Assert on the exported pixels.** They are the product, and on one machine they are the same on every run: grain comes from a seed, not from a random number generator.
+- **Compare two stocks.** A blank or unchanged picture is the usual failure, and a comparison catches both. A color film against a black-and-white film gives the clearest difference: decode the two files and the black-and-white one comes out neutral, with no color left in it.
+- **Use a picture you generate.** A small synthetic picture with a color sweep and a gray ramp makes the result easy to reason about and keeps photos out of the repository.
+- **Take screenshots of the canvas for the preview only.** `locator("canvas").screenshot()` shows that the preview changed. It cannot tell you the pixel values of the full-resolution result.
+- **Let the test fail without WebGPU.** If the page falls back or shows a message, check for that. A test that passes on a page that never started the pipeline proves nothing.
+
+## Test without a browser
+
+The math does not need a GPU. `deriveRuntime()` and `shadePixel()` from `@filmsim/core-types` run in Node, so a unit test can develop a flat color and check the result:
+
+```ts
+import { DEFAULT_PARAMS, deriveRuntime, shadePixel } from "@filmsim/core-types";
+import { getScanner, getStock } from "@filmsim/spectral-data";
+
+const runtime = deriveRuntime(
+  getStock("kodak_tri_x_400"),
+  getScanner("fuji_frontier_sp3000"),
+  { ...DEFAULT_PARAMS, grainScale: 0 },
+  { widthPx: 3000, heightPx: 2000 },
+);
+const [r, g, b] = shadePixel(runtime, [0.8, 0.3, 0.1]).display;
+// A black-and-white film: r, g and b are equal.
+```
+
+## Related pages
+
+<Columns cols={2}>
+  <Card title="What is verified" icon="circle-check" href="/latent/verification">
+    How the engine itself is tested.
+  </Card>
+
+  <Card title="Limits" icon="triangle-exclamation" href="/latent/limits">
+    Errors and what they mean.
+  </Card>
+</Columns>
