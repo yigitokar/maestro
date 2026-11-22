@@ -1,0 +1,79 @@
+---
+title: "Limits of the Latent packages and common errors"
+sidebarTitle: "Limits"
+description: "What the Latent engine packages leave to your app, where they run and where they have not been tested, and what each error message means."
+icon: "triangle-exclamation"
+keywords: ["limits", "errors", "troubleshooting", "WebGPU", "fallback", "browser support"]
+---
+
+The Latent packages are the engine and the film library, not an application. This page lists what they leave out, where they run, and the errors you can meet.
+
+## What your app provides
+
+The Latent app has all of these, in its own code. None of it is in the packages.
+
+| Not in the packages | What to do |
+| --- | --- |
+| A fallback for browsers without WebGPU | Check `FilmPipeline.isSupported()` and show a message or another view. For flat colors, `shadePixel()` runs on the CPU. |
+| Photo decoding | Decode with `createImageBitmap()`, which also applies the orientation stored in the file. Check the size before you load a very large photo: `setSource()` rejects one larger than the GPU's largest texture. |
+| File encoding | `export()` returns pixels. Encode a PNG or a JPEG with a 2D canvas, and a 16-bit PNG with an encoder library. See [Export](/latent/export). |
+| A thumbnail queue | `renderVariant()` renders one thumbnail. Ordering, caching and cancelling are yours. |
+| State and controls | Sliders, undo, saved settings and the loop that calls `render()` are yours. |
+| A user interface | The packages draw on one canvas you give them and nothing else. |
+
+## Where it runs
+
+- **WebGPU is required**, in a secure context: `https` or `localhost`.
+- **The pipeline runs in a browser only.** `@filmsim/core-types` and `@filmsim/spectral-data` also run in Node, and importing `@filmsim/gpu-pipeline` in Node is safe, so server rendering works. Rendering pictures in Node without a browser is not supported.
+- **ES modules only.** There is no CommonJS build.
+- **Tested in Chromium**, on macOS. Other browsers and other operating systems have not been tested.
+- **No native mobile library.** The packages run where a browser gives them WebGPU.
+
+## Errors
+
+| Message | Cause | What to do |
+| --- | --- | --- |
+| `WebGPU is not available in this browser` | `FilmPipeline.create()` was called where `navigator.gpu` does not exist: an unsupported browser, a page that is not in a secure context, or Node. | Check `FilmPipeline.isSupported()` first. |
+| `No WebGPU adapter is available` | The browser has WebGPU but found no GPU it can use, for example in a headless browser without the right flags. | Show your fallback. In tests, see [Testing](/latent/testing). |
+| `attachCanvas: the canvas has no WebGPU context` | The canvas already has another kind of context, such as 2D. | Use a canvas of its own for the pipeline. |
+| `setSource: <w>x<h> is not a valid image size (limit <n>)` | The photo is larger than the GPU's largest texture, or a side is not a whole number of at least 1. | Scale the photo down before you load it. |
+| `setSource: expected <n> bytes of RGBA8, got <m>` | The raw pixel array is shorter than `width * height * 4`. | Pass four bytes per pixel. |
+| `FilmPipeline: call setSource() first` | A call that needs a photo ran before one was loaded. | Await `setSource()` first. |
+| `FilmPipeline: call setProfiles() and setParams() first` | A call that needs a look ran before both were set. | Call both, then export. |
+| `Unknown film stock: <id>`, `Unknown scanner: <id>`, `Unknown look: <id>` | A `get` function of the library was given an id it does not have. | Use the `find` functions for ids from outside your code. |
+| `Unknown film format: <id>` | `filmFormat` is not one of the format ids. | Use an id from `FILM_FORMAT_IDS`. |
+| A `ZodError` | A profile or parameters passed to a `parse` function do not fit the schema. The error names the field. | Fix the data the error points to. |
+
+WebGPU errors that happen during rendering, such as running out of GPU memory, go to the `onError` option of `create()`, and to `console.error` when you do not set it.
+
+## The picture looks wrong
+
+<AccordionGroup>
+  <Accordion title="The canvas stays dark">
+    `render()` draws only the surround until a photo, profiles and parameters are all set. Check that `setSource()` has resolved and that you called `setProfiles()`, `setParams()` and then `render()`.
+  </Accordion>
+
+  <Accordion title="The canvas is blurry or the photo is tiny">
+    The canvas `width` and `height` set how many pixels are drawn. Set them to the size you want, call `attachCanvas()` again, and size the element with CSS.
+  </Accordion>
+
+  <Accordion title="The exported file is smaller than the photo">
+    You encoded the canvas, which holds the preview. Encode the pixels `export()` returns.
+  </Accordion>
+
+  <Accordion title="The result is too contrasty or too flat for every stock">
+    Latent expects an ordinary photo made for a display, and first undoes the rendering a camera gives such a photo. A picture that is not one, such as linear raw data or a picture that already has a film look, does not come out as intended.
+  </Accordion>
+</AccordionGroup>
+
+## Related pages
+
+<Columns cols={2}>
+  <Card title="Installation" icon="box" href="/latent/installation">
+    Requirements and how the packages are distributed.
+  </Card>
+
+  <Card title="What is verified" icon="circle-check" href="/latent/verification">
+    What the tests cover, and what they do not.
+  </Card>
+</Columns>

@@ -1,0 +1,270 @@
+---
+title: "FilmPipeline reference"
+sidebarTitle: "FilmPipeline"
+description: "Every static method, option, property, method and type of FilmPipeline, the WebGPU renderer exported by the @filmsim/gpu-pipeline package."
+icon: "code"
+keywords: ["FilmPipeline", "API", "reference", "attachCanvas", "setSource", "render", "export", "renderVariant"]
+---
+
+`FilmPipeline` is the only value `@filmsim/gpu-pipeline` exports. It holds one photo and one look, draws a preview on a canvas and renders the photo at full resolution. Everything else in the package is a type.
+
+```ts
+import { FilmPipeline, type ExportOptions, type ViewState } from "@filmsim/gpu-pipeline";
+```
+
+For a walk through the calls in order, see [Develop a photo](/latent/develop-a-photo).
+
+## Static methods
+
+### isSupported
+
+```ts
+FilmPipeline.isSupported(): boolean
+```
+
+Returns `true` when the environment has WebGPU at all, which is when `navigator.gpu` exists. A device can still fail to be created. It returns `false` in Node.
+
+### create
+
+```ts
+FilmPipeline.create(options?: FilmPipelineOptions): Promise<FilmPipeline>
+```
+
+Requests a GPU device, compiles the shaders and resolves with a pipeline that can render. It rejects when WebGPU is missing or no adapter is available.
+
+| Option | Type | Default | Meaning |
+| --- | --- | --- | --- |
+| `precision` | `"half" \| "full"` | `"half"` | The working precision of the preview. See [Precision](/latent/how-it-works#precision). |
+| `previewLongEdge` | `number` | `2048` | The long edge of the preview copy of a photo, in pixels. |
+| `powerPreference` | `GPUPowerPreference` | `"high-performance"` | Which GPU to ask for on a machine with two. |
+| `onDeviceLost` | `(info: { reason: string; message: string }) => void` | None | Called when the GPU device is lost. |
+| `onError` | `(error: GPUError) => void` | Logs with `console.error` | Receives WebGPU errors that nothing else caught, such as validation errors and running out of memory. |
+| `device` | `GPUDevice` | None | Use this device instead of requesting one. The pipeline then leaves the device alone in `destroy()`. |
+
+## Properties
+
+All four are read-only.
+
+| Property | Type | Meaning |
+| --- | --- | --- |
+| `sourceSize` | `Size \| null` | The size of the photo at full resolution. `null` before a photo is set. |
+| `previewSize` | `Size \| null` | The size of the preview copy. `null` before a photo is set. |
+| `runtime` | `PipelineRuntime \| null` | Every derived number of the last preview render: matrices, kernels, lookup tables. `null` before the first render. |
+| `device` | `GPUDevice` | The GPU device the pipeline uses. |
+
+## Methods
+
+### attachCanvas
+
+```ts
+attachCanvas(canvas: HTMLCanvasElement | OffscreenCanvas): void
+```
+
+Binds the canvas the preview is drawn on. Call it again after you change the canvas `width` or `height`.
+
+It throws `attachCanvas: the canvas has no WebGPU context` when the canvas cannot give one, for example because it already has a 2D context.
+
+### setSource
+
+```ts
+setSource(source: SourcePixels | ImageBitmap): Promise<void>
+```
+
+Uploads a photo, keeps it at full resolution for export and builds the preview copy. It replaces the previous photo.
+
+An `ImageBitmap` is read as sRGB. `SourcePixels` are 8-bit RGBA values, encoded and not linear, row by row from the top left, with the alpha ignored:
+
+```ts
+interface SourcePixels {
+  data: Uint8Array | Uint8ClampedArray;
+  width: number;
+  height: number;
+  /** Encoding of the pixels. Default "srgb". */
+  colorSpace?: "srgb" | "display-p3";
+}
+```
+
+It rejects when a side is not a whole number from 1 to the largest texture the GPU supports, or when `data` holds fewer than `width * height * 4` bytes.
+
+### setProfiles
+
+```ts
+setProfiles(stock: FilmStockProfile, scanner: ScannerProfile): void
+```
+
+Sets the film stock and the scanner of the look. Profiles come from `@filmsim/spectral-data` or from your own data. See [Stocks, scanners and looks](/latent/library).
+
+### setParams
+
+```ts
+setParams(params: PipelineParams): void
+```
+
+Sets the parameters of the look. The pipeline copies the object, so changing it afterwards has no effect: call `setParams()` again. See [Parameters](/latent/parameters).
+
+### setView
+
+```ts
+setView(view: Partial<ViewState>): void
+```
+
+Changes how the canvas shows the preview. Fields you leave out keep their value.
+
+```ts
+interface ViewState {
+  /** null shows only `stage`. A number from 0 to 1 draws the original left of that position. */
+  split: number | null;
+  /** 1 fits the whole image in the canvas. Larger values magnify. */
+  zoom: number;
+  /** Image point shown at the center of the canvas, from 0 to 1. Default 0.5 and 0.5. */
+  centerX: number;
+  centerY: number;
+  /** "final", "original", "negative", or a stage number from 1 to 6. */
+  stage: PreviewStage;
+  /** Shows a mix from another stage to `stage`. null turns it off. */
+  dissolve: { from: PreviewStage; amount: number } | null;
+  /** sRGB-encoded color around the image. Default [0.086, 0.086, 0.086]. */
+  surround: [number, number, number];
+}
+```
+
+`split` and `dissolve.amount` are limited to the range from 0 to 1, and `surround` is replaced by its gray average. It throws `setView: zoom must be a positive number` and `setView: centre must be finite` for values that cannot be drawn.
+
+### render
+
+```ts
+render(): FrameStats
+```
+
+Re-runs the stages that are out of date at preview resolution and draws the canvas. It is cheap when nothing changed, and safe to call from every animation frame.
+
+Until a photo, profiles and parameters are all set, it draws only the surround.
+
+```ts
+interface FrameStats {
+  /** Stages re-run for this frame, in order. Empty when nothing was out of date. */
+  stages: (1 | 2 | 3 | 4 | 5 | 6)[];
+  /** Size of the preview. */
+  width: number;
+  height: number;
+  /** CPU time spent deriving the runtime, encoding and submitting, in ms. */
+  encodeMs: number;
+}
+```
+
+### finish
+
+```ts
+finish(): Promise<GpuTiming>
+```
+
+Resolves when everything submitted so far has finished on the GPU.
+
+```ts
+interface GpuTiming {
+  /** Time from the last submit until the GPU finished it, in ms. */
+  wallMs: number;
+  /** Time of the last frame's passes on the GPU in ms, or null without timestamp queries. */
+  gpuMs: number | null;
+  /** The same per stage and for the pass that draws the canvas. Absent when gpuMs is null. */
+  stageMs?: Partial<Record<1 | 2 | 3 | 4 | 5 | 6 | "present", number>>;
+}
+```
+
+### readHistogram
+
+```ts
+readHistogram(): Promise<Histogram>
+```
+
+Counts the sRGB-encoded values of the finished scan at preview resolution, in 256 bins per channel.
+
+```ts
+interface Histogram {
+  r: Uint32Array;
+  g: Uint32Array;
+  b: Uint32Array;
+  /** Rec. 709 luma of the encoded values. */
+  luma: Uint32Array;
+  pixelCount: number;
+}
+```
+
+### readStage
+
+```ts
+readStage(stage: 1 | 2 | 3 | 4 | 5 | 6): Promise<{ width: number; height: number; data: Float32Array }>
+```
+
+Reads back the output of one stage at preview resolution as RGB floats, three per pixel. It is made for tests and diagnostics.
+
+### renderVariant
+
+```ts
+renderVariant(request: VariantRequest, longEdge: number): Promise<ImageData>
+```
+
+Renders the current photo through another look at a small size, without disturbing the preview. It resolves with sRGB-encoded RGBA pixels whose long edge is `longEdge`. Use it for thumbnails.
+
+```ts
+interface VariantRequest {
+  stock: FilmStockProfile;
+  scanner: ScannerProfile;
+  params: PipelineParams;
+}
+```
+
+### export
+
+```ts
+export(options?: ExportOptions): Promise<ExportResult>
+```
+
+Renders the current photo with the current look at full resolution, in tiles. See [Export](/latent/export).
+
+```ts
+interface ExportOptions {
+  /** Scale down so the long edge is at most this many pixels. Default: the photo's own size. */
+  maxLongEdge?: number;
+  /** Tile edge in pixels, even. Default 2048. */
+  tileSize?: number;
+  /** Working precision. Default "full". */
+  precision?: "half" | "full";
+  /** Default "rgba8". */
+  format?: "rgba8" | "rgba16" | "float32";
+  onProgress?: (completedTiles: number, totalTiles: number) => void;
+  signal?: AbortSignal;
+}
+
+interface ExportResult {
+  width: number;
+  height: number;
+  format: "rgba8" | "rgba16" | "float32";
+  /** rgba8: Uint8ClampedArray. rgba16: Uint16Array, 0 to 65535. float32: Float32Array, RGB only. */
+  data: Uint8ClampedArray | Uint16Array | Float32Array;
+}
+```
+
+### destroy
+
+```ts
+destroy(): void
+```
+
+Releases the textures, unbinds the canvas and destroys the GPU device, unless you passed your own. Calling it twice is safe.
+
+## Calls that need a photo or a look
+
+| Call | Needs | Otherwise throws |
+| --- | --- | --- |
+| `export()`, `readHistogram()`, `readStage()` | A photo, profiles and parameters | `FilmPipeline: call setSource() first` or `FilmPipeline: call setProfiles() and setParams() first` |
+| `renderVariant()` | A photo | `FilmPipeline: call setSource() first` |
+| `render()` | Nothing | Draws the surround until everything is set |
+
+## Types
+
+The package exports these types: `FilmPipelineApi`, `FilmPipelineOptions`, `SourcePixels`, `ViewState`, `PreviewStage`, `StageId`, `Precision`, `Histogram`, `FrameStats`, `GpuTiming`, `ExportFormat`, `ExportOptions`, `ExportResult`, `VariantRequest` and `Size`.
+
+`FilmPipelineApi` is the interface `FilmPipeline` implements. Type your own code against it if you want to put another renderer behind the same calls, as the Latent app does for its software preview.
+
+`FilmStockProfile`, `ScannerProfile`, `PipelineParams` and `PipelineRuntime` come from `@filmsim/core-types`.

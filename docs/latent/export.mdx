@@ -1,0 +1,112 @@
+---
+title: "Export a photo at full resolution"
+sidebarTitle: "Export"
+description: "Render the developed photo at full resolution with Latent, choose 8-bit or 16-bit pixels, report progress, cancel, and encode a PNG or a JPEG."
+icon: "file-export"
+keywords: ["export", "PNG", "JPEG", "16-bit", "tiles", "AbortSignal"]
+---
+
+`pipeline.export()` renders the current photo with the current look at full resolution and resolves with the pixels. It does not disturb the preview, and it does not write a file: encoding is your app's job.
+
+```ts
+const result = await pipeline.export();
+// result.width, result.height, result.format ("rgba8"), result.data (Uint8ClampedArray)
+```
+
+Call it after `setSource()`, `setProfiles()` and `setParams()`. Without a photo it rejects with `FilmPipeline: call setSource() first`, and without a look with `FilmPipeline: call setProfiles() and setParams() first`.
+
+## Options
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `format` | `"rgba8"` | The pixel format of `result.data`. See [Pixel formats](#pixel-formats). |
+| `maxLongEdge` | The photo's own size | Scale the photo down so that its long edge is at most this many pixels. A value larger than the photo changes nothing. |
+| `precision` | `"full"` | The precision of the textures the export works in. `"half"` is the preview's precision. See [Precision](/latent/how-it-works#precision). |
+| `tileSize` | `2048` | The edge of one tile in pixels. An odd number is rounded down to the even number below it. |
+| `onProgress` | None | Called after each tile with the number of finished tiles and the total. |
+| `signal` | None | An `AbortSignal` that cancels the export. |
+
+## Pixel formats
+
+| `format` | `result.data` | Contents |
+| --- | --- | --- |
+| `"rgba8"` | `Uint8ClampedArray` | RGBA, 0 to 255, sRGB-encoded. Alpha is 255. |
+| `"rgba16"` | `Uint16Array` | RGBA, 0 to 65535, sRGB-encoded. Alpha is 65535. |
+| `"float32"` | `Float32Array` | RGB only, three values per pixel, sRGB-encoded from 0 to 1. Made for tests. |
+
+All three are row by row from the top left.
+
+## Encode a PNG or a JPEG
+
+A 2D canvas encodes 8-bit pixels. The alpha is already opaque, so nothing is lost on the way.
+
+```ts
+import type { ExportResult } from "@filmsim/gpu-pipeline";
+
+async function encode(result: ExportResult, type: "image/png" | "image/jpeg", quality = 0.92): Promise<Blob> {
+  if (!(result.data instanceof Uint8ClampedArray)) throw new Error("Export with format rgba8 first");
+  const sheet = new OffscreenCanvas(result.width, result.height);
+  const context = sheet.getContext("2d");
+  if (!context) throw new Error("This browser cannot create a 2D canvas");
+  context.putImageData(new ImageData(new Uint8ClampedArray(result.data), result.width, result.height), 0, 0);
+  return sheet.convertToBlob({ type, quality });
+}
+
+const blob = await encode(await pipeline.export({ format: "rgba8" }), "image/jpeg");
+```
+
+<Warning>
+  Do not read the file from the canvas you attached to the pipeline. That canvas holds the preview, which is smaller than the photo.
+</Warning>
+
+A canvas cannot encode 16 bits per channel. For a 16-bit PNG, export with `format: "rgba16"` and pass `result.data` to a PNG encoder that accepts 16-bit pixels. The Latent app uses the `fast-png` package for this, in a worker.
+
+## Show progress and cancel
+
+The export renders in tiles and yields to the page between them, so the page stays responsive and a large export can report progress.
+
+```ts
+const controller = new AbortController();
+cancelButton.addEventListener("click", () => controller.abort());
+
+try {
+  const result = await pipeline.export({
+    format: "rgba16",
+    signal: controller.signal,
+    onProgress: (done, total) => {
+      progressBar.value = done / total;
+    },
+  });
+} catch (error) {
+  if (!controller.signal.aborted) throw error;
+  // The user cancelled.
+}
+```
+
+A cancelled export rejects with the signal's abort reason at the next tile.
+
+## Export a smaller picture
+
+```ts
+const preview = await pipeline.export({ maxLongEdge: 1600 });
+```
+
+The photo is scaled down first and then developed at that size. Grain and halation are tied to the film format, not to the pixel count, so they keep their size relative to the picture.
+
+## Size and speed
+
+- A tiled export equals an untiled one exactly. The tile size changes memory use and how often progress is reported, not the picture.
+- The result holds the whole picture in memory: 4 bytes per pixel for `rgba8`, 8 for `rgba16`. A 6000 x 4000 photo is 96 MB as `rgba8`.
+- On an Apple M5 Max, a 6000 x 4000 export takes about 0.2 seconds in 6 tiles.
+
+## Related pages
+
+<Columns cols={2}>
+  <Card title="FilmPipeline" icon="code" href="/latent/film-pipeline#export">
+    The signature and the types of `export()`.
+  </Card>
+
+  <Card title="Limits" icon="triangle-exclamation" href="/latent/limits">
+    What the packages leave to your app.
+  </Card>
+</Columns>

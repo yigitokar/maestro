@@ -20,6 +20,10 @@ The control flow is code, so it is the same on every run. The reasoning is in th
 | [Claude Code](maestro/claude-code.md) | Using Maestro from Claude Code through its MCP server |
 | [Library](maestro/library.md) | Calling Maestro from your own Node program or agent harness |
 
+## Latent
+
+This site also carries the documentation of Latent, a film and scanner emulator for the browser. Its pages are in [latent/](latent/) and are published at [docs.careresearch.ai/latent](https://docs.careresearch.ai/latent). Latent's code lives in another repository. The pages are here because one Mintlify site serves both products, each as its own product in the navigation of `docs.json`.
+
 ## Design notes
 
 These are the project's working documents. They are written in Turkish.

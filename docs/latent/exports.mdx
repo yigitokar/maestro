@@ -1,0 +1,104 @@
+---
+title: "What the three Latent packages export"
+sidebarTitle: "Package exports"
+description: "The functions, values and types exported by @filmsim/core-types, @filmsim/spectral-data and @filmsim/gpu-pipeline, grouped by what you use them for."
+icon: "cube"
+keywords: ["exports", "core-types", "spectral-data", "gpu-pipeline", "deriveRuntime", "shadePixel", "schemas"]
+---
+
+Latent's engine is three packages. Each has one entry point, and everything on this page is imported from the package name itself. This page lists what you get from each.
+
+## @filmsim/gpu-pipeline
+
+One value, `FilmPipeline`, and the types of its calls. See the [FilmPipeline reference](/latent/film-pipeline).
+
+## @filmsim/spectral-data
+
+The library and the functions that read it. See [Stocks, scanners and looks](/latent/library).
+
+| Export | What it is |
+| --- | --- |
+| `STOCKS`, `SCANNERS`, `LOOKS` | Read-only arrays of every profile, in a stable order. |
+| `getStock(id)`, `getScanner(id)`, `getLook(id)` | One profile by id. They throw for an unknown id. |
+| `findStock(id)`, `findScanner(id)`, `findLook(id)` | The same, returning `undefined` for an unknown id. |
+| `DEFAULT_STOCK_ID`, `DEFAULT_SCANNER_ID` | `"kodak_gold_200"` and `"fuji_frontier_sp3000"`. |
+| `STOCK_CATEGORIES`, `stockCategory(stock)` | The four groups of stocks, and the group of one stock. |
+| `stockTraits(stock, scanner?)` | Contrast, saturation, grain and halation of a stock on a scale from 0 to 1, for comparison. |
+| `lookToParams(look, base?)` | Complete parameters for a look. |
+| `parseLook(value)`, `LookSchema` | Validation of a look object. |
+
+Types: `Look`, `LookParams` and `StockTraits`.
+
+The profile files themselves are importable as `@filmsim/spectral-data/profiles/stocks/<id>.json`, `profiles/scanners/<id>.json` and `profiles/looks/<id>.json`.
+
+## @filmsim/core-types
+
+The data contracts and the math. It has no dependency on a browser, so all of it also runs in Node.
+
+### Parameters and formats
+
+| Export | What it is |
+| --- | --- |
+| `DEFAULT_PARAMS` | Complete parameters with every default. |
+| `PARAM_RANGES` | The `[minimum, maximum]` of every numeric parameter. |
+| `resolveParams(params)` | Fills defaults and clamps every number to its range. |
+| `FILM_FORMATS`, `FILM_FORMAT_IDS` | The film formats with their sizes in millimeters, and their ids. |
+| `physicalScale(format, dims)` | Pixels per millimeter and the pixel pitch for an image on a format. |
+
+See [Parameters](/latent/parameters).
+
+### Validation
+
+| Export | What it is |
+| --- | --- |
+| `parseFilmStock(value)`, `parseScanner(value)`, `parsePipelineParams(value)` | Check an unknown value and return it typed. They throw a `ZodError` that names the field. |
+| `FilmStockProfileSchema`, `ScannerProfileSchema`, `PipelineParamsSchema` | The Zod schemas behind them. |
+
+### The reference implementation
+
+| Export | What it is |
+| --- | --- |
+| `deriveRuntime(stock, scanner, params, dims, options?)` | Every number the six stages need for an image of the size `dims`: matrices, blur kernels, lookup tables, grain and scan calibration. The GPU pipeline calls it whenever the photo or the look changes. |
+| `shadePixel(runtime, encoded, options?)` | One pixel of a uniform picture through all six stages, on the CPU. It returns the output of each stage; `display` is the finished sRGB color. |
+| `runtimeToPlain(runtime)` | A runtime as plain arrays and numbers, for JSON and for comparing two runtimes. |
+
+```ts
+import { DEFAULT_PARAMS, deriveRuntime, shadePixel } from "@filmsim/core-types";
+
+const runtime = deriveRuntime(stock, scanner, DEFAULT_PARAMS, { widthPx: 3000, heightPx: 2000 });
+const trace = shadePixel(runtime, [0.5, 0.5, 0.5], { grain: false });
+trace.density; // the density of the three layers after stage 3
+trace.display; // the finished color, sRGB-encoded from 0 to 1
+```
+
+`dims` is the size of the whole picture. Halation and grain are derived from it, so pass the size you will render at.
+
+`shadePixel()` is exact where the picture is uniform, because a blur of a flat field changes nothing. It cannot show how halation spreads into the dark around a highlight.
+
+### Building blocks
+
+The rest of the package is what the functions above are made of, exported for tests and for tools:
+
+- **Color.** `srgbEotf`, `srgbOetf`, `rgbToRgbMatrix`, `rgbToXyzMatrix`, `bradfordAdaptation`, `whiteBalanceMatrix`, `inputMatrix`, `illuminantXy`, `planckianUv`, and the primaries and matrices they use.
+- **Curves and kernels.** `buildCurveLut`, `sampleCurveLut`, `buildStockLuts`, `developCurve`, `evalPchip`, `pchipDerivatives`, `isMonotone` and `gaussianHalfKernel`.
+- **Grain.** `grainEta`, `grainOctave`, `grainSigmaShape`, `grainLayerSeed`, `latticeHash`, `latticeRandom` and `lowbias32`.
+- **Scan.** `displayToScene`, `scannerToneCurve` and `unsharpMask`.
+- **Matrices.** `mulMat3`, `mulMat3Vec3`, `invertMat3`, `transposeMat3`, `scaleMat3`, `diagMat3`, `rowSums` and `IDENTITY3`. Every 3 by 3 matrix is nine numbers, row by row.
+- **Small helpers.** `clamp`, `log10`, `pow10` and `xyToXYZ`.
+- **Constants** of the formulas, such as `MID_GREY` (0.18) and `LUT_SIZE` (256).
+
+### Types
+
+`FilmStockProfile`, `ScannerProfile`, `ProfileFidelity`, `FilmProcess`, `FilmCategory`, `CurvePoint`, `PipelineParams`, `FilmFormat`, `FilmFormatInfo`, `InputColorSpace`, `ImageDims`, `PhysicalScale`, `PipelineRuntime` and its parts (`InputRuntime`, `HalationRuntime`, `SensitometryRuntime`, `GrainRuntime`, `ScanRuntime`), `DeriveOptions`, `PixelTrace`, `ShadeOptions`, `CurveLut`, `Vec3`, `Mat3`, `Chromaticity` and `RgbPrimaries`.
+
+## Related pages
+
+<Columns cols={2}>
+  <Card title="FilmPipeline" icon="code" href="/latent/film-pipeline">
+    The renderer, call by call.
+  </Card>
+
+  <Card title="How it works" icon="layer-group" href="/latent/how-it-works">
+    What the reference implementation computes.
+  </Card>
+</Columns>

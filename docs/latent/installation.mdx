@@ -1,0 +1,92 @@
+---
+title: "Install the Latent engine packages"
+sidebarTitle: "Installation"
+description: "The three Latent packages, what each one contains, what they need from the browser and your build, and how to install them from tarballs."
+icon: "box"
+keywords: ["install", "npm pack", "tarball", "WebGPU", "ES modules"]
+---
+
+The Latent engine is three ES module packages: `@filmsim/core-types`, `@filmsim/spectral-data` and `@filmsim/gpu-pipeline`. They are not on a package registry. You install them from three tarballs that are packed from the Latent repository.
+
+## Requirements
+
+- **A browser with WebGPU**, on a page served over `https` or from `localhost`. `FilmPipeline.isSupported()` tells you whether the browser has it, and `FilmPipeline.create()` rejects when it does not. The packages have no software fallback.
+- **A project that uses ES modules.** The packages are built for ES2022 and ship type declarations, so your build does not compile TypeScript from `node_modules`.
+- **Node.js 22.18 or newer to pack the tarballs.** Installing and using them has no such requirement.
+
+The packages can be imported in Node, so a page that is rendered on a server can import them. The pipeline itself runs only in a browser.
+
+## Pack the tarballs
+
+The Latent repository is private. If you have access to it, run this at its root:
+
+```bash
+npm run pack:engine
+```
+
+It builds each package and writes three files to `examples/embed-vite/vendor/`:
+
+```text
+filmsim-core-types-0.1.0.tgz
+filmsim-spectral-data-0.1.0.tgz
+filmsim-gpu-pipeline-0.1.0.tgz
+```
+
+## Install them
+
+Copy the three files into your project and install them in one command:
+
+```bash
+npm install ./filmsim-core-types-0.1.0.tgz ./filmsim-spectral-data-0.1.0.tgz ./filmsim-gpu-pipeline-0.1.0.tgz
+```
+
+<Warning>
+  Give npm every package you install in one command, and always include `@filmsim/core-types`: the other two depend on it by name. The packages are published nowhere, so for one that is missing npm goes looking on the public registry.
+</Warning>
+
+npm also installs their two outside dependencies: `zod`, which validates the profiles, and `@webgpu/types`, which the type declarations of `@filmsim/gpu-pipeline` refer to.
+
+### Update to a newer build
+
+The tarballs keep their version number between builds, and npm does not notice that a file with the same name has new contents. To update, run the install command with the three file paths again:
+
+```bash
+npm install ./filmsim-core-types-0.1.0.tgz ./filmsim-spectral-data-0.1.0.tgz ./filmsim-gpu-pipeline-0.1.0.tgz
+```
+
+That replaces the installed copies and updates their hashes in your lockfile. A plain `npm install` does not: even after you delete the installed copies, it restores the previous build from npm's cache, because the lockfile still names it.
+
+## What is in each package
+
+| Package | What it contains | Depends on |
+| --- | --- | --- |
+| `@filmsim/core-types` | The profile and parameter types, their Zod schemas, the color math, `deriveRuntime()` and the scalar reference `shadePixel()`. | `zod` |
+| `@filmsim/spectral-data` | The library: 51 film stocks, 12 scanners and print stocks, 32 looks, and the functions that look them up. | `@filmsim/core-types`, `zod` |
+| `@filmsim/gpu-pipeline` | `FilmPipeline`, the WebGPU renderer: preview, histogram, thumbnails and tiled export. | `@filmsim/core-types`, `@webgpu/types` |
+
+`@filmsim/gpu-pipeline` does not depend on `@filmsim/spectral-data`. If you bring your own profiles, you can leave the library out and install only the other two.
+
+In the example project of the Latent repository, a production build that uses all three packages, every profile and `zod` comes to about 80 kB gzipped.
+
+## Bundlers and TypeScript
+
+The packages are plain ES modules with no JSON imports and no relative imports left to resolve, so they need no bundler plugin. They are checked in two setups:
+
+- **Vite 8.** The example project in the Latent repository installs the tarballs, builds for production and is tested in headless Chromium on every run of `npm run test:example`.
+- **Next.js 16 with Turbopack.** A project that installed the tarballs built without `transpilePackages`, imported the library in a server component and ran the pipeline in a client component.
+
+Other bundlers are not tested.
+
+The type declarations resolve with `moduleResolution` set to `bundler`, and with `node16` or `nodenext` when the importing file is an ES module. There is no CommonJS build. You do not need to add `@webgpu/types` to your own `tsconfig.json`: the declarations of `@filmsim/gpu-pipeline` reference it.
+
+## Next steps
+
+<Columns cols={2}>
+  <Card title="Quickstart" icon="bolt" href="/latent/quickstart">
+    Develop a photo on a page of your own.
+  </Card>
+
+  <Card title="Limits" icon="triangle-exclamation" href="/latent/limits">
+    What the packages leave to your app.
+  </Card>
+</Columns>
