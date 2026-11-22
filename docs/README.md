@@ -22,7 +22,7 @@ The control flow is code, so it is the same on every run. The reasoning is in th
 
 ## Latent
 
-This site also carries the documentation of Latent, a film and scanner emulator for the browser. Its pages are in [latent/](latent/) and are published at [docs.careresearch.ai/latent](https://docs.careresearch.ai/latent). Latent's code lives in another repository. The pages are here because one Mintlify site serves both products, each as its own product in the navigation of `docs.json`.
+This site also carries the documentation of Latent, a film and scanner emulator for the browser. Its pages are in [latent/](latent/) and are published at [docs.careresearch.ai/latent](https://docs.careresearch.ai/latent). The app itself runs at [latent-bay.vercel.app](https://latent-bay.vercel.app). Latent's code lives in another repository. The pages are here because one Mintlify site serves both products, each as its own product in the navigation of `docs.json`.
 
 ## Design notes
 
