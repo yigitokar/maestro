@@ -168,3 +168,131 @@ import { readEntries, readOutcome, readTrace } from 'maestro-workflows';
 const rows = await readEntries(runDir);     // the journal's rows
 const outcome = await readOutcome(runDir);  // { ok, result } or { ok: false, error }; undefined while running
 ```
+
+## Replaying a run
+
+`replay()` forks an earlier run into a new run. Agents before a chosen node are served from the source run's journal, and that node and every agent after it run live. The source run directory is not changed, so the two runs can be compared.
+
+```ts
+import { replay } from 'maestro-workflows';
+
+const handle = replay({ fromRunId: '20261120-101500-a1b2c3', from: 'judge', scriptPath: 'review.js' });
+const result = await handle.promise;
+```
+
+`replay()` takes the same options as `run()`, except `resumeFromRunId`, and returns the same handle. It adds:
+
+| Option | Meaning |
+|---|---|
+| `fromRunId` | The source run. It must be stored under the same `stateDir`. Required. |
+| `from` | The node to run live from. Without it, every `ok` agent of the source run is copied and only agents without a cached answer run. |
+
+`from` selects a node of the source run's last attempt, in this order:
+
+- `phase:<title>`: the first agent in that phase,
+- `#<index>`: the agent with that index,
+- a label, when exactly one agent has it,
+- a bare index,
+- a key prefix, when exactly one agent matches.
+
+An ambiguous label or key prefix fails and lists the indexes to use instead. A selector that matches nothing fails and lists some of the available nodes. Both fail before the new run directory is created.
+
+Without `script`, `scriptPath` or `name`, the source run's `script.js` is reused, and without `args`, its `args.json`. Pass an edited script to change a prompt or the graph without paying again for the agents before `from`. An agent whose prompt or options changed in the edited script no longer matches its cached answer and runs live. The new run must have its own id: a `runId` equal to `fromRunId` fails.
+
+`replay(opts)` is a wrapper around `run({ ...opts, replayFrom: { runId, from } })`. `run()` accepts `replayFrom` directly, but not together with `resumeFromRunId`.
+
+The new run records its source in `run.json` (`replayedFrom`: source run, `from`, seeded and invalidated agent counts) and in its first `run_start` event. Seeded agents count as cache hits, and their tokens stay charged to the run that first executed them. See [`maestro replay`](/maestro/cli#maestro-replay) for the command.
+
+### From a tool call
+
+`handleWorkflowReplayCall(input, ctx)` is the replay counterpart of `handleWorkflowToolCall()`, with the input of the [`WorkflowReplay`](/maestro/claude-code#workflowreplay) tool and the same context:
+
+```ts
+import { handleWorkflowReplayCall } from 'maestro-workflows';
+
+const res = await handleWorkflowReplayCall(
+  { fromRunId, from: 'judge' },
+  { cwd: repoDir, onComplete: (runId, outcome) => queueForModel(runId, outcome) },
+);
+// { runId, forkedFrom, from, seededAgents, invalidatedAgents, scriptPath, status: 'started' }
+```
+
+It validates the input and the source run, starts the replay in the background, and returns at once. A bad input or an unknown node returns `{ is_error: true, content }` and does not throw. `args` may be a JSON string, as the tool sends it, or a value. The new run is controlled by id like any tool-started run: `liveWorkflowAgents`, `sendWorkflowAgentMessage`, `skipWorkflowAgent` and `stopWorkflowRun` all work on it.
+
+## Evaluating a workflow
+
+`runEval()` runs one workflow across a set of cases, grades each result and saves the record as `<stateDir>/evals/<evalId>/eval.json`. Each case is its own run.
+
+```ts
+import { formatEvalSummary, runEval } from 'maestro-workflows';
+
+const record = await runEval({
+  scriptPath: 'classify.js',
+  casesPath: 'cases.jsonl',
+  evalId: 'v1',
+  caseConcurrency: 4,
+});
+console.log(formatEvalSummary(record));
+```
+
+| Option | Meaning | Default |
+|---|---|---|
+| `script`, `scriptPath` | Exactly one: the workflow's text or file. | |
+| `cases`, `casesPath` | Exactly one: an array of cases, or a `.json` or `.jsonl` file. | |
+| `grader`, `graderPath` | A grader function, or an ES module whose default export is one. | |
+| `evalId` | The record's id. | `eval-<date>-<time>-<hex>` |
+| `fromEvalId` | Replay each case from its run in this earlier eval, matched by case id. | |
+| `fromNode` | With `fromEvalId`, the node each replay runs live from. | |
+| `only` | Run only these case ids. | |
+| `limit` | Run at most this many cases. | |
+| `caseConcurrency` | How many cases run at once. | `1` |
+| `concurrency`, `budget`, `runner`, `model`, `cwd`, `stateDir`, `toolsDir` | Passed to each case's `run()`. The budget is per case. | As for `run()` |
+| `prices` | USD prices per million tokens, keyed by model ID. Replaces `MODEL_PRICES`. | `MODEL_PRICES` |
+| `onCaseComplete(result, index, total)` | Called as each case settles. | |
+
+A case is `{ id, args?, expect?, expected?, tags?, description? }`. A `.json` file holds an array of cases or `{ "cases": [...] }`; a `.jsonl` file holds one case per line. A case without an `id` is named `case-<n>`, and duplicate ids fail.
+
+A case is graded by the first of these that applies:
+
+1. A grader. It gets `{ case, output, ok, error?, runId, runDir }` and returns a boolean or `{ pass, score?, reason? }`. A grader that throws marks the case `error`.
+2. A failed run marks the case `error`.
+3. `expect`, with any of `equals` (deep equality), `match` (recursive subset), `contains` and `notContains` (substrings of the JSON output), and `regex`.
+4. `expected`, compared with deep equality.
+5. Otherwise the case passes when the workflow returns anything but `null` or `undefined`.
+
+Each case result has its `status` (`pass`, `fail` or `error`), `score`, `reason`, `runId`, tokens, journal cache hits and an estimated cost. A case that passes while some of its agents returned `null` or were skipped is marked `degraded`. The summary adds the pass rate, average score, token totals, cost and cache ratios. Costs are estimated from each call's recorded model, as described under [`maestro eval`](/maestro/cli#maestro-eval).
+
+### Comparing two evals
+
+```ts
+import { diffEvalRuns, formatEvalDiff } from 'maestro-workflows';
+
+const diff = await diffEvalRuns('.maestro', 'v1', 'v2');
+console.log(formatEvalDiff(diff));
+if (diff.cases.regressions.length > 0) process.exitCode = 1;
+```
+
+`diffEvalRuns(stateDir, a, b, prices?)` takes two eval ids or paths to `eval.json` files. When one side is not an eval, it is read as a workflow `runId` and compared as a one-case eval. The report has the score and pass-rate change, the cases that were fixed, regressed, still fail, were added or removed, and the token, cost, cache and duration changes. Cases whose arguments or expectations changed between the two evals are listed under `cases.changed` and not counted as fixed or regressed. `diffEvalRecords(a, b)` compares two records already in memory.
+
+`readEvalRecord(stateDir, idOrPath)` reads one record, and `listEvalRecords(stateDir, limit?)` returns the stored records, newest first.
+
+## Inspecting a run
+
+`inspectRun()` builds the diagnostic report that [`maestro inspect`](/maestro/cli#maestro-inspect) and the [`WorkflowInspect`](/maestro/claude-code#workflowinspect) tool print:
+
+```ts
+import { formatInspectMarkdown, inspectRun } from 'maestro-workflows';
+
+const report = await inspectRun(handle.runDir, handle.runId, { compact: true });
+console.log(formatInspectMarkdown(report));
+```
+
+| Option | Meaning | Default |
+|---|---|---|
+| `compact` | Report only the failed agents and the upstream agents that fed them. | `false` |
+| `full` | Do not shorten the recorded prompts, schemas, outputs and arguments. | `false` |
+| `selector` | Report one agent: a label, `#<index>`, a bare index or a key prefix. | |
+| `maxFieldChars` | The longest prompt, text or raw field, when `full` is off. | 1,200 compact, 2,500 otherwise |
+| `maxUpstream` | How many upstream agents to include. | 5 compact, 15 otherwise |
+
+The report has the run's status (`done`, `failed` or `running`), `degraded` when the run succeeded with some agents `null` or skipped, the outcome, the source of a replay, and agent and token counts. `nodes` holds the selected agents: the failed ones by default, or the one `selector` names. Each has its status, error, usage, recorded input, result preview, final text and tool calls. `upstream` summarizes the completed agents that fed them. `firstFailureReplaySelector` names the node to pass to `replay()` as `from` to retry the first failure. A compact report leaves out the full agent list (`overview`) unless nothing failed. The library defaults to the long report; the tool defaults to compact. `inspectRun()` throws when the run directory does not exist.

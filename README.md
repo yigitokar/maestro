@@ -18,7 +18,7 @@ The command is `maestro`. To run it without an install, write `npx -y maestro-wo
 
 If you work in this repository, the command is `node bin/maestro` after `npm install` and `npm run build`. The examples below use this form.
 
-The package is ESM and its only dependency layer is the Anthropic TypeScript SDK (`@anthropic-ai/sdk`). It also brings `zod`, `acorn` and, for the MCP server, `@modelcontextprotocol/sdk`. The default Anthropic runner needs the `ANTHROPIC_API_KEY` environment variable. The Codex runner uses the Codex CLI, installed and signed in. The Gateway runner uses `AI_GATEWAY_API_KEY` for Vercel AI Gateway. The tests and `--dry-run` never touch the network.
+The package is ESM. Its model clients are the Anthropic TypeScript SDK (`@anthropic-ai/sdk`) and, for the Gemini runner, Google's `@google/genai`. It also brings `zod`, `acorn` and, for the MCP server, `@modelcontextprotocol/sdk`. The default Anthropic runner needs the `ANTHROPIC_API_KEY` environment variable. The Gemini runner needs `GEMINI_API_KEY` (or `GOOGLE_API_KEY`). The Codex runner uses the Codex CLI, installed and signed in. The Gateway runner uses `AI_GATEWAY_API_KEY` for Vercel AI Gateway. The tests and `--dry-run` never touch the network.
 
 Runs are stored under `.maestro/` in the working directory (`runs/<runId>/`, `worktrees/`, `workflows/`, `tools/`). Add this directory to the `.gitignore` of your own repository.
 
@@ -101,7 +101,7 @@ import { CodexRunner, run } from 'maestro-workflows';
 const result = await run({ scriptPath: 'review.js', runner: new CodexRunner() }).promise;
 ```
 
-The default of `--runner` is `anthropic`. `codex` runs all agents through the Codex CLI. `auto` (`RoutingRunner`) routes each call by its model name (`claude-*` / `anthropic/*` → `AnthropicRunner`, other models such as `gpt-*` / `o3` / `codex-*` → `CodexRunner`). So in one run, for example, GPT/Codex finders and a Claude Opus jury can share the same journal, semaphore, budget and worktree pool. `--dry-run` overrides the chosen runner. The model order is `new CodexRunner({ model })`, then the workflow's `model` option (including `--model`), then the Codex config default. A workflow model that starts with `claude-` is not sent to Codex, so Maestro's default Claude model does not change the Codex model. `effort: 'low' | 'medium' | 'high' | 'xhigh'` passes through unchanged and `'max'` is sent as `'xhigh'`. Without an effort, the Codex default applies.
+The default of `--runner` is `anthropic`. `codex` runs all agents through the Codex CLI. `gemini` runs all agents through `GeminiRunner` (see below). `auto` (`RoutingRunner`) routes each call by its model name (`claude-*` / `anthropic/*` → `AnthropicRunner`, `gemini-*` / `gemma-*` / `google/*` → `GeminiRunner`, other models such as `gpt-*` / `o3` / `codex-*` → `CodexRunner`). So in one run, for example, a Gemini ingestion step, GPT/Codex finders and a Claude Opus jury can share the same journal, semaphore, budget and worktree pool. Each routed runner is built on its first call, so `auto` needs only the keys of the models the script uses. `--dry-run` overrides the chosen runner. The model order is `new CodexRunner({ model })`, then the workflow's `model` option (including `--model`), then the Codex config default. A workflow model that starts with `claude-` is not sent to Codex, so Maestro's default Claude model does not change the Codex model. `effort: 'low' | 'medium' | 'high' | 'xhigh'` passes through unchanged and `'max'` is sent as `'xhigh'`. Without an effort, the Codex default applies.
 
 Codex uses its own shell tools for built-in operations. Custom `ToolDef` tools that are not built in are bridged to the Codex process through a temporary stdio MCP server (`maestro_tools`) by default (turn this off with `customToolsMcp: false`). The bridge opens no socket. It runs the `tool.run(input, ctx)` function in the main Maestro process through an atomic file queue in a temporary directory, with `AbortSignal` support, and records the calls in the agent's trace. An agent without isolation runs in the `read-only` sandbox, an agent in a worktree in the `workspace-write` sandbox. A writer does not commit inside Codex. It leaves its changes in the working tree. A real execution on 2026-11-07 showed that the Codex sandbox keeps the `.git` metadata read-only and that passing the shared Git directory with `--add-dir` does not change this. After a successful isolated agent that was not cancelled, the runner commits with the user's Git identity if there are changes. The message starts with `maestro(codex): ` and is cut to 72 characters in total from the first line of the task prompt. A failed agent is not committed, and the dirty worktree stays for inspection. If the runner's commit fails, the result is `null` too, with the error information.
 
@@ -110,6 +110,31 @@ The user's Codex config is read by default. In the API, `ignoreUserConfig: true`
 App-server token updates are reported to the budget as cumulative-usage deltas; legacy exec reports usage on `turn.completed`. Codex can collect several model calls into one turn. The Anthropic runner's turn and token limits per model call do not apply in the Codex runner.
 
 A result requires a completed Codex turn and valid final output. App-server is closed deliberately after completion; legacy exec additionally requires a successful process exit and no subsequent failure. Public progress text does not count as a final answer. A cancel stops the process group, including the child processes Codex started.
+
+## Running agents with Gemini
+
+Set `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) in the environment, then choose the `gemini` runner:
+
+```bash
+node bin/maestro run review.js --runner gemini --model gemini-4-hydrogen --args '{"diffRef":"main...HEAD"}'
+node bin/maestro mcp --runner gemini --model gemini-4-carbon
+```
+
+As a library:
+
+```ts
+import { GeminiRunner, run } from 'maestro-workflows';
+
+const result = await run({ scriptPath: 'review.js', runner: new GeminiRunner() }).promise;
+```
+
+`GeminiRunner({ apiKey?, model?, maxTurns?, maxTokens?, structuredMode?, store? })` uses Google's Interactions API through `@google/genai`. It keeps the step history on the client (`store: false` by default), so repository contents are not retained on Google's side, and it carries thought signatures across turns.
+
+- **Model.** `new GeminiRunner({ model })` overrides the model of every agent it runs. Otherwise the agent's model is sent. A Claude model, such as Maestro's default, is not sent to Gemini: the runner falls back to `gemini-4-hydrogen`, as Codex falls back to its own default. Supported: `gemini-4-carbon`, `gemini-4-argon`, `gemini-4-hydrogen`, `gemini-3.5-flash-lite` and `gemma-4-31b-it`. A `google/` prefix is stripped.
+- **Effort.** `low`, `medium` and `high` map to Gemini's `thinking_level`; `xhigh` and `max` are sent as `high`.
+- **Schema answers.** `two-stage` (default), `submit-tool` or `single-stage`, through `--structured-mode` or `structuredMode`.
+- **PDFs.** An agent's `pdfs` option (base64 PDF files) is sent to Gemini as document blocks before the prompt. The other runners reject it. See [Runners](docs/maestro/runners.md#pdf-documents).
+- **The rest.** Built-in and custom tools, worktree writers and the commit reminder, live messages (`canMessage: true`) and token accounting, including cached input and thought tokens, work as in the Anthropic runner.
 
 ## Running agents through Vercel AI Gateway
 
@@ -137,7 +162,7 @@ To connect it to Codex, start Codex with `AI_GATEWAY_API_KEY` in its environment
 codex mcp add maestro -- npx -y maestro-workflows mcp --runner gateway --model openai/gpt-5.4
 ```
 
-Codex writes and starts the workflows; their agents use Gateway and are billed through the Gateway key. `--runner gateway` applies to every agent, including those with different model providers. `--runner auto` retains its existing Claude/Codex routing.
+Codex writes and starts the workflows; their agents use Gateway and are billed through the Gateway key. `--runner gateway` applies to every agent, including those with different model providers. `--runner auto` keeps routing by model name between direct Claude, Gemini and Codex; it does not use Gateway.
 
 Gateway defaults to `submit-tool` for schema answers. Set `--structured-mode` to override it. Choose a language model that supports tool calling; structured output modes and `effort` support depend on the selected model. For library use, see [`GatewayRunner`](docs/maestro/library.md#runners).
 
@@ -156,7 +181,7 @@ This is the surface the script sees (spec "Seviye 1"). Beyond it there are only 
 | `budget` | `{ total, spent(), remaining() }` | Without a `total` it is null and `remaining()` is Infinity. |
 | `workflow(nameOrRef, args?)` | The return value of the child workflow | Nesting goes one level only; inside the child it throws. The same semaphore, counter and budget are shared. |
 
-`agent` opts: `label`, `phase`, `schema`, `model`, `effort` (`low` … `max`), `isolation: 'worktree'`, `tools`, `pdfs` (base64 PDF documents for Gemini nodes; see [Runners](docs/maestro/runners.md#pdf-documents)). The default tools are read-only: `read_file`, `grep`, `glob` and an allowlisted `bash` (ls, cat, git log/diff/status/show, rg, find). The path arguments of `bash` commands, like `read_file`, cannot leave the working directory. Commands run through `bash` and `shell` do not see the `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or `AI_GATEWAY_API_KEY` variables. `write_file`, `edit_file`, `shell` and `git_commit` are given only with `isolation: 'worktree'`. A writer commits to the branch the runtime opened, `wf/<runId>/<label>`. In `AnthropicRunner`, a writer that finishes its work and forgets to call `git_commit` gets one reminder turn. At exit the branch, a clean status and at least one commit are verified from Git, and `branchName` is added to the result. Unknown keys in the `meta` block (for example the typo `maxAgent`) go to the log as a warning at the start of the run.
+`agent` opts: `label`, `phase`, `schema`, `model`, `effort` (`low` … `max`), `isolation: 'worktree'`, `tools`, `pdfs` (base64 PDF documents for Gemini nodes; see [Runners](docs/maestro/runners.md#pdf-documents)). The default tools are read-only: `read_file`, `grep`, `glob` and an allowlisted `bash` (ls, cat, git log/diff/status/show, rg, find). The path arguments of `bash` commands, like `read_file`, cannot leave the working directory. Commands run through `bash` and `shell` do not see the `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `AI_GATEWAY_API_KEY`, `GEMINI_API_KEY` or `GOOGLE_API_KEY` variables. `write_file`, `edit_file`, `shell` and `git_commit` are given only with `isolation: 'worktree'`. A writer commits to the branch the runtime opened, `wf/<runId>/<label>`. In `AnthropicRunner`, a writer that finishes its work and forgets to call `git_commit` gets one reminder turn. At exit the branch, a clean status and at least one commit are verified from Git, and `branchName` is added to the result. Unknown keys in the `meta` block (for example the typo `maxAgent`) go to the log as a warning at the start of the run.
 
 `AnthropicRunner` supports three structured output modes for agents with a schema (`--structured-mode` / `structuredMode`): `two-stage` (the default, the two-stage parse of spec 3.2), `submit-tool` (adds the schema to the Stage 1 tool list as the strict `__maestro_submit_result` tool; this stops Stage 2 from breaking the prompt cache of the transcript) and `single-stage` (gives the `output_config.format` schema directly to the Stage 1 requests).
 
@@ -254,7 +279,7 @@ The server carries the script-writing guide too: the model reads it with the `Wo
 mkdir -p ~/.claude/skills/maestro-workflow-authoring && cp skill/SKILL.md ~/.claude/skills/maestro-workflow-authoring/SKILL.md
 ```
 
-With the default runner the server uses the `ANTHROPIC_API_KEY` in Claude Code's environment. The agents' cost is billed to the account of this key. `mcp --runner codex` uses the Codex CLI session. `mcp --runner gateway --model <provider/model>` uses `AI_GATEWAY_API_KEY` and bills through Vercel AI Gateway.
+With the default runner the server uses the `ANTHROPIC_API_KEY` in Claude Code's environment. The agents' cost is billed to the account of this key. `mcp --runner codex` uses the Codex CLI session. `mcp --runner gemini` uses `GEMINI_API_KEY` (or `GOOGLE_API_KEY`). `mcp --runner auto` needs the keys of the providers the scripts' models route to. `mcp --runner gateway --model <provider/model>` uses `AI_GATEWAY_API_KEY` and bills through Vercel AI Gateway.
 
 The `maestro mcp` server takes the `--cwd`, `--state-dir`, `--tools-dir`, `--budget`, `--concurrency`, `--model`, `--runner` and `--dry-run` options. `--budget` is one pool for the whole session: every run the server starts spends from the same `Budget` instance. stdout is the MCP channel and diagnostics go to stderr. When the client closes the connection (stdin ends) or the client process is gone, the server shuts down, runs in progress are stopped (their journals stay for resume) and the command exits with 0.
 
@@ -263,14 +288,14 @@ The `maestro mcp` server takes the `--cwd`, `--state-dir`, `--tools-dir`, `--bud
 ```text
 maestro run <script.js> [--args <json>] [--args-file f] [--resume <runId>] [--budget 500k]
                         [--dry-run] [--cwd d] [--state-dir d] [--tools-dir d] [--concurrency n] [--model m]
-                        [--runner <anthropic|codex|gateway|auto>]
+                        [--runner <anthropic|codex|gemini|gateway|auto>]
                         [--structured-mode <two-stage|submit-tool|single-stage>]
 maestro runs [--cwd d] [--state-dir d] [--limit n]          (alias: ls)
 maestro gc [--delete] [--force] [--cwd d]
 maestro show <runId> [label-or-live-id] [--cwd d] [--state-dir d]
 maestro viz <runId> [--cwd d] [--state-dir d] [--port n] [--no-open] [--out f.html] [--widget]
 maestro mcp [--cwd d] [--state-dir d] [--tools-dir d] [--budget 500k] [--concurrency n] [--model m]
-            [--runner <anthropic|codex|gateway|auto>]
+            [--runner <anthropic|codex|gemini|gateway|auto>]
             [--structured-mode <two-stage|submit-tool|single-stage>] [--dry-run]
 ```
 

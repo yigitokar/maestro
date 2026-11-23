@@ -61,6 +61,33 @@ A finished run's outcome is also on disk, so `WorkflowResult` answers for an old
 
 A one-shot `claude -p` session ends when its turn ends and does not wait for a background result. Use an interactive session to collect results.
 
+### `WorkflowInspect`
+
+Takes:
+
+- `runId`: the run to inspect. Required.
+- `label`: one agent to report, by label, `#index` or key prefix. Without it, the failed agents are reported.
+- `compact`: report only the failed agents and the upstream agents that fed them, with long fields shortened. Defaults to `true`. Pass `false` for the longer report with every agent listed.
+- `full`: do not shorten recorded prompts, schemas, outputs and arguments.
+- `format`: `markdown` (default) or `json`.
+- `cwd`: the directory the run was started in, if it was started with a `cwd`.
+
+It reads the run from disk, so it works for a finished run, a running one, and a run from an earlier session. For a failed agent the report names the node to pass as `from` to `WorkflowReplay`. The library form is [`inspectRun()`](/maestro/library#inspecting-a-run).
+
+### `WorkflowReplay`
+
+Takes:
+
+- `fromRunId`: the earlier run to fork. Required. It is never changed.
+- `from`: the node to run live from: a label or key prefix that matches one agent, `#index`, or `phase:<title>` for the first agent in that phase. Without it, every cached `ok` agent is copied and only agents without a cached answer run.
+- `script` or `scriptPath`: at most one, an edited script. Without either, the source run's script is reused. `scriptPath` is resolved against `cwd`.
+- `args`: the script's arguments, as a JSON string. Without it, the source run's arguments are reused.
+- `cwd`: the directory the source run was started in. The source run is looked up under `<cwd>/.maestro`.
+
+It returns at once with `{ runId, forkedFrom, from, seededAgents, invalidatedAgents, scriptPath, status: 'started' }`. The new run is a normal run: collect it with `WorkflowResult` and control it with `WorkflowStop`, `WorkflowSkip` and `WorkflowMessage`. An unknown or ambiguous `from`, a missing source run, or a script that does not parse returns an error result at once; nothing starts.
+
+Agents before `from` are served from the source run's journal and cost no tokens. In an edited script, an agent whose prompt or options changed runs live. See [`maestro replay`](/maestro/cli#maestro-replay) and [`replay()`](/maestro/library#replaying-a-run).
+
 ### `WorkflowMessage`
 
 Read `WorkflowResult` and choose an agent with `canMessage: true`, then call:
