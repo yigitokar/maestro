@@ -1,0 +1,123 @@
+{
+  "$schema": "https://mintlify.com/docs.json",
+  "theme": "mint",
+  "name": "Care Research",
+  "description": "Documentation for Maestro, multi-agent workflows driven by a script; Latent, a film and scanner emulator for the browser; and BVAR, Bayesian vector autoregressions with a verdict on whether a model change improves the forecasts.",
+  "favicon": "/favicon.svg",
+  "colors": {
+    "primary": "#B4532A",
+    "light": "#E08A5B",
+    "dark": "#8F3F1E"
+  },
+  "navigation": {
+    "products": [
+      {
+        "product": "Maestro",
+        "description": "Multi-agent workflows",
+        "icon": "diagram-project",
+        "groups": [
+          {
+            "group": "Get started",
+            "pages": [
+              "maestro/index",
+              "maestro/quickstart",
+              "maestro/getting-started"
+            ]
+          },
+          {
+            "group": "Workflows",
+            "pages": [
+              "maestro/workflows",
+              "maestro/agents-and-tools",
+              "maestro/runners",
+              "maestro/runs"
+            ]
+          },
+          {
+            "group": "Using Maestro",
+            "pages": [
+              "maestro/cli",
+              "maestro/claude-code",
+              "maestro/library"
+            ]
+          }
+        ]
+      },
+      {
+        "product": "Latent",
+        "description": "Film and scanner emulation",
+        "icon": "film",
+        "groups": [
+          {
+            "sourceRef": "yigitokar/filmsim-maestro"
+          }
+        ]
+      },
+      {
+        "product": "BVAR",
+        "description": "Bayesian VARs",
+        "icon": "chart-line",
+        "groups": [
+          {
+            "sourceRef": "yigitokar/rai-bvar"
+          }
+        ]
+      }
+    ]
+  },
+  "navbar": {
+    "links": [
+      {
+        "label": "Care Research",
+        "href": "https://careresearch.ai"
+      },
+      {
+        "type": "github",
+        "href": "https://github.com/yigitokar/maestro"
+      }
+    ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/yigitokar/maestro"
+    }
+  },
+  "redirects": [
+    {
+      "source": "/quickstart",
+      "destination": "/maestro/quickstart"
+    },
+    {
+      "source": "/getting-started",
+      "destination": "/maestro/getting-started"
+    },
+    {
+      "source": "/workflows",
+      "destination": "/maestro/workflows"
+    },
+    {
+      "source": "/agents-and-tools",
+      "destination": "/maestro/agents-and-tools"
+    },
+    {
+      "source": "/runners",
+      "destination": "/maestro/runners"
+    },
+    {
+      "source": "/runs",
+      "destination": "/maestro/runs"
+    },
+    {
+      "source": "/cli",
+      "destination": "/maestro/cli"
+    },
+    {
+      "source": "/claude-code",
+      "destination": "/maestro/claude-code"
+    },
+    {
+      "source": "/library",
+      "destination": "/maestro/library"
+    }
+  ]
+}
