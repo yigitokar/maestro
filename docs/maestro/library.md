@@ -85,15 +85,16 @@ handle.events.on('agent_end', (e) => console.error(e.label, e.status, e.usage.ou
 ## Runners
 
 ```ts
-import { AnthropicRunner, CodexRunner, GatewayRunner, FakeRunner, RoutingRunner, run } from 'maestro-workflows';
+import { AnthropicRunner, CodexRunner, FakeRunner, GatewayRunner, GeminiRunner, RoutingRunner, run } from 'maestro-workflows';
 
 await run({ scriptPath: 'review.js', runner: new CodexRunner() }).promise;
 ```
 
 - `AnthropicRunner({ client?, maxTurns?, maxTokens?, structuredMode? })`
-- `CodexRunner({ model?, ignoreUserConfig?, customToolsMcp? })`
+- `CodexRunner({ model?, ignoreUserConfig?, customToolsMcp?, minimal? })`: `minimal` (default `true`) runs agents without your Codex MCP servers and ambient features. See [Runners](/maestro/runners#codex).
+- `GeminiRunner({ apiKey?, model?, maxTurns?, maxTokens?, structuredMode?, store? })`: uses `GEMINI_API_KEY` or `GOOGLE_API_KEY` unless `apiKey` is supplied; `model` overrides the workflow model for every agent it runs.
 - `GatewayRunner({ apiKey?, maxTurns?, maxTokens?, structuredMode? })`: uses `AI_GATEWAY_API_KEY` unless `apiKey` is supplied; defaults to `submit-tool` for schema answers.
-- `RoutingRunner({ anthropic?, codex?, route? })`
+- `RoutingRunner({ anthropic?, codex?, gemini?, route? })`
 - `FakeRunner`, for tests and dry runs: it answers from the schema and never touches the network.
 
 A runner of your own is any object with `run(req): Promise<RunResult>`. If it can send a model other than `req.model` (its own setting, a default, a mapping), return the ID it really sent as `RunResult.model`, or `null` when it cannot name that model. Maestro records the value with the call. `maestro eval` prices the call at a reported ID and gives no estimate for `null`. A runner that leaves the field unset is priced at the requested model. The built-in runners report it; `CodexRunner` returns `null` when your Codex configuration picks the model, because it does not learn which one that is.

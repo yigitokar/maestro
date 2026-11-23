@@ -1,6 +1,6 @@
 ---
 title: "Runners"
-description: "Run agents on Claude, Codex, or models through Vercel AI Gateway."
+description: "Run agents on Claude, Codex, Gemini, or models through Vercel AI Gateway."
 icon: "server"
 ---
 
@@ -98,7 +98,7 @@ When using the MCP server from Codex, make `AI_GATEWAY_API_KEY` available in Cod
 codex mcp add maestro -- npx -y maestro-workflows mcp --runner gateway --model openai/gpt-5.4
 ```
 
-The host remains Codex, while workflow agents are billed through Gateway. Gateway mode sends every agent to Gateway; `auto` continues to route only between direct Anthropic and Codex.
+The host remains Codex, while workflow agents are billed through Gateway. Gateway mode sends every agent to Gateway; `auto` routes only between direct Claude, Gemini and Codex.
 
 ## Gemini
 
