@@ -2,7 +2,7 @@
   "$schema": "https://mintlify.com/docs.json",
   "theme": "mint",
   "name": "Care Research",
-  "description": "Documentation for Maestro, multi-agent workflows driven by a script, and Latent, a film and scanner emulator for the browser.",
+  "description": "Documentation for Maestro, multi-agent workflows driven by a script; Latent, a film and scanner emulator for the browser; and BVAR, Bayesian vector autoregressions with a verdict on whether a model change improves the forecasts.",
   "favicon": "/favicon.svg",
   "colors": {
     "primary": "#B4532A",
@@ -80,6 +80,45 @@
               "latent/parameters",
               "latent/exports",
               "latent/limits"
+            ]
+          }
+        ]
+      },
+      {
+        "product": "BVAR",
+        "description": "Bayesian VARs",
+        "icon": "chart-line",
+        "groups": [
+          {
+            "group": "Get started",
+            "pages": [
+              "bvar/index",
+              "bvar/quickstart",
+              "bvar/installation"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "bvar/fit-and-forecast",
+              "bvar/stochastic-volatility",
+              "bvar/compare-models",
+              "bvar/conditional-forecasts"
+            ]
+          },
+          {
+            "group": "Concepts",
+            "pages": [
+              "bvar/components",
+              "bvar/engines",
+              "bvar/predictive-contract",
+              "bvar/verification"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "bvar/api"
             ]
           }
         ]

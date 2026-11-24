@@ -1,0 +1,14 @@
+# Pages of the other products, copied into docs/ by .github/workflows/sync-docs.yml.
+# Each product keeps its pages in its own repository; edit them there. docs.json is
+# generated from docs.base.json, so edit docs.base.json, not docs.json.
+base: docs.base.json
+output: docs.json
+sources:
+  - repo: yigitokar/filmsim-maestro
+    path: docs
+    destination: latent
+    name: Latent
+  - repo: yigitokar/rai-bvar
+    path: docs/site
+    destination: bvar
+    name: BVAR
