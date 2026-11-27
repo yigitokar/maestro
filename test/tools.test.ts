@@ -191,6 +191,7 @@ describe('shell-words and the bash allowlist', () => {
     'AI_GATEWAY_API_KEY',
     'GEMINI_API_KEY',
     'GOOGLE_API_KEY',
+    'OPENAI_API_KEY',
   ])('agent commands do not see the runner credential %s', async (name) => {
     const saved = process.env[name];
     process.env[name] = 'test-not-a-key';

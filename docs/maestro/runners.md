@@ -1,6 +1,6 @@
 ---
 title: "Runners"
-description: "Run agents on Claude, Codex, Gemini, or models through Vercel AI Gateway."
+description: "Run agents on Claude, Codex, Gemini, OpenAI, or models through Vercel AI Gateway."
 icon: "server"
 ---
 
@@ -12,6 +12,7 @@ A runner is what executes one agent. Choose one with `--runner` or the `runner` 
 | `codex` | The Codex CLI, one process per agent | Codex CLI installed and signed in |
 | `gemini` | The Google Gemini Interactions API (`@google/genai`) | `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) |
 | `gateway` | Models through Vercel AI Gateway | `AI_GATEWAY_API_KEY` and a `provider/model` ID |
+| `openai` | OpenAI models, directly through the Responses API | `OPENAI_API_KEY` and an OpenAI model ID |
 | `auto` | Direct Claude, Gemini, or Codex, chosen per agent by its model | Whatever the models in the script need |
 
 `--dry-run` overrides every runner with a fake that answers from the schema and needs no API key.
@@ -140,8 +141,31 @@ return agent('List the material changes from the first report to the second.', {
 
 - **Cache.** The documents' contents and order are part of the cache key, so replacing a PDF makes that node run again on resume.
 - **Storage.** Like any workflow argument, the documents are saved in the run directory's `args.json`. The journal keys on a hash of them, and a failed node keeps its full call, documents included, for `maestro inspect`.
-- **Other runners.** Claude, Codex and Vercel AI Gateway nodes fail with `PDF inputs require the Gemini runner`. With `--runner auto`, give the node a `gemini-*` model.
+- **Other runners.** Claude, Codex, Vercel AI Gateway and OpenAI nodes fail with `PDF inputs require the Gemini runner`. With `--runner auto`, give the node a `gemini-*` model.
 - **Validation.** `agent()` throws at the call site when `pdfs` is not an array of base64 strings, for example when it is given a file path.
+
+## OpenAI
+
+Set `OPENAI_API_KEY` in the process environment, then select a model:
+
+```bash
+maestro run review.js --runner openai --model gpt-6.2-astra
+maestro mcp --runner openai --model gpt-6.2-astra
+```
+
+Agents call the [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses) with your key and are billed to your OpenAI account. No Vercel account and no Codex CLI are involved, and agents use Maestro's own tools, the same as Claude agents.
+
+The model has no default: set `--model` or `opts.model` on every agent. A Gateway-style ID such as `openai/gpt-6.2-astra` is accepted and sent as `gpt-6.2-astra`. A Claude or other provider's model is rejected. In library calls, use `run({ model, runner: new OpenAIRunner() })`; `new OpenAIRunner({ apiKey })` overrides the environment key, and `baseURL` points it at another server that speaks the Responses API.
+
+How OpenAI agents differ from Claude agents:
+
+- **Requests.** Each request carries the whole transcript and is sent with `store: false`, so OpenAI keeps no conversation state. Reasoning items come back encrypted and are passed back on the next turn. If a model refuses that, the runner stops asking for them.
+- **Caching.** OpenAI caches repeated prefixes on its own. Cached tokens are reported as `cache_read_input_tokens`.
+- **Effort.** Every value, `low` through `max`, is sent unchanged as `reasoning.effort`. Which values a model accepts depends on the model; check its page in OpenAI's model list.
+- **Structured answers.** The default is `submit-tool`, as with Gateway. `two-stage` and `single-stage` use OpenAI's strict JSON schema output. Every mode checks the answer against your original schema.
+- **Retries.** A 429, 5xx or connection error is retried twice, after 5 and 10 seconds. A 429 for an exhausted quota is not retried.
+
+Limits, live follow-up messages, the writer's commit reminder and the one continuation after the output limit work as for Claude.
 
 ## Claude, Gemini and Codex in one run
 

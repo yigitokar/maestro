@@ -18,6 +18,7 @@ const CREDENTIAL_VARS = [
   'AI_GATEWAY_API_KEY',
   'GEMINI_API_KEY',
   'GOOGLE_API_KEY',
+  'OPENAI_API_KEY',
 ];
 
 /** childGitEnv() for the commands an agent runs through the bash and shell tools: no runner credentials. */
