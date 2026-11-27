@@ -1,0 +1,67 @@
+---
+title: "Install the Latent engine packages"
+sidebarTitle: "Installation"
+description: "The three Latent packages, what each one contains, what they need from the browser and your build, and how to install them from npm."
+icon: "box"
+keywords: ["install", "npm", "WebGPU", "ES modules"]
+---
+
+The Latent engine is three ES module packages on npm: `@filmsim/core-types`, `@filmsim/spectral-data` and `@filmsim/gpu-pipeline`.
+
+## Requirements
+
+- **A browser with WebGPU**, on a page served over `https` or from `localhost`. `FilmPipeline.isSupported()` tells you whether the browser has it, and `FilmPipeline.create()` rejects when it does not. The packages have no software fallback.
+- **A project that uses ES modules.** The packages are built for ES2022 and ship type declarations, so your build does not compile TypeScript from `node_modules`.
+
+The packages can be imported in Node, so a page that is rendered on a server can import them. The pipeline itself runs only in a browser.
+
+## Install them
+
+```bash
+npm install @filmsim/gpu-pipeline @filmsim/core-types @filmsim/spectral-data
+```
+
+npm also installs their two outside dependencies: `zod`, which validates the profiles, and `@webgpu/types`, which the type declarations of `@filmsim/gpu-pipeline` refer to.
+
+### Update to a newer release
+
+The three packages are released together under one version number. Keep them on the same version:
+
+```bash
+npm install @filmsim/gpu-pipeline@latest @filmsim/core-types@latest @filmsim/spectral-data@latest
+```
+
+## What is in each package
+
+| Package | What it contains | Depends on |
+| --- | --- | --- |
+| `@filmsim/core-types` | The profile and parameter types, their Zod schemas, the color math, `deriveRuntime()` and the scalar reference `shadePixel()`. | `zod` |
+| `@filmsim/spectral-data` | The library: 51 film stocks, 12 scanners and print stocks, 32 looks, and the functions that look them up. | `@filmsim/core-types`, `zod` |
+| `@filmsim/gpu-pipeline` | `FilmPipeline`, the WebGPU renderer: preview, histogram, thumbnails and tiled export. | `@filmsim/core-types`, `@webgpu/types` |
+
+`@filmsim/gpu-pipeline` does not depend on `@filmsim/spectral-data`. If you bring your own profiles, you can leave the library out and install only the other two.
+
+The Latent repository itself is private; the packages are what is public. In its example project, a production build that uses all three packages, every profile and `zod` comes to about 80 kB gzipped.
+
+## Bundlers and TypeScript
+
+The packages are plain ES modules with no JSON imports and no relative imports left to resolve, so they need no bundler plugin. They are checked in two setups:
+
+- **Vite 8.** That example project installs the packages from the files `npm pack` writes, builds for production and is tested in headless Chromium on every run of its test. For version 0.1.0 the same page was also built against the packages as installed from npm.
+- **Next.js 16 with Turbopack.** A project that installed the packages from those files built without `transpilePackages`, imported the library in a server component and ran the pipeline in a client component.
+
+Other bundlers are not tested.
+
+The type declarations resolve with `moduleResolution` set to `bundler`, and with `node16` or `nodenext` when the importing file is an ES module. There is no CommonJS build. You do not need to add `@webgpu/types` to your own `tsconfig.json`: the declarations of `@filmsim/gpu-pipeline` reference it.
+
+## Next steps
+
+<Columns cols={2}>
+  <Card title="Quickstart" icon="bolt" href="/latent/quickstart">
+    Develop a photo on a page of your own.
+  </Card>
+
+  <Card title="Limits" icon="triangle-exclamation" href="/latent/limits">
+    What the packages leave to your app.
+  </Card>
+</Columns>

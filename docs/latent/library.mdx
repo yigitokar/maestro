@@ -1,0 +1,258 @@
+---
+title: "Use film stocks, scanners and looks"
+sidebarTitle: "Film library"
+description: "List and look up Latent's 51 film stocks, 12 scanners and 32 looks, apply a look, render thumbnails, and load a profile of your own."
+icon: "film"
+keywords: ["film stock", "scanner", "look", "preset", "STOCKS", "getStock", "thumbnail", "profile"]
+---
+
+`@filmsim/spectral-data` is Latent's library: 51 film stocks, 12 scanners and print stocks, and 32 looks. Every profile is validated when the package is first imported, so a broken profile fails at start-up, not in the middle of a render.
+
+A **stock** is the film: how it responds to light, its grain and its halation. A **scanner** is what turns the negative or slide back into a picture: a lab scanner, a camera scan, a print film or a photographic paper. A **look** names a stock, a scanner and the parameters of one recipe, such as a film pushed two stops.
+
+## List and look up
+
+```ts
+import { LOOKS, SCANNERS, STOCKS, findStock, getScanner, getStock } from "@filmsim/spectral-data";
+
+STOCKS.length; // 51, always in the same order
+const portra = getStock("kodak_portra_400"); // throws "Unknown film stock: ..." for an unknown id
+const maybe = findStock(idFromTheUrl); // undefined for an unknown id
+const frontier = getScanner("fuji_frontier_sp3000");
+```
+
+`getScanner()` and `getLook()` throw in the same way, and `findScanner()` and `findLook()` return `undefined`. Use the `find` functions for ids that come from outside your code, such as a URL or saved settings.
+
+`DEFAULT_STOCK_ID` is `"kodak_gold_200"` and `DEFAULT_SCANNER_ID` is `"fuji_frontier_sp3000"`.
+
+## Group stocks for a picker
+
+```ts
+import { STOCKS, STOCK_CATEGORIES, stockCategory } from "@filmsim/spectral-data";
+
+for (const category of STOCK_CATEGORIES) {
+  const stocks = STOCKS.filter((stock) => stockCategory(stock) === category.id);
+  // category.label is "Colour negative", "Cinema", "Black and white" or "Slide"
+}
+```
+
+Each stock also carries what a picker can show. `name` and `iso` are always there. `manufacturer`, `description`, `tags`, `balance` and `fidelity` are optional in the type, and every stock in the library has them. `year` and `discontinued` are set on some stocks only.
+
+`stockTraits(stock)` returns four numbers from 0 to 1 for small meters next to a stock: `contrast`, `saturation`, `grain` and `halation`. They compare stocks with each other. They are not measurements.
+
+## Apply a look
+
+```ts
+import { getLook, getScanner, getStock, lookToParams } from "@filmsim/spectral-data";
+
+const look = getLook("cinestill_800t_night_streets");
+pipeline.setProfiles(getStock(look.stockId), getScanner(look.scannerId));
+pipeline.setParams(lookToParams(look));
+pipeline.render();
+```
+
+A look stores only the parameters it changes. `lookToParams(look)` fills in the rest from the defaults and returns complete parameters. Pass a second argument to keep some of the current settings under the look:
+
+```ts
+const params = lookToParams(look, { grainSeed: current.grainSeed });
+```
+
+The order is: defaults, then your second argument, then the look.
+
+## Render thumbnails
+
+`renderVariant()` renders the current photo through another look at a small size, without disturbing the preview. It resolves with an `ImageData` whose long edge is the size you ask for.
+
+```ts
+for (const stock of STOCKS) {
+  const image = await pipeline.renderVariant({ stock, scanner, params: { ...params, stockId: stock.id } }, 144);
+  const thumbnail = document.createElement("canvas");
+  thumbnail.width = image.width;
+  thumbnail.height = image.height;
+  thumbnail.getContext("2d")?.putImageData(image, 0, 0);
+  list.append(thumbnail);
+}
+```
+
+Render them one after another, as here. In a long list, render the visible ones first and cache the results: the Latent app does both in its own code, outside the packages.
+
+## Compute a swatch without a GPU
+
+`shadePixel()` in `@filmsim/core-types` develops one pixel of a uniform color on the CPU. It is exact for a flat patch, where halation has nothing to spread, and it is cheap enough for color swatches.
+
+```ts
+import { DEFAULT_PARAMS, deriveRuntime, shadePixel } from "@filmsim/core-types";
+
+const runtime = deriveRuntime(stock, scanner, { ...DEFAULT_PARAMS, grainScale: 0 }, { widthPx: 3000, heightPx: 2000 });
+const { display } = shadePixel(runtime, [0.5, 0.5, 0.5]);
+// display is the finished color: sRGB-encoded [r, g, b], each from 0 to 1
+```
+
+The input color is sRGB-encoded too. This also runs in Node.
+
+## Use a profile of your own
+
+`setProfiles()` accepts any object of the profile types, not only the library's. Validate yours first:
+
+```ts
+import { parseFilmStock } from "@filmsim/core-types";
+
+const stock = parseFilmStock(await (await fetch("/my-stock.json")).json());
+pipeline.setProfiles(stock, scanner);
+```
+
+`parseFilmStock()` and `parseScanner()` throw a `ZodError` that names the field when the object does not fit. They check more than types: curve points must rise in exposure, for example.
+
+To start from an existing profile, import its JSON file from the package:
+
+```ts
+import gold from "@filmsim/spectral-data/profiles/stocks/kodak_gold_200.json";
+```
+
+In TypeScript this needs `resolveJsonModule`. Scanners are under `profiles/scanners/` and looks under `profiles/looks/`. [Where the profiles come from](/latent/profiles) explains the fields.
+
+## The stocks
+
+Stock and scanner names say what a profile approximates. They imply no affiliation with the makers of those films and devices.
+
+"Rests on" says what a profile is based on. See [Where the profiles come from](/latent/profiles).
+
+<Tabs>
+  <Tab title="Color negative (20)">
+    | `id` | Name | ISO | Rests on |
+    | --- | --- | --- | --- |
+    | `kodak_gold_200` | Kodak Gold 200 (GB 200) | 200 | Baseline |
+    | `kodak_colorplus_200` | Kodak ColorPlus 200 | 200 | Approximation |
+    | `kodak_ultramax_400` | Kodak UltraMax 400 | 400 | Datasheet |
+    | `kodak_pro_image_100` | Kodak Pro Image 100 | 100 | Approximation |
+    | `kodak_portra_160` | Kodak Portra 160 | 160 | Datasheet |
+    | `kodak_portra_400` | Kodak Portra 400 | 400 | Datasheet |
+    | `kodak_portra_800` | Kodak Portra 800 | 800 | Datasheet |
+    | `kodak_ektar_100` | Kodak Ektar 100 | 100 | Datasheet |
+    | `fuji_c200` | Fujicolor C200 | 200 | Datasheet |
+    | `fuji_superia_xtra_400` | Fujicolor Superia X-TRA 400 | 400 | Datasheet |
+    | `fuji_natura_1600` | Fujicolor Natura 1600 | 1600 | Approximation |
+    | `fuji_pro_160ns` | Fujicolor Pro 160NS | 160 | Approximation |
+    | `fuji_pro_400h` | Fujicolor Pro 400H | 400 | Datasheet |
+    | `agfa_vista_200` | Agfa Vista 200 | 200 | Approximation |
+    | `lomo_cn_400` | Lomography Color Negative 400 | 400 | Approximation |
+    | `lomo_cn_800` | Lomography Color Negative 800 | 800 | Approximation |
+    | `cinestill_50d` | CineStill 50D | 50 | Approximation |
+    | `cinestill_400d` | CineStill 400D | 400 | Approximation |
+    | `cinestill_800t` | CineStill 800T | 800 | Approximation |
+    | `harman_phoenix_200` | Harman Phoenix 200 | 200 | Approximation |
+  </Tab>
+  <Tab title="Cinema (6)">
+    | `id` | Name | ISO | Rests on |
+    | --- | --- | --- | --- |
+    | `kodak_vision3_50d` | Kodak Vision3 50D 5203 | 50 | Datasheet |
+    | `kodak_vision3_250d` | Kodak Vision3 250D 5207 | 250 | Datasheet |
+    | `kodak_vision3_200t` | Kodak Vision3 200T 5213 | 200 | Datasheet |
+    | `kodak_vision3_500t` | Kodak Vision3 500T 5219 | 500 | Datasheet |
+    | `fuji_eterna_250d` | Fujifilm Eterna 250D | 250 | Approximation |
+    | `fuji_eterna_500t` | Fujifilm Eterna 500T | 500 | Approximation |
+  </Tab>
+  <Tab title="Black and white (17)">
+    | `id` | Name | ISO | Rests on |
+    | --- | --- | --- | --- |
+    | `kodak_tri_x_400` | Kodak Tri-X 400 | 400 | Datasheet |
+    | `kodak_tmax_100` | Kodak T-Max 100 | 100 | Datasheet |
+    | `kodak_tmax_400` | Kodak T-Max 400 | 400 | Datasheet |
+    | `kodak_tmax_p3200` | Kodak T-Max P3200 | 3200 | Datasheet |
+    | `kodak_double_x_5222` | Eastman Double-X 5222 | 250 | Approximation |
+    | `ilford_hp5_plus_400` | Ilford HP5 Plus 400 | 400 | Datasheet |
+    | `ilford_fp4_plus_125` | Ilford FP4 Plus 125 | 125 | Datasheet |
+    | `ilford_delta_100` | Ilford Delta 100 Professional | 100 | Datasheet |
+    | `ilford_delta_400` | Ilford Delta 400 Professional | 400 | Datasheet |
+    | `ilford_delta_3200` | Ilford Delta 3200 Professional | 3200 | Datasheet |
+    | `ilford_pan_f_plus_50` | Ilford Pan F Plus 50 | 50 | Datasheet |
+    | `ilford_xp2_super_400` | Ilford XP2 Super 400 | 400 | Approximation |
+    | `fuji_acros_100_ii` | Fujifilm Neopan Acros 100 II | 100 | Datasheet |
+    | `fomapan_100` | Fomapan 100 Classic | 100 | Approximation |
+    | `fomapan_400` | Fomapan 400 Action | 400 | Approximation |
+    | `kentmere_400` | Kentmere Pan 400 | 400 | Approximation |
+    | `rollei_retro_80s` | Rollei Retro 80S | 80 | Approximation |
+  </Tab>
+  <Tab title="Slide (8)">
+    | `id` | Name | ISO | Rests on |
+    | --- | --- | --- | --- |
+    | `fuji_velvia_50` | Fujifilm Velvia 50 | 50 | Datasheet |
+    | `fuji_velvia_100` | Fujifilm Velvia 100 | 100 | Datasheet |
+    | `fuji_provia_100f` | Fujifilm Provia 100F | 100 | Datasheet |
+    | `fuji_astia_100f` | Fujifilm Astia 100F | 100 | Datasheet |
+    | `kodak_ektachrome_e100` | Kodak Ektachrome E100 | 100 | Datasheet |
+    | `kodak_kodachrome_64` | Kodak Kodachrome 64 | 64 | Approximation |
+    | `kodak_kodachrome_25` | Kodak Kodachrome 25 | 25 | Approximation |
+    | `agfa_precisa_ct100` | Agfa Precisa CT 100 | 100 | Approximation |
+  </Tab>
+</Tabs>
+
+## The scanners and print stocks
+
+| `id` | Name | Kind | Rests on |
+| --- | --- | --- | --- |
+| `fuji_frontier_sp3000` | Fujifilm Frontier SP-3000 | Scanner | Baseline |
+| `noritsu_hs1800` | Noritsu HS-1800 | Scanner | Approximation |
+| `pakon_f135` | Kodak Pakon F135 Plus | Scanner | Approximation |
+| `hasselblad_flextight_x5` | Hasselblad Flextight X5 | Scanner | Approximation |
+| `epson_v850` | Epson Perfection V850 Pro | Scanner | Approximation |
+| `heidelberg_tango_drum` | Heidelberg Tango drum scanner | Scanner | Approximation |
+| `camera_scan_neutral` | Camera scan, neutral inversion | Scanner | Approximation |
+| `kodak_2383_print` | Kodak Vision Color Print Film 2383 | Print stock or paper | Approximation |
+| `fuji_3513_print` | Fujifilm Eterna-CP 3513DI | Print stock or paper | Approximation |
+| `kodak_endura_paper` | Kodak Professional Endura Premier | Print stock or paper | Approximation |
+| `fuji_crystal_archive_paper` | Fujicolor Crystal Archive | Print stock or paper | Approximation |
+| `ilford_multigrade_paper` | Ilford Multigrade, grade 3 | Print stock or paper | Approximation |
+
+A print stock or a paper stands in the scanner's place: it turns the negative into a positive with the tone and color of a print.
+
+## The looks
+
+| `id` | Name | Stock | Scanner |
+| --- | --- | --- | --- |
+| `gold_on_frontier` | Gold 200, lab scan | `kodak_gold_200` | `fuji_frontier_sp3000` |
+| `portra_400_plus_one_frontier` | Portra 400, +1 on a Frontier | `kodak_portra_400` | `fuji_frontier_sp3000` |
+| `portra_160_645_wedding` | Portra 160, 645 wedding | `kodak_portra_160` | `fuji_frontier_sp3000` |
+| `portra_400_endura_print` | Portra 400, Endura print | `kodak_portra_400` | `kodak_endura_paper` |
+| `portra_800_pushed_one` | Portra 800 pushed to 1600 | `kodak_portra_800` | `noritsu_hs1800` |
+| `cinestill_800t_night_streets` | CineStill 800T, night streets | `cinestill_800t` | `noritsu_hs1800` |
+| `cinestill_50d_beach` | CineStill 50D, beach day | `cinestill_50d` | `fuji_frontier_sp3000` |
+| `ektar_4x5_landscape` | Ektar 100, 4x5 landscape | `kodak_ektar_100` | `heidelberg_tango_drum` |
+| `velvia_50_landscape_6x7` | Velvia 50, 6x7 landscape | `fuji_velvia_50` | `hasselblad_flextight_x5` |
+| `astia_portrait_6x9` | Astia 100F, 6x9 portrait | `fuji_astia_100f` | `hasselblad_flextight_x5` |
+| `kodachrome_64_drum_scan` | Kodachrome 64, drum scan | `kodak_kodachrome_64` | `heidelberg_tango_drum` |
+| `super8_home_movie` | Super 8 home movie | `kodak_ektachrome_e100` | `pakon_f135` |
+| `vision3_500t_2383_super35` | Vision3 500T through 2383 | `kodak_vision3_500t` | `kodak_2383_print` |
+| `vision3_250d_3513_super35` | Vision3 250D through Eterna-CP | `kodak_vision3_250d` | `fuji_3513_print` |
+| `vision3_50d_16mm` | Vision3 50D, 16mm documentary | `kodak_vision3_50d` | `kodak_2383_print` |
+| `eterna_500t_night_print` | Eterna 500T, moody night | `fuji_eterna_500t` | `fuji_3513_print` |
+| `tri_x_pushed_1600` | Tri-X pushed to 1600 | `kodak_tri_x_400` | `noritsu_hs1800` |
+| `tri_x_pulled_harsh_sun` | Tri-X pulled for harsh sun | `kodak_tri_x_400` | `hasselblad_flextight_x5` |
+| `hp5_3200_darkroom_print` | HP5 Plus at 3200, darkroom print | `ilford_hp5_plus_400` | `ilford_multigrade_paper` |
+| `tmax_p3200_pushed_6400` | T-Max P3200 at 6400 | `kodak_tmax_p3200` | `noritsu_hs1800` |
+| `delta_3200_available_light` | Delta 3200, available light | `ilford_delta_3200` | `noritsu_hs1800` |
+| `tmax_100_8x10_drum_scan` | T-Max 100, 8x10 | `kodak_tmax_100` | `heidelberg_tango_drum` |
+| `pan_f_6x6_fine_print` | Pan F Plus, 6x6 fine print | `ilford_pan_f_plus_50` | `ilford_multigrade_paper` |
+| `xp2_overexposed_6x9` | XP2 Super, two stops over | `ilford_xp2_super_400` | `fuji_frontier_sp3000` |
+| `double_x_noir_print` | Double-X noir | `kodak_double_x_5222` | `ilford_multigrade_paper` |
+| `ultramax_half_frame_holiday` | UltraMax, half-frame holiday | `kodak_ultramax_400` | `noritsu_hs1800` |
+| `pro_400h_airy_6x6` | Pro 400H, airy 6x6 | `fuji_pro_400h` | `fuji_frontier_sp3000` |
+| `superia_crystal_archive_print` | Superia 400, Crystal Archive print | `fuji_superia_xtra_400` | `fuji_crystal_archive_paper` |
+| `c200_point_and_shoot` | C200 point and shoot | `fuji_c200` | `pakon_f135` |
+| `phoenix_lofi_glow` | Phoenix 200, lo-fi glow | `harman_phoenix_200` | `pakon_f135` |
+| `gold_home_flatbed` | Gold 200, home flatbed | `kodak_gold_200` | `epson_v850` |
+| `portra_400_clean_reference` | Portra 400, clean reference | `kodak_portra_400` | `camera_scan_neutral` |
+
+Each look also has a `description` of what it is for, and `tags`.
+
+## Related pages
+
+<Columns cols={2}>
+  <Card title="Parameters" icon="sliders" href="/latent/parameters">
+    What a look can set, with ranges and defaults.
+  </Card>
+
+  <Card title="Where the profiles come from" icon="flask" href="/latent/profiles">
+    Datasheets, approximations and what a profile contains.
+  </Card>
+</Columns>

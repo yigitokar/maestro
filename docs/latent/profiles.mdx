@@ -1,0 +1,94 @@
+---
+title: "Where Latent's film profiles come from"
+sidebarTitle: "Profiles"
+description: "What a Latent film or scanner profile contains, and what each one rests on: the specification's baseline, a manufacturer's datasheet, or a look authored by eye."
+icon: "flask"
+keywords: ["profile", "fidelity", "datasheet", "characteristic curve", "calibration"]
+---
+
+A Latent profile is a small JSON object that describes one film stock or one scanner in physical terms. This page says what is in a profile and how far you can trust its numbers.
+
+<Warning>
+  Nothing in the library is lab data. No profile was measured from real film, and no profile was compared with a real scan of the same scene. Do not describe the profiles as calibrated.
+</Warning>
+
+Stock names say what a profile approximates. They imply no affiliation with the makers of those films and scanners.
+
+## What a profile rests on
+
+Every profile carries a `fidelity` record with a `level`, a `source` and optional `notes`.
+
+```ts
+import { getStock } from "@filmsim/spectral-data";
+
+getStock("kodak_portra_400").fidelity;
+// { level: "datasheet", source: "...", notes: "..." }
+```
+
+| `level` | Profiles | What it means |
+| --- | --- | --- |
+| `baseline` | 1 stock, 1 scanner | Kodak Gold 200 and the Fujifilm Frontier SP-3000, with the numbers Latent's specification gives. Every other stock is placed relative to this one. |
+| `datasheet` | 28 stocks | The characteristic curves were read off the technical data sheet the manufacturer published, and fitted. |
+| `approximation` | 22 stocks, 11 scanners and print stocks | Authored by eye from the reputation of the film or the device. |
+
+If you show the library to your users, show this record too. The Latent app prints it next to each stock.
+
+### Datasheet profiles
+
+For a `datasheet` stock, the curve of each layer was read point by point from the published plot and moved onto Latent's exposure axis. A curve model was then fitted to the points: a soft toe into a straight line into a soft shoulder.
+
+- Every figure was read twice, independently, and both readings are fitted together. On 27 of the 28 stocks the two readings agree within 0.06 density. On Fuji Velvia 100 they differ by 0.11, and the profile's `notes` say so.
+- Where the sheet states an RMS granularity, it sets the grain level.
+- As a check, the film speed each fitted curve implies lands within a fifth of a stop of the rated speed on the Portra films, Ektar, Tri-X, T-Max 100 and 400, and all five slide films that have datasheet curves.
+
+The curves of these stocks follow the datasheet. Their spectral sensitivity, interlayer effects, halation and grain texture are still approximations.
+
+## What a stock profile contains
+
+| Field | What it describes |
+| --- | --- |
+| `id`, `name`, `iso` | The identifier you pass to `getStock()`, the display name and the rated speed. |
+| `spectralSensitivityMatrix` | A 3 by 3 matrix from scene light (linear ACEScg) to the exposure of the red, green and blue sensitive layers. |
+| `hdCurves` | The characteristic curve of each layer as control points: log exposure against optical density. |
+| `dirMatrix` | The 3 by 3 interlayer matrix, applied to density above the base. |
+| `halation` | `strengthRGB` per layer, the spread `sigmaMm` in millimeters, the exposure `threshold` above which light causes halation, and optionally the `diffusion` mix. |
+| `grain` | `crystalSizeUm` and `rmsGranularity` per layer, the `clumping` factor from 0 to 1, and optionally `monochrome`. |
+| `baseMaskDensity` | The density of unexposed film per channel: the orange mask of a color negative, or the clear base of other films. |
+| `process` | `"c41"` (color negative, the default), `"ecn2"` (motion picture negative), `"bw"` (black and white) or `"e6"` (slide). |
+| `category`, `manufacturer`, `description`, `balance`, `tags`, `year`, `discontinued` | Information for a stock browser. They do not change the picture. |
+| `fidelity` | What the profile rests on. |
+
+All matrices are row-major: nine numbers, row by row.
+
+A slide film (`"e6"`) has curves that fall with exposure, and its `baseMaskDensity` is the density of clear film. A black-and-white film has three identical curves and one grain field for all channels.
+
+## What a scanner profile contains
+
+| Field | What it describes |
+| --- | --- |
+| `id`, `name` | The identifier you pass to `getScanner()` and the display name. |
+| `kind` | `"scanner"` (the default) for a lab scanner or a camera scan, `"print"` for a print film or a photographic paper. |
+| `scannerGamma` | The contrast of the device. |
+| `colorMatrix` | A 3 by 3 color matrix applied after the inversion. |
+| `toneCurve` | `toeLift`, `midtoneContrast` and `shoulderRolloff`. |
+| `unsharpMask` | `radiusPx`, `amount` and `threshold` of the sharpening. The radius is defined at a scan 3000 pixels wide and scales with your picture. |
+| `manufacturer`, `description`, `tags` | Information for a browser. |
+| `fidelity` | What the profile rests on. |
+
+The complete types are `FilmStockProfile` and `ScannerProfile` in `@filmsim/core-types`. `parseFilmStock()` and `parseScanner()` check an object against them.
+
+## Looks
+
+A look is a recipe on top of a stock and a scanner: how the film was exposed, developed and printed. When a look underexposes and pushes a film, the library adds the print exposure that brings mid-gray back to where that stock and scanner put it at box speed, as a lab corrects a thin or dense negative.
+
+## Related pages
+
+<Columns cols={2}>
+  <Card title="Stocks, scanners and looks" icon="film" href="/latent/library">
+    The full list, and how to load a profile of your own.
+  </Card>
+
+  <Card title="What is verified" icon="circle-check" href="/latent/verification">
+    What the tests check about every profile.
+  </Card>
+</Columns>

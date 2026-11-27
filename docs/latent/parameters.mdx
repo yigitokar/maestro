@@ -1,0 +1,103 @@
+---
+title: "Pipeline parameters: ranges, defaults and effects"
+sidebarTitle: "Parameters"
+description: "Every field of PipelineParams with its range, its default and what it does to the picture, plus the film formats and how values are clamped."
+icon: "sliders"
+keywords: ["PipelineParams", "exposure", "white balance", "push", "grain", "halation", "film format", "DEFAULT_PARAMS"]
+---
+
+`PipelineParams` is the part of a look that is not the film or the scanner: how the film was exposed, developed, and printed or scanned. You pass it to `pipeline.setParams()`.
+
+```ts
+import { DEFAULT_PARAMS, PARAM_RANGES, type PipelineParams } from "@filmsim/core-types";
+
+const params: PipelineParams = { ...DEFAULT_PARAMS, exposureEV: 0.5, pushPullStops: 1 };
+```
+
+`DEFAULT_PARAMS` holds every default below, and `PARAM_RANGES` holds every range as `[minimum, maximum]`. Build your sliders from them and your interface cannot go out of step with the engine.
+
+## Exposure and color
+
+| Parameter | Range | Default | What it does |
+| --- | --- | --- | --- |
+| `exposureEV` | -3 to 3 | 0 | The exposure of the film, in stops. It acts on scene light, before the film sees it, so more exposure also means more halation and a different place on the film's curve. |
+| `whiteBalanceKelvin` | 2500 to 10000 | 6500 | The color temperature. The picture warms as the value rises. 6500 with a tint of 0 changes nothing. |
+| `tint` | -1 to 1 | 0 | The green to magenta balance. The picture gains magenta as the value rises. |
+
+## Film
+
+| Parameter | Range | Default | What it does |
+| --- | --- | --- | --- |
+| `filmFormat` | See [Film formats](#film-formats) | `"35mm"` | The size of the frame. It sets how large halation and grain are relative to the picture. |
+| `pushPullStops` | -2 to 3 | 0 | Push (positive) or pull (negative) development, in stops. A push makes the film faster by 0.18 in log exposure per stop. On negative film it also raises the contrast by 14% per stop. It raises the grain by 25% per stop. |
+| `halationScale` | 0 to 2 | 1 | Multiplies the halation of the stock. 0 turns it off. |
+| `diffusionScale` | 0 to 2 | 1 | Multiplies the scattering of light inside the emulsion. 0 turns it off. |
+| `grainScale` | 0 to 2 | 1 | Multiplies the grain of the stock. 0 turns it off, which also makes a render free of noise for tests. |
+| `grainSeed` | A whole number from 0 | 1 | The seed of the grain field. The same seed gives the same grain. Change it to get another grain pattern for the same picture. |
+
+## Scan
+
+| Parameter | Range | Default | What it does |
+| --- | --- | --- | --- |
+| `printExposureEV` | -6 to 6 | 0 | The exposure of the scan or the print, in stops, applied after the negative is inverted. Unlike `exposureEV` it brightens or darkens the picture without changing what the film recorded. |
+
+A film that was underexposed and pushed needs print exposure to bring its mid-tones back, which is why this range is wider than the others. The looks in the library carry the value they need.
+
+## Labels
+
+| Parameter | Default | What it does |
+| --- | --- | --- |
+| `stockId` | `"kodak_gold_200"` | The id of the film stock. A label: the pipeline uses the profile you pass to `setProfiles()`. |
+| `scannerId` | `"fuji_frontier_sp3000"` | The id of the scanner. A label in the same way. |
+
+Keep the two ids equal to the profiles you set, so that saved parameters describe the picture.
+
+## Required and optional fields
+
+The first eight fields are required by the type: `exposureEV`, `whiteBalanceKelvin`, `tint`, `stockId`, `scannerId`, `halationScale`, `grainScale` and `filmFormat`. `pushPullStops`, `printExposureEV`, `diffusionScale` and `grainSeed` are optional and take their default when you leave them out.
+
+Spreading `DEFAULT_PARAMS` first, as in the example above, sets all of them.
+
+## Film formats
+
+| `filmFormat` | Format | Long edge | Short edge |
+| --- | --- | --- | --- |
+| `"super8"` | Super 8 | 5.79 mm | 4.01 mm |
+| `"16mm"` | 16mm | 10.26 mm | 7.49 mm |
+| `"super35"` | Super 35 | 24.89 mm | 18.66 mm |
+| `"half_frame"` | Half frame | 24 mm | 18 mm |
+| `"35mm"` | 35mm | 36 mm | 24 mm |
+| `"120_645"` | 6x4.5 | 56 mm | 41.5 mm |
+| `"120_6x6"` | 6x6 | 56 mm | 56 mm |
+| `"120_6x7"` | 6x7 | 70 mm | 56 mm |
+| `"120_6x9"` | 6x9 | 84 mm | 56 mm |
+| `"4x5"` | 4x5 | 120 mm | 96 mm |
+| `"8x10"` | 8x10 | 240 mm | 190 mm |
+
+`FILM_FORMATS` in `@filmsim/core-types` holds this table, with a `label` and a `group` for each format, and `FILM_FORMAT_IDS` lists the ids.
+
+The long edge of your picture is laid on the long edge of the frame, whatever its orientation and its aspect ratio. An unknown format makes `deriveRuntime()`, and so the next render, throw `Unknown film format`.
+
+## Out-of-range values
+
+Numbers outside a range are clamped to it, and a number that is not finite takes its default. The engine does this itself with `resolveParams()`, so it never renders with a value outside the table. `grainSeed` is rounded down to a whole number.
+
+To check parameters that come from outside your code, such as a saved file, use `parsePipelineParams()`. It throws a `ZodError` that names the field when a value has the wrong type or is out of range.
+
+```ts
+import { parsePipelineParams } from "@filmsim/core-types";
+
+const params = parsePipelineParams(JSON.parse(saved));
+```
+
+## Related pages
+
+<Columns cols={2}>
+  <Card title="How it works" icon="layer-group" href="/latent/how-it-works#what-a-change-re-runs">
+    Which stage each parameter re-runs.
+  </Card>
+
+  <Card title="Stocks, scanners and looks" icon="film" href="/latent/library#apply-a-look">
+    Ready-made sets of parameters.
+  </Card>
+</Columns>

@@ -1,0 +1,179 @@
+---
+title: "How Latent develops a photo: the six stages"
+sidebarTitle: "How it works"
+description: "Latent takes a photo back to scene light, exposes it on film, adds grain, makes a negative and scans it. What each of the six stages does and what re-runs it."
+icon: "layer-group"
+keywords: ["pipeline", "halation", "grain", "characteristic curve", "sensitometry", "scanner", "WebGPU"]
+---
+
+Latent does not apply a color grade to your photo. It models what happens to light in film photography, in six stages that run as WebGPU shaders: the photo becomes scene light, the light exposes three layers of film, development turns exposure into density, grain is added, the densities become a negative you could hold up to the light, and a scanner turns that negative into the final picture.
+
+## The six stages
+
+Step through them here. Each stage has its own section below.
+
+<StageWalk />
+
+### 1. Linearize the input
+
+A photo on your disk is not scene light. A camera or a raw converter already raised its contrast and rolled off its highlights to make it look right on a display. Developed as it is, it would get a second tone curve: crushed shadows and burnt-out clouds.
+
+Stage 1 decodes the sRGB or Display P3 values and then undoes a standard display rendering: the contrast of the capture and display chain (a power of 1.2 around mid-gray) and the highlight shoulder. Display white comes back as a scene level about 3.4 stops above mid-gray, so only pixels near display white are bright enough to cause halation, as only light sources and glints are on film.
+
+The same stage applies exposure and white balance, and moves the picture into ACEScg, the working color space.
+
+### 2. Expose the film: halation and diffusion
+
+The film's sensitivity matrix turns scene light into the exposure of its three layers.
+
+Halation is light that passes through the emulsion, reflects off the film base and exposes the film a second time, around the brightest parts of the picture. Light above the stock's threshold is blurred with a Gaussian and added back, mostly to the red layer. The blur radius is set in millimeters of film, so it is the same physical size in the preview and in the export.
+
+A second, tighter blur stands for the scattering of light inside the emulsion. It is mixed into the exposure by a fraction the stock sets.
+
+### 3. Develop: characteristic curves and interlayer effects
+
+Each layer has a characteristic curve: optical density against the logarithm of exposure. It is the curve a manufacturer prints on a film's datasheet, and it holds the film's contrast, its toe in the shadows and its shoulder in the highlights.
+
+```text
+H = log10(max(E, 0) + 0.000001)       log exposure
+D = curve(H)                          density, per layer
+D = base + M (D - base)               interlayer effects on density above the base
+```
+
+Push and pull development move the curve before it is used: a push shifts it toward less exposure and, on negative film, raises its contrast.
+
+The 3 by 3 interlayer matrix models how the development of one layer holds back its neighbors, which is where much of a color film's saturation comes from. It acts on density above the film base, so unexposed film keeps its base color.
+
+### 4. Add grain
+
+Grain is noise in density, not in the final picture, so the tone curve of the scan shapes it the way it shapes everything else. Its strength follows the density of the film: weakest where the film is nearly clear, stronger where it is denser.
+
+The noise lives on a lattice on the film itself, measured in micrometers, with a second, coarser layer for clumps. Its position depends on the pixel's place in the whole picture and on a seed, so:
+
+- The same seed gives the same grain every time.
+- Tiles of an export fit together without a seam.
+- Grain keeps its physical size. On a small format such as Super 8 it is coarse; on 8x10 sheet film it is much finer.
+
+A black-and-white film uses one noise field for all three channels, so its grain has no color.
+
+### 5. Make the negative
+
+Density becomes transmittance, the fraction of light the film lets through:
+
+```text
+T = 10 ^ -D
+```
+
+The result is the negative itself, orange mask included, or the slide. The canvas can show it: see [Change what the canvas shows](/latent/develop-a-photo#change-what-the-canvas-shows).
+
+### 6. Scan
+
+The scanner turns transmittance back into a picture. For a negative that means inverting it, and inverting it well is most of what a lab scanner does.
+
+Latent derives the inversion from the stock: an exponent per channel from the measured slope of each layer, anchored at mid-gray, with the film base as the black point. A neutral gray in the scene therefore comes out neutral at mid-gray for every stock, and stocks with steeper curves give more contrast.
+
+Then come the scanner's own character: its color matrix, its mid-tone contrast, a soft shoulder with no hard clip, a toe, and an unsharp mask. The output is sRGB.
+
+Slide film needs no inversion. The same stage handles it with the exponent's sign reversed, and clear film comes out white. A print film or a photographic paper in the scanner's place gives the tone and color of a print.
+
+## Physical scale
+
+Halation and grain are sized in millimeters and micrometers, so Latent needs to know how large the film is. The long edge of your picture lies on the long edge of the frame you choose with `filmFormat`:
+
+```text
+pixels per millimeter = long edge in pixels / long edge of the frame in millimeters
+```
+
+The same photo on a larger format has finer grain and a tighter halo relative to the picture, as it would on real film. Portrait and landscape pictures get the same physics.
+
+## What a change re-runs
+
+A stage runs again only when what it needs changed, or when an earlier stage ran again. `render()` returns the stages it ran.
+
+| You change | First stage that runs again |
+| --- | --- |
+| Exposure, white balance, tint | 1 |
+| Halation scale, diffusion scale, film format | 2 |
+| The film stock | 2 when its sensitivity or halation differs, otherwise 3 |
+| Push or pull | 3 |
+| Grain scale, grain seed | 4 |
+| The scanner, print exposure | 6 |
+| The photo | 1 |
+
+## Preview and export
+
+The preview is one render of a smaller copy of your photo, with a long edge of at most 2048 pixels by default.
+
+The export renders the full-resolution photo in tiles of 2048 pixels. Each tile is rendered with a margin wide enough for every blur and only its inside is kept, so a tiled render equals an untiled one exactly.
+
+Every spatial quantity is derived from the size of the whole picture, never of a tile or of the preview. That is why the preview and the export show the same halation and the same grain.
+
+## Precision
+
+The pipeline has two working precisions:
+
+- `"full"` keeps every stage in 32-bit float textures. It is the default for `export()`.
+- `"half"` stores the linear-light stages (1, 2 and 6) as 16-bit floats and keeps densities and transmittance (3 to 5) in 32 bits. It is the default for the preview.
+
+Densities stay in 32 bits at both precisions because a density stored as a 16-bit float would put an error of up to two 8-bit levels on the display.
+
+## The specification you can run
+
+`@filmsim/core-types` is the executable form of the formulas. `deriveRuntime()` computes every number the shaders need from a stock, a scanner and the parameters, and `shadePixel()` takes one pixel of a uniform picture through all six stages on the CPU.
+
+The shaders are checked against it, and against a NumPy implementation of the same formulas. See [What is verified](/latent/verification).
+
+export const StageWalk = () => {
+  const stages = [
+    { name: "Linearize", from: "Your photo: 8-bit sRGB or Display P3", to: "Scene light in ACEScg", does: "Decodes the photo and undoes the display rendering a camera gave it. Applies exposure and white balance.", set: "exposureEV, whiteBalanceKelvin, tint" },
+    { name: "Expose", from: "Scene light", to: "Exposure of the three film layers", does: "Applies the film's sensitivity. Adds halation around highlights and the scattering of light inside the emulsion.", set: "halationScale, diffusionScale, filmFormat, the stock" },
+    { name: "Develop", from: "Exposure", to: "Density of each layer", does: "Reads the density from the film's characteristic curves, after push or pull, and applies the interlayer effects.", set: "pushPullStops, the stock" },
+    { name: "Grain", from: "Density", to: "Density with grain", does: "Adds noise that lives on the film, sized in micrometers and stronger where the film is denser.", set: "grainScale, grainSeed, filmFormat" },
+    { name: "Negative", from: "Density", to: "Transmittance: the negative or the slide", does: "Turns density into the fraction of light the film lets through.", set: "Nothing of its own: it follows stage 4" },
+    { name: "Scan", from: "Transmittance", to: "The finished picture in sRGB", does: "Inverts the negative with a calibration derived from the stock, then applies the scanner's color, tone curve and sharpening.", set: "printExposureEV, the scanner" },
+  ];
+  const [active, setActive] = useState(0);
+  const stage = stages[active];
+  const accent = "#C2622F";
+  const button = { padding: "6px 12px", borderRadius: 8, border: "1px solid rgba(127,127,127,.35)", background: "transparent", color: "inherit", font: "inherit", cursor: "pointer" };
+  const label = { fontSize: 12, opacity: 0.7, marginBottom: 2 };
+  return (
+    <div className="not-prose" style={{ border: "1px solid rgba(127,127,127,.25)", borderRadius: 12, padding: 16, margin: "16px 0" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(96px, 1fr))", gap: 8 }}>
+        {stages.map((item, index) => (
+          <button
+            key={item.name}
+            type="button"
+            aria-pressed={index === active}
+            onClick={() => setActive(index)}
+            style={{
+              textAlign: "left", padding: 10, borderRadius: 8, font: "inherit", color: "inherit", cursor: "pointer", minWidth: 0,
+              border: index === active ? "2px solid " + accent : "1px solid rgba(127,127,127,.3)",
+              background: index === active ? "rgba(194,98,47,.12)" : "transparent",
+            }}
+          >
+            <div style={{ fontSize: 12, opacity: 0.7 }}>Stage {index + 1}</div>
+            <div style={{ fontWeight: 600 }}>{item.name}</div>
+          </button>
+        ))}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginTop: 16 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={label}>Takes</div>
+          <div>{stage.from}</div>
+        </div>
+        <div style={{ minWidth: 0 }}>
+          <div style={label}>Gives</div>
+          <div>{stage.to}</div>
+        </div>
+      </div>
+      <p style={{ margin: "14px 0" }}>{stage.does}</p>
+      <div style={label}>Controlled by</div>
+      <div style={{ marginBottom: 14 }}>{stage.set}</div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button type="button" style={button} disabled={active === 0} onClick={() => setActive(active - 1)}>Back</button>
+        <button type="button" style={button} disabled={active === stages.length - 1} onClick={() => setActive(active + 1)}>Next</button>
+      </div>
+    </div>
+  );
+};

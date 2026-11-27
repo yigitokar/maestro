@@ -1,0 +1,65 @@
+---
+title: "Latent: film and scanner emulation in the browser"
+sidebarTitle: "Introduction"
+description: "Latent develops a photograph on a film stock and scans it back, on WebGPU. Its engine packages add film looks to your own web app."
+icon: "house"
+keywords: ["film emulation", "WebGPU", "film stock", "scanner", "grain", "halation"]
+---
+
+Latent is a physically based emulator of analog film and of the lab scanner that turns a negative back into a picture. It runs in the browser on WebGPU. A photograph is taken back to scene light, exposed on a film stock, turned into the transmittance of a negative or a slide, and scanned back to a positive by a lab scanner or a print stock.
+
+The engine is three npm packages with no user interface and no framework. You give it a photo, a film stock and a scanner. It draws a live preview on your canvas and returns the finished pixels at full resolution.
+
+<Card title="Try Latent in your browser" icon="play" href="https://latent-bay.vercel.app" horizontal arrow>
+  The Latent app is built on the packages documented here. Choose a photo, pick a film stock and export. Your photo stays on your device.
+</Card>
+
+```ts
+import { DEFAULT_PARAMS } from "@filmsim/core-types";
+import { FilmPipeline } from "@filmsim/gpu-pipeline";
+import { getScanner, getStock } from "@filmsim/spectral-data";
+
+const stock = getStock("kodak_portra_400");
+const scanner = getScanner("fuji_frontier_sp3000");
+
+const pipeline = await FilmPipeline.create();
+pipeline.attachCanvas(canvas);
+await pipeline.setSource(await createImageBitmap(file));
+pipeline.setProfiles(stock, scanner);
+pipeline.setParams({ ...DEFAULT_PARAMS, stockId: stock.id, scannerId: scanner.id });
+pipeline.render();
+
+const { data, width, height } = await pipeline.export({ format: "rgba8" });
+```
+
+## What you get
+
+- **A library of film.** 51 film stocks, 12 scanners and print stocks, and 32 ready-made looks. Each one is a typed profile that is validated when the library loads.
+- **Physical behavior.** Halation spreads from highlights by a distance in millimeters of film. Grain keeps its size when the resolution or the film format changes. Pushing a film moves its curve and raises its grain.
+- **A live preview.** A change re-runs only the stages it touches. A full six-stage frame at 2048 x 1365 takes 2 to 3 ms on an Apple M5 Max.
+- **Full-resolution export.** The export renders in tiles, and a tiled render equals the untiled one exactly. You choose 8-bit, 16-bit or float pixels.
+- **A reference to check against.** Every stage is compared with a NumPy implementation of the same formulas on every test run.
+
+<Note>
+  Nothing in the film library is lab data. Each profile says what it rests on, from a manufacturer's datasheet to a look authored by eye. See [Where the profiles come from](/latent/profiles).
+</Note>
+
+## Start here
+
+<Columns cols={2}>
+  <Card title="Quickstart" icon="bolt" href="/latent/quickstart">
+    Develop a photo on a page of your own and export it.
+  </Card>
+
+  <Card title="Installation" icon="box" href="/latent/installation">
+    What the three packages are, what they need and how you get them.
+  </Card>
+
+  <Card title="How it works" icon="layer-group" href="/latent/how-it-works">
+    The six stages between your photo and the finished scan.
+  </Card>
+
+  <Card title="FilmPipeline" icon="code" href="/latent/film-pipeline">
+    Every method, option and type of the renderer.
+  </Card>
+</Columns>

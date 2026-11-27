@@ -1,8 +1,8 @@
 {
   "$schema": "https://mintlify.com/docs.json",
   "theme": "mint",
-  "name": "Maestro",
-  "description": "Multi-agent workflows: a deterministic script drives clean-context agents.",
+  "name": "Care Research",
+  "description": "Documentation for Maestro, multi-agent workflows driven by a script; Latent, a film and scanner emulator for the browser; and BVAR, Bayesian vector autoregressions with a verdict on whether a model change improves the forecasts.",
   "favicon": "/favicon.svg",
   "colors": {
     "primary": "#B4532A",
@@ -10,30 +10,117 @@
     "dark": "#8F3F1E"
   },
   "navigation": {
-    "groups": [
+    "products": [
       {
-        "group": "Get started",
-        "pages": [
-          "maestro/index",
-          "maestro/quickstart",
-          "maestro/getting-started"
+        "product": "Maestro",
+        "description": "Multi-agent workflows",
+        "icon": "diagram-project",
+        "groups": [
+          {
+            "group": "Get started",
+            "pages": [
+              "maestro/index",
+              "maestro/quickstart",
+              "maestro/getting-started"
+            ]
+          },
+          {
+            "group": "Workflows",
+            "pages": [
+              "maestro/workflows",
+              "maestro/agents-and-tools",
+              "maestro/runners",
+              "maestro/runs"
+            ]
+          },
+          {
+            "group": "Using Maestro",
+            "pages": [
+              "maestro/cli",
+              "maestro/claude-code",
+              "maestro/library"
+            ]
+          }
         ]
       },
       {
-        "group": "Workflows",
-        "pages": [
-          "maestro/workflows",
-          "maestro/agents-and-tools",
-          "maestro/runners",
-          "maestro/runs"
+        "product": "Latent",
+        "description": "Film and scanner emulation",
+        "icon": "film",
+        "groups": [
+          {
+            "group": "Get started",
+            "pages": [
+              "latent/index",
+              "latent/quickstart",
+              "latent/installation"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "latent/develop-a-photo",
+              "latent/export",
+              "latent/library",
+              "latent/testing"
+            ]
+          },
+          {
+            "group": "Concepts",
+            "pages": [
+              "latent/how-it-works",
+              "latent/profiles",
+              "latent/verification"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "latent/film-pipeline",
+              "latent/parameters",
+              "latent/exports",
+              "latent/limits"
+            ]
+          }
         ]
       },
       {
-        "group": "Using Maestro",
-        "pages": [
-          "maestro/cli",
-          "maestro/claude-code",
-          "maestro/library"
+        "product": "BVAR",
+        "description": "Bayesian VARs",
+        "icon": "chart-line",
+        "groups": [
+          {
+            "group": "Get started",
+            "pages": [
+              "bvar/index",
+              "bvar/quickstart",
+              "bvar/installation"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "bvar/fit-and-forecast",
+              "bvar/stochastic-volatility",
+              "bvar/compare-models",
+              "bvar/conditional-forecasts"
+            ]
+          },
+          {
+            "group": "Concepts",
+            "pages": [
+              "bvar/components",
+              "bvar/engines",
+              "bvar/predictive-contract",
+              "bvar/verification"
+            ]
+          },
+          {
+            "group": "Reference",
+            "pages": [
+              "bvar/api"
+            ]
+          }
         ]
       }
     ]

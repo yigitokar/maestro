@@ -1,0 +1,66 @@
+---
+title: "What is verified in Latent, and what is judgment"
+sidebarTitle: "What is verified"
+description: "Which properties of Latent's engine are checked by tests on every run, against a NumPy reference and on real WebGPU, and which rest on judgment by eye."
+icon: "circle-check"
+keywords: ["tests", "parity", "NumPy", "reference", "accuracy", "performance"]
+---
+
+Latent's formulas are written three times: as WGSL shaders, as TypeScript in `@filmsim/core-types`, and as a NumPy pipeline. The tests compare the three. This page lists what those tests establish, and what they cannot.
+
+## Checked by tests on every run
+
+### The GPU matches the reference
+
+The NumPy pipeline renders eleven cases and writes the output of every stage. The WebGPU engine renders the same cases from the same input bytes in headless Chromium, and each stage is compared.
+
+- The acceptance limit is a mean squared error of the final stage below 0.0001. The measured values are below 0.0000001.
+- The cases run at both working precisions.
+- The cases cover a ColorChecker chart, a chart of edges, ramps, saturated colors and single bright points, the extremes of exposure, white balance and tint, a slide film, a black-and-white film, a pushed film, a portrait picture, a tiled render, and one case with grain.
+
+The TypeScript in `@filmsim/core-types` is checked against the NumPy pipeline as well, number by number.
+
+### Speed
+
+- A full six-stage frame at 2048 x 1365 with grain takes 2 to 3 ms on an Apple M5 Max. The limit the test enforces is 16 ms.
+- A 6000 x 4000 export completes in tiles, in about 0.2 seconds, without losing the GPU device.
+
+### Every profile stays in range
+
+- Every stock on every scanner gives finite numbers in range at all 32 corners of the sliders.
+- A neutral gray ramp stays within 3 display levels of neutral in the middle and 6 at the ends, on every scanner.
+- No patch of a ColorChecker clips on a negative film at default exposure.
+- Every datasheet reading is matched by its fitted curve within 0.05 density.
+- Every look prints a mid-gray at the brightness its stock and scanner give at box speed.
+
+### Tiles, resolution and format
+
+- A tiled render equals the untiled one exactly.
+- Grain and halation keep their physical size across resolutions and film formats.
+
+### The packages as you install them
+
+The example project in Latent's private repository installs the three packages from the files `npm pack` writes, like an outside project, builds for production and runs in headless Chromium on WebGPU. Its test develops the same picture on a color film and on a black-and-white film, exports both and compares the files. For version 0.1.0 the same page was also built against the packages as npm serves them and passed the same test.
+
+## Judged by eye
+
+How each stock looks was judged by eye, on a small set of pictures. Nothing was compared with a real scan of the same scene on the same film.
+
+The tests show that the engine computes what its formulas say, quickly and identically everywhere. They do not show that the formulas and the profiles reproduce a particular film. See [Where the profiles come from](/latent/profiles).
+
+## Not tested
+
+- Browsers other than Chromium, and GPUs other than the one the tests run on.
+- The packages in bundlers other than Vite and Next.js.
+
+## Related pages
+
+<Columns cols={2}>
+  <Card title="How it works" icon="layer-group" href="/latent/how-it-works">
+    The six stages the tests compare.
+  </Card>
+
+  <Card title="Testing" icon="vial" href="/latent/testing">
+    Test your own page on WebGPU.
+  </Card>
+</Columns>

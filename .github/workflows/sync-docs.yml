@@ -1,0 +1,31 @@
+name: Sync docs
+
+# Copies the Latent and BVAR pages from their own repositories into docs/ and
+# regenerates docs/docs.json from docs/docs.base.json (.github/mintlify-multirepo.yml).
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 * * * *"
+  repository_dispatch:
+    types: [docs-updated]
+
+concurrency:
+  group: mintlify-multirepo
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: mintlify/multirepo-action@v1
+        with:
+          working-directory: docs
+          config: ../.github/mintlify-multirepo.yml
+          # filmsim-maestro is private: a fine-grained token with Contents: read on it.
+          token: ${{ secrets.DOCS_SYNC_TOKEN }}
+          mode: pull-request
